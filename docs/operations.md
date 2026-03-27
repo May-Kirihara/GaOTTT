@@ -183,9 +183,9 @@ rm ger_rag.db ger_rag.faiss ger_rag.faiss.ids
 .venv/bin/python -m ger_rag.server.mcp_server --transport sse --port 8001
 ```
 
-### Claude Code設定
-
-`~/.claude.json` に追加:
+### コーディングエージェントMCP設定
+#### Claude Code
+`~/.claude.json` もしくはプロジェクト内 '.mcp.json' に追加:
 
 ```json
 {
@@ -194,6 +194,23 @@ rm ger_rag.db ger_rag.faiss ger_rag.faiss.ids
       "command": "/path/to/GER-RAG/.venv/bin/python",
       "args": ["-m", "ger_rag.server.mcp_server"],
       "cwd": "/path/to/GER-RAG"
+    }
+  }
+}
+```
+#### OpenCode
+`~/config/opencode/opencode.json` に追加:
+
+```json
+{
+  "mcp": {
+    "ger-rag-memory": {
+        "type": "local",
+        "command": [
+        "/mnt/holyland/Project/GER-RAG/.venv/bin/python",
+        "-m",
+        "ger_rag.server.mcp_server"
+        ]
     }
   }
 }
