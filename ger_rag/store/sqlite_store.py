@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -11,10 +12,13 @@ from ger_rag.store.base import StoreBase
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
-    id       TEXT PRIMARY KEY,
-    content  TEXT NOT NULL,
-    metadata TEXT
+    id           TEXT PRIMARY KEY,
+    content      TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    metadata     TEXT
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash);
 
 CREATE TABLE IF NOT EXISTS nodes (
     id          TEXT PRIMARY KEY,
@@ -49,12 +53,33 @@ class SqliteStore(StoreBase):
         await self._conn.executescript(SCHEMA)
         await self._conn.commit()
 
+    @staticmethod
+    def _content_hash(content: str) -> str:
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    async def find_existing_hashes(self, hashes: list[str]) -> set[str]:
+        """Return the subset of content hashes that already exist in the DB."""
+        assert self._conn is not None
+        if not hashes:
+            return set()
+        placeholders = ",".join("?" for _ in hashes)
+        cursor = await self._conn.execute(
+            f"SELECT content_hash FROM documents WHERE content_hash IN ({placeholders})",
+            hashes,
+        )
+        return {row[0] async for row in cursor}
+
     async def save_documents(self, docs: list[dict[str, Any]]) -> None:
         assert self._conn is not None
         await self._conn.executemany(
-            "INSERT OR REPLACE INTO documents (id, content, metadata) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO documents (id, content, content_hash, metadata) VALUES (?, ?, ?, ?)",
             [
-                (d["id"], d["content"], json.dumps(d.get("metadata")) if d.get("metadata") else None)
+                (
+                    d["id"],
+                    d["content"],
+                    self._content_hash(d["content"]),
+                    json.dumps(d.get("metadata")) if d.get("metadata") else None,
+                )
                 for d in docs
             ],
         )

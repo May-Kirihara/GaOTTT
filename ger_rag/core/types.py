@@ -39,6 +39,7 @@ class IndexedDoc(BaseModel):
 class IndexResponse(BaseModel):
     indexed: list[IndexedDoc]
     count: int
+    skipped: int = 0
 
 
 class QueryRequest(BaseModel):

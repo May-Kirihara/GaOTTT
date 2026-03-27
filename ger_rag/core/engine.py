@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 import uuid
@@ -66,10 +67,28 @@ class GEREngine:
     async def index_documents(
         self, documents: list[dict],
     ) -> list[str]:
-        contents = [d["content"] for d in documents]
-        metadatas = [d.get("metadata") for d in documents]
+        # Deduplicate by content hash
+        hashes = [
+            hashlib.sha256(d["content"].encode("utf-8")).hexdigest()
+            for d in documents
+        ]
+        existing = await self.store.find_existing_hashes(hashes)
+        filtered = [
+            (d, h) for d, h in zip(documents, hashes) if h not in existing
+        ]
+        if not filtered:
+            logger.info("All %d documents already exist, skipping", len(documents))
+            return []
 
-        ids = [str(uuid.uuid4()) for _ in documents]
+        docs_to_index = [d for d, _ in filtered]
+        skipped = len(documents) - len(docs_to_index)
+        if skipped:
+            logger.info("Skipping %d duplicate documents", skipped)
+
+        contents = [d["content"] for d in docs_to_index]
+        metadatas = [d.get("metadata") for d in docs_to_index]
+
+        ids = [str(uuid.uuid4()) for _ in docs_to_index]
 
         vectors = self.embedder.encode_documents(contents)
 

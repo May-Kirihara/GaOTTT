@@ -70,10 +70,12 @@ def _get_engine() -> GEREngine:
 async def index_documents(request: IndexRequest):
     engine = _get_engine()
     docs = [{"content": d.content, "metadata": d.metadata} for d in request.documents]
+    total = len(docs)
     ids = await engine.index_documents(docs)
     return IndexResponse(
         indexed=[IndexedDoc(id=doc_id) for doc_id in ids],
         count=len(ids),
+        skipped=total - len(ids),
     )
 
 
