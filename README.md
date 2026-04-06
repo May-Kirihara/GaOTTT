@@ -2,6 +2,8 @@
 
 **Gravity-Based Event-Driven RAG** - Long-term external memory for AI, where knowledge attracts knowledge
 
+> This is a research project exploring what happens when you give documents mass, velocity, and gravitational attraction. Probably eternal beta. The universe is still expanding, after all.
+
 [日本語 README](README_ja.md)
 
 ## Overview
