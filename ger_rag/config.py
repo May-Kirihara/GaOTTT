@@ -77,7 +77,7 @@ class GERConfig:
     batch_size: int = 32
 
     # Retrieval
-    top_k: int = 10
+    top_k: int = 5              # Results returned to LLM (presentation layer)
 
     # Scoring
     alpha: float = 0.05       # Mass boost scaling
@@ -111,6 +111,24 @@ class GERConfig:
     wave_attenuation: float = 0.3      # Force decay per depth level
     wave_mass_attenuation_factor: float = 0.5  # Mass-based attenuation reduction
     wave_boost_weight: float = 0.05    # Wave force weight in final score
+
+    # Gravitational radius — derived from a = G * m / r²
+    wave_gravity_a_min: float = 0.1         # Minimum gravitational acceleration threshold
+
+    # Co-occurrence black hole
+    bh_mass_scale: float = 0.5             # BH mass = scale * log(1 + Σ edge_weight)
+    bh_gravity_G: float = 0.0              # BH gravity constant (0 = use gravity_G)
+
+    # Orbital mechanics — velocity-based physics
+    orbital_friction: float = 0.05          # Constant velocity friction per step
+    orbital_friction_age_factor: float = 0.1  # Additional friction for unaccessed nodes
+    orbital_max_velocity: float = 0.05      # Max L2 norm of velocity vector
+    orbital_anchor_strength: float = 0.02   # Restoring force toward original position (Hooke's law)
+
+    # Habituation & thermal escape
+    saturation_rate: float = 0.2            # How fast nodes saturate (higher = faster)
+    habituation_recovery_rate: float = 0.01 # Recovery from saturation per step
+    thermal_escape_scale: float = 5000.0    # Temperature-based BH escape scaling
 
     # Similarity history
     sim_buffer_size: int = 20  # Ring buffer size
@@ -147,3 +165,22 @@ class GERConfig:
         """Compute effective attenuation (high mass = slower decay = farther reach)."""
         mass_factor = math.log(1.0 + mass) / math.log(1.0 + self.m_max)
         return self.wave_attenuation * (1.0 - self.wave_mass_attenuation_factor * mass_factor)
+
+    def compute_gravity_radius(self, mass: float) -> float:
+        """Compute minimum cosine similarity for a node's gravity field.
+
+        Derived from real gravitational physics:
+          Gravitational acceleration: a = G * m / r²
+          Gravity radius (where a drops below a_min): r = sqrt(G * m / a_min)
+          Convert to cosine similarity: min_sim = 1 - G * m / (2 * a_min)
+
+        Higher mass = lower threshold = wider gravitational reach.
+
+        With G=0.01, a_min=0.1:
+          mass=1   → min_sim=0.95 (dwarf — very close neighbors only)
+          mass=10  → min_sim=0.50 (giant — moderate reach)
+          mass=50  → min_sim=0.05 (supergiant — vast gravitational field)
+        """
+        r_squared = self.gravity_G * mass / self.wave_gravity_a_min
+        min_sim = 1.0 - r_squared / 2.0
+        return max(0.05, min(0.95, min_sim))
