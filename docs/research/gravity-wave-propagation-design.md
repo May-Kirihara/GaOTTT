@@ -1,7 +1,7 @@
 # Gravity Wave Propagation 設計書
 
-**日付**: 2026-04-06
-**ステータス**: 設計
+**日付**: 2026-04-06 (設計) → 2026-04-07 (実装完了)
+**ステータス**: 実装済み
 **前提**: [Gravitational Displacement 設計書](gravitational-displacement-design.md) の重力モデルを拡張
 
 ## 1. 背景

@@ -12,6 +12,7 @@ class NodeState(BaseModel):
     temperature: float = 0.0
     last_access: float = Field(default_factory=time.time)
     sim_history: list[float] = Field(default_factory=list)
+    return_count: float = 0.0
 
 
 class CooccurrenceEdge(BaseModel):
