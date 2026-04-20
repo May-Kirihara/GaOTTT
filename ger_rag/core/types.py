@@ -13,6 +13,8 @@ class NodeState(BaseModel):
     last_access: float = Field(default_factory=time.time)
     sim_history: list[float] = Field(default_factory=list)
     return_count: float = 0.0
+    expires_at: float | None = None
+    is_archived: bool = False
 
 
 class CooccurrenceEdge(BaseModel):

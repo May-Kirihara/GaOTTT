@@ -77,6 +77,21 @@ class StoreBase(ABC):
         ...
 
     @abstractmethod
+    async def set_archived(self, node_ids: list[str], archived: bool) -> int:
+        """Soft-delete (or restore) nodes by flipping is_archived. Returns affected count."""
+        ...
+
+    @abstractmethod
+    async def hard_delete_nodes(self, node_ids: list[str]) -> int:
+        """Physically remove nodes, their documents, and connected edges. Returns deleted count."""
+        ...
+
+    @abstractmethod
+    async def expire_due_nodes(self, now: float) -> int:
+        """Mark expired nodes as archived. Returns count of newly archived nodes."""
+        ...
+
+    @abstractmethod
     async def close(self) -> None:
         """Close storage connections."""
         ...

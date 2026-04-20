@@ -49,6 +49,9 @@ class GEREngine:
 
     async def startup(self) -> None:
         await self.store.initialize()
+        expired = await self.store.expire_due_nodes(time.time())
+        if expired:
+            logger.info("Auto-expired %d nodes past their TTL", expired)
         await self.cache.load_from_store(self.store)
         self.faiss_index.load(self.config.faiss_index_path)
         self.cache.start_write_behind(self.store)
@@ -98,7 +101,8 @@ class GEREngine:
         now = time.time()
         docs_for_store = []
         for i, doc_id in enumerate(ids):
-            state = NodeState(id=doc_id, last_access=now)
+            expires_at = docs_to_index[i].get("expires_at")
+            state = NodeState(id=doc_id, last_access=now, expires_at=expires_at)
             self.cache.set_node(state, dirty=True)
             docs_for_store.append({
                 "id": doc_id,
@@ -147,7 +151,9 @@ class GEREngine:
             if state is None:
                 states = await self.store.get_node_states([node_id])
                 state = states.get(node_id)
-            if state is None:
+            if state is None or state.is_archived:
+                continue
+            if state.expires_at is not None and state.expires_at <= now:
                 continue
 
             original_emb = original_embs.get(node_id)
@@ -318,6 +324,59 @@ class GEREngine:
                 continue
             filtered.append(edge)
         return filtered
+
+    # --- F5: Forget / Archive ---
+
+    async def archive(self, node_ids: list[str]) -> int:
+        """Soft-delete: mark nodes as archived. They are evicted from cache
+        and excluded from recall/explore/reflect, but remain in the store
+        and can be restored.
+        """
+        if not node_ids:
+            return 0
+        await self.cache.flush_to_store(self.store)
+        affected = await self.store.set_archived(node_ids, archived=True)
+        for nid in node_ids:
+            self.cache.evict_node(nid)
+        logger.info("Archived %d nodes", affected)
+        return affected
+
+    async def restore(self, node_ids: list[str]) -> int:
+        """Un-archive nodes and reload them into the cache."""
+        if not node_ids:
+            return 0
+        affected = await self.store.set_archived(node_ids, archived=False)
+        if affected:
+            states = await self.store.get_node_states(node_ids)
+            for state in states.values():
+                state.is_archived = False
+                self.cache.set_node(state, dirty=False)
+            disps = await self.store.load_displacements()
+            vels = await self.store.load_velocities()
+            for nid in node_ids:
+                if nid in disps:
+                    self.cache.displacement_cache[nid] = disps[nid]
+                if nid in vels:
+                    self.cache.velocity_cache[nid] = vels[nid]
+        logger.info("Restored %d nodes", affected)
+        return affected
+
+    async def forget(self, node_ids: list[str], hard: bool = False) -> int:
+        """Forget nodes. hard=False archives them (reversible); hard=True
+        physically removes them from the store. Vectors in the FAISS index
+        are not removed (rebuild on next reset), but archived nodes are
+        filtered out at query time.
+        """
+        if not node_ids:
+            return 0
+        if not hard:
+            return await self.archive(node_ids)
+        await self.cache.flush_to_store(self.store)
+        for nid in node_ids:
+            self.cache.evict_node(nid)
+        deleted = await self.store.hard_delete_nodes(node_ids)
+        logger.info("Hard-deleted %d nodes", deleted)
+        return deleted
 
     # --- US5: State Reset ---
 

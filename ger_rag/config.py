@@ -142,6 +142,14 @@ class GERConfig:
     flush_interval_seconds: float = 5.0
     flush_threshold: int = 100
 
+    # F4: TTL for ephemeral memory (source="hypothesis")
+    default_hypothesis_ttl_seconds: float = 7 * 86400.0  # 7 days
+
+    # F1: auto_remember heuristics
+    auto_remember_default_max: int = 5
+    auto_remember_min_chars: int = 12
+    auto_remember_max_chars: int = 400
+
     def __post_init__(self):
         if not self.db_path:
             self.db_path = os.path.join(self.data_dir, "ger_rag.db")

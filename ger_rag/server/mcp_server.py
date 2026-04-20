@@ -24,6 +24,7 @@ from mcp.server.fastmcp import FastMCP
 
 from ger_rag.config import GERConfig
 from ger_rag.core.engine import GEREngine
+from ger_rag.core.extractor import extract_candidates
 from ger_rag.embedding.ruri import RuriEmbedder
 from ger_rag.index.faiss_index import FaissIndex
 from ger_rag.ingest.loader import ingest_path
@@ -71,9 +72,12 @@ mcp = FastMCP(
     "ger-rag-memory",
     instructions=(
         "GER-RAG: Gravitational long-term memory for AI agents. "
-        "Use 'remember' to store knowledge, 'recall' to search with gravitational relevance, "
-        "'explore' for serendipitous discovery, 'reflect' to analyze your memory state, "
-        "and 'ingest' to bulk-load files."
+        "Use 'remember' to store knowledge (set source='hypothesis' or pass "
+        "ttl_seconds for ephemeral notes), 'recall' to search with gravitational "
+        "relevance, 'explore' for serendipitous discovery, 'reflect' to analyze "
+        "your memory state, 'auto_remember' to extract save candidates from a "
+        "transcript, 'forget'/'restore' to prune (soft by default), and 'ingest' "
+        "to bulk-load files."
     ),
 )
 
@@ -88,6 +92,7 @@ async def remember(
     source: str = "agent",
     tags: list[str] | None = None,
     context: str | None = None,
+    ttl_seconds: float | None = None,
 ) -> str:
     """Store knowledge in long-term memory.
 
@@ -97,9 +102,13 @@ async def remember(
     Args:
         content: Text to remember
         source: Origin — "agent" (your thoughts), "user" (user input),
-                "system" (system info), "compaction" (context compression)
+                "system" (system info), "compaction" (context compression),
+                "hypothesis" (ephemeral working memory; auto-expires)
         tags: Classification tags (optional)
         context: Brief description of when/why this was saved (optional)
+        ttl_seconds: Override expiration in seconds. If omitted and
+                source="hypothesis", uses default_hypothesis_ttl_seconds
+                from config. Permanent for other sources unless set.
     """
     engine = await get_engine()
     metadata = {"source": source}
@@ -109,10 +118,59 @@ async def remember(
         metadata["context"] = context
     metadata["remembered_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
 
-    ids = await engine.index_documents([{"content": content, "metadata": metadata}])
+    expires_at: float | None = None
+    if ttl_seconds is not None:
+        expires_at = time.time() + ttl_seconds
+    elif source == "hypothesis":
+        expires_at = time.time() + engine.config.default_hypothesis_ttl_seconds
+
+    doc: dict = {"content": content, "metadata": metadata}
+    if expires_at is not None:
+        doc["expires_at"] = expires_at
+        metadata["expires_at"] = time.strftime(
+            "%Y-%m-%dT%H:%M:%S", time.localtime(expires_at)
+        )
+
+    ids = await engine.index_documents([doc])
     if not ids:
         return "Already exists in memory (duplicate content)."
-    return f"Remembered. ID: {ids[0]}"
+    suffix = f" (expires {metadata['expires_at']})" if expires_at else ""
+    return f"Remembered. ID: {ids[0]}{suffix}"
+
+
+@mcp.tool()
+async def forget(
+    node_ids: list[str],
+    hard: bool = False,
+) -> str:
+    """Forget memories.
+
+    By default this is a soft archive: nodes are excluded from recall,
+    explore, and reflect, but remain in the store and can be restored
+    with the same IDs. Pass hard=True to physically delete.
+
+    Use this to prune dormant or no-longer-relevant memories. A typical
+    flow is: reflect(aspect="dormant") → propose to user → forget(ids).
+
+    Args:
+        node_ids: Memory IDs to forget (returned by remember/recall)
+        hard: If True, permanently delete from the store (default False)
+    """
+    engine = await get_engine()
+    affected = await engine.forget(node_ids, hard=hard)
+    verb = "Hard-deleted" if hard else "Archived"
+    return f"{verb} {affected} of {len(node_ids)} requested memories."
+
+
+@mcp.tool()
+async def restore(node_ids: list[str]) -> str:
+    """Restore previously archived memories back into active recall.
+
+    Only works for soft-archived nodes (hard-deleted ones are gone).
+    """
+    engine = await get_engine()
+    affected = await engine.restore(node_ids)
+    return f"Restored {affected} of {len(node_ids)} requested memories."
 
 
 @mcp.tool()
@@ -287,6 +345,50 @@ async def reflect(
         return "\n".join(lines)
 
     return f"Unknown aspect: {aspect}"
+
+
+@mcp.tool()
+async def auto_remember(
+    transcript: str,
+    max_candidates: int = 5,
+    include_reasons: bool = True,
+) -> str:
+    """Suggest memory candidates from a conversation transcript without saving.
+
+    Heuristically extracts lines that look worth remembering (decisions,
+    failures/successes, user preferences, lessons, metric-bearing notes).
+    Does NOT save them — review the candidates and call `remember` for the
+    ones you want to keep, optionally adjusting `source`, `tags`, or `content`.
+
+    Args:
+        transcript: Free-form text (typically the recent conversation segment)
+        max_candidates: Max candidates to return (default 5)
+        include_reasons: Include the heuristic reasons each line was picked
+    """
+    engine = await get_engine()
+    cfg = engine.config
+    candidates = extract_candidates(
+        transcript,
+        max_candidates=max_candidates,
+        min_chars=cfg.auto_remember_min_chars,
+        max_chars=cfg.auto_remember_max_chars,
+    )
+    if not candidates:
+        return "No save-worthy candidates extracted from the transcript."
+
+    lines = [f"Extracted {len(candidates)} candidate(s):"]
+    for i, c in enumerate(candidates, start=1):
+        tags = f", tags={list(c.suggested_tags)}" if c.suggested_tags else ""
+        header = f"[{i}] score={c.score} source={c.suggested_source}{tags}"
+        body = c.content
+        block = f"{header}\n{body}"
+        if include_reasons and c.reasons:
+            block += f"\n  reasons: {', '.join(c.reasons)}"
+        lines.append(block)
+    lines.append(
+        "\nReview and call `remember` for the ones you want to keep."
+    )
+    return "\n\n".join(lines)
 
 
 @mcp.tool()
