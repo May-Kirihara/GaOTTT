@@ -4,7 +4,7 @@
 
 > **改名お知らせ**: 旧名 GER-RAG (Gravity-Based Event-Driven RAG) は 2026-04 に GaOTTT (Gravity as Optimizer Test-Time Training) に改名されました。旧 URL (`.../GER-RAG.git`) も GitHub のリダイレクトで引き続き届くので、古い手順書を見ても動きます。
 
-← [前: Welcome](Tutorial-01-Welcome.md) ｜ → [次: LLM に接続](Tutorial-03-Connect-To-Claude.md)
+← [前: Welcome](Tutorial-01-Welcome.md) ｜ → [次: クライアントに接続](Tutorial-03-Connect-Your-Client.md)
 
 ---
 
@@ -167,7 +167,7 @@ GaOTTT is ready!
 これで GaOTTT はパソコンに入りました。
 次は LLM Desktop に GaOTTT を繋ぎます。
 
-→ [次へ: LLM に接続](Tutorial-03-Connect-To-Claude.md)
+→ [次へ: クライアントに接続](Tutorial-03-Connect-Your-Client.md)
 
 ---
 

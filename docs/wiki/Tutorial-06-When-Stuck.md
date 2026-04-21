@@ -10,7 +10,7 @@
 
 困ったら、ほぼ何でも以下で半分くらい解決します:
 
-1. **Claude Desktop を完全終了して再起動** （`Cmd + Q` / タスクバー右クリック → 閉じる）
+1. **使っているクライアントを完全終了して再起動** （Claude Desktop は `Cmd + Q` / タスクバー右クリック → 閉じる、Claude Code / OpenCode / OpenClaw は TUI を抜けてから起動し直し）
 2. **ターミナルを一度閉じて開き直す**
 3. **エラーメッセージを丸ごと Claude に貼って「どういう意味？どうしたらいい？」と聞く**
 
@@ -58,18 +58,22 @@ source $HOME/.cargo/env
 
 ---
 
-## Claude に接続できない
+## クライアントに接続できない
 
-### Claude Desktop に 🔨 アイコンが出ない
+### 🔨 アイコン / ツール一覧に `gaottt` が出ない
 
-設定ファイルが正しく読まれていません。
+設定ファイルが正しく読まれていません。まず使っているクライアントごとの設定場所を確認：
 
-#### チェック 1: ファイルの場所
+| クライアント | 設定ファイル / 登録方法 |
+|---|---|
+| Claude Desktop | Mac: `~/Library/Application Support/Claude/claude_desktop_config.json`<br>Windows: `%APPDATA%\Claude\claude_desktop_config.json` |
+| Claude Code | `claude mcp list` で確認。無ければ [Tutorial-03 セクション B](Tutorial-03-Connect-Your-Client.md#b-claude-code) の `claude mcp add` を再実行 |
+| OpenCode | プロジェクトの `opencode.json` または `~/.config/opencode/opencode.json` |
+| OpenClaw | `openclaw mcp list` で確認。`~/.openclaw/config.json` の `mcp.servers.gaottt` |
 
-- Mac: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+#### チェック 1: ファイル名・パス
 
-ファイル名が **完全一致** しているか確認（`.json` まで含めて）。
+ファイル名が **完全一致** しているか（`.json` まで含めて）。
 
 #### チェック 2: JSON の文法
 
@@ -139,7 +143,7 @@ cd ~/GaOTTT
 
 ### 記憶だけ全部消す
 
-Claude Desktop を終了してから、ターミナルで:
+使っている AI クライアントを終了してから、ターミナルで:
 
 ```bash
 rm ~/.local/share/gaottt/gaottt.db

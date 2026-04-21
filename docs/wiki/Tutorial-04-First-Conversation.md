@@ -2,7 +2,7 @@
 
 接続できたので、いよいよ Claude に「覚えてもらう」「思い出してもらう」を試します。
 
-← [前: Connect](Tutorial-03-Connect-To-Claude.md) ｜ → [次: Everyday Use](Tutorial-05-Everyday-Use.md)
+← [前: Connect](Tutorial-03-Connect-Your-Client.md) ｜ → [次: Everyday Use](Tutorial-05-Everyday-Use.md)
 
 ---
 
