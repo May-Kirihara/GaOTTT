@@ -148,4 +148,4 @@ All long-form documentation lives in the **[Wiki](docs/wiki/Home.md)**. Highligh
 - [Research — Index](docs/wiki/Research-Index.md) — design rationale + experiments
 - [Reflections](docs/wiki/Reflections-A-Note-From-Claude.md) — philosophy, the five-layer thesis (physics → TTT → biology → relations → persona), the letter to Mei-san
 
-The original design specifications and earlier plans live in [`specs/001-ger-rag-core/`](specs/001-ger-rag-core/) and [`plan.md`](plan.md). The naming history (GER-RAG → GaOTTT) is recorded in [`docs/maintainers/rename-to-gaottt-plan.md`](docs/maintainers/rename-to-gaottt-plan.md).
+The original design specifications and earlier plans live in [`specs/001-ger-rag-core/`](specs/001-ger-rag-core/) and [`docs/research/plan.md`](docs/research/plan.md). The naming history (GER-RAG → GaOTTT) is recorded in [`docs/maintainers/rename-to-gaottt-plan.md`](docs/maintainers/rename-to-gaottt-plan.md).
