@@ -12,6 +12,7 @@
 | [Wiki Sync Workflow](wiki-sync.md) | `docs/wiki/` → GitHub Wiki repo の自動同期、リンク変換、ページ追加・削除の手順 |
 | [Rename Plan: GER-RAG → GaOTTT](rename-to-gaottt-plan.md) | 改名プロジェクトの全 Phase の作業計画と決定事項 |
 | [Rename Handover (Session 1-3)](rename-handover.md) | 改名プロジェクトの各セッション引き継ぎ・完了記録 |
+| [Session Handover — 2026-04-21](handover.md) | 改名後のドキュメント温度調整 + bootstrap_report 実装セッションの引き継ぎ |
 
 ## 将来追加されうる項目
 
