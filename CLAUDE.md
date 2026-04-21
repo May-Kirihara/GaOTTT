@@ -1,30 +1,146 @@
 # GER-RAG Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-03-27
+Last updated: 2026-04-21 (Phase D 完了 + Wiki SoT 化済み)
 
-## Active Technologies
+GER-RAG = 重力・軌道力学による創発的長期記憶 + 共有時にアストロサイト的協調 + Phase D で人格保存基盤。詳細思想は [`docs/wiki/Reflections-Four-Layer-Philosophy.md`](docs/wiki/Reflections-Four-Layer-Philosophy.md)。
 
-- Python 3.11+ + FastAPI, uvicorn, sentence-transformers (>=4.48.0), faiss-cpu/faiss-gpu, aiosqlite, msgpack, numpy, pydantic (001-ger-rag-core)
+## Tech Stack
 
-## Project Structure
+Python 3.11+（推奨 3.12）/ FastAPI + uvicorn / aiosqlite + msgpack / FAISS IndexFlatIP / sentence-transformers (RURI-v3-310m) / numpy / pydantic v2 / pytest + pytest-asyncio / **uv**（pip 禁止）
+
+## Project Layout
 
 ```text
-backend/
-frontend/
-tests/
+ger_rag/                        # メインパッケージ
+├── config.py                   # 全ハイパーパラメータ
+├── core/                       # engine / gravity / scorer / extractor / clustering / collision / prefetch / types
+├── embedding/ruri.py           # キャッシュ自動検出
+├── index/faiss_index.py        # 境界チェック付き search
+├── store/                      # base / sqlite_store (自動マイグレーション) / cache (write-behind + evict_node)
+├── graph/cooccurrence.py       # 無向共起グラフ
+└── server/                     # app.py (REST) + mcp_server.py (MCP, 25 ツール)
+tests/{unit,integration}/       # 112 ケース、すべて asyncio
+scripts/                        # load_csv / load_files / test_queries / visualize_3d / benchmark / run_benchmark_isolated.sh / eval_*
+docs/                           # wiki/ が SoT、その他 docs/*.md は redirect、docs/research/ は研究アーカイブ
+SKILL.md                        # MCP がランタイムで読む（英語）
+.claude/skills/ger-rag/SKILL.md # ★ 上記の同期コピー（必ず両方更新）
+CLAUDE.md                       # このファイル
 ```
 
-## Commands
+## Source-of-Truth マップ — どこを編集するか
 
-cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLOGIES] pytest [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLOGIES] ruff check .
+| 種別 | SoT | 注意点 |
+|---|---|---|
+| MCP プロトコル定義 | `SKILL.md` + `.claude/skills/ger-rag/SKILL.md` | **両方を必ず同期**（cp で OK） |
+| Claude Code 指示 | `CLAUDE.md`（このファイル） | 簡潔に保つ（毎セッション読まれる） |
+| GitHub フロントページ | `README.md` / `README_ja.md` | trim 済み、詳細は Wiki リンク |
+| 設計判断・アーキテクチャ・実装計画 | **`docs/wiki/*.md`** | 旧 `docs/*.md` は redirect 済 |
+| 運用ガイド・トラブルシュート | **`docs/wiki/Operations-*.md`** | |
+| ハイパーパラメータ表 | **`docs/wiki/Operations-Tuning.md`** | コードは `ger_rag/config.py` |
+| MCP ツールリファレンス | **`docs/wiki/MCP-Reference-*.md`** | |
+| 研究レポート（長文成果物） | `docs/research/*.md` | Wiki Research-* から要約・リンク |
+| 全体 Wiki ナビ | `docs/wiki/_Sidebar.md` + `docs/wiki/Home.md` | 新ページ追加時は両方更新 |
 
-## Code Style
+## 実装フロー — 新機能を追加するとき
 
-Python 3.11+: Follow standard conventions
+1. **計画書を確認** — `docs/wiki/Plans-Roadmap.md` で全体像、関連 Plans-* で詳細
+2. **TaskCreate でタスク分割** — 実装/テスト/ドキュメント/ベンチに分ける
+3. **実装**（順序）:
+   - `core/types.py` に Pydantic モデル追加
+   - `store/sqlite_store.py` でスキーマ追加 + 自動マイグレーション (`ALTER TABLE ADD COLUMN ... DEFAULT`)
+   - `store/base.py` に abstract method 追加
+   - `core/engine.py` でロジック実装、destructive op は `prefetch_cache.invalidate()` を忘れない
+   - `core/<feature>.py` を新設（純粋関数 or 独立クラス）
+   - `server/mcp_server.py` で MCP ツール公開、既存ツールのシグネチャは破壊しない（オプショナル引数のみ追加）
+   - `server/mcp_server.py` の `instructions=` 文字列を更新
+4. **テスト**:
+   - `tests/unit/test_<feature>.py` — 純粋関数
+   - `tests/integration/test_engine_<feature>.py` — engine 経由（StubEmbedder 使用、`tests/integration/test_engine_archive_ttl.py` を参照）
+   - `tests/integration/test_mcp_phase_d.py` の形式で MCP round-trip
+5. **検証**:
+   ```bash
+   /mnt/holyland/Project/GER-RAG/.venv/bin/python -m pytest tests/ -q
+   ruff check ger_rag/ tests/
+   ```
+6. **ベンチマーク（破壊的変更や hot path 触ったとき）**:
+   ```bash
+   rm -rf /tmp/ger-rag-bench
+   .venv/bin/bash scripts/run_benchmark_isolated.sh 200
+   # 本番 DB は触らない。p50 < 50ms を必達
+   ```
+7. **ドキュメント更新**（後述のチェックリスト）
 
-## Recent Changes
+## ドキュメント更新フロー
 
-- 001-ger-rag-core: Added Python 3.11+ + FastAPI, uvicorn, sentence-transformers (>=4.48.0), faiss-cpu/faiss-gpu, aiosqlite, msgpack, numpy, pydantic
+実装が一段落したら、以下を **すべて** 更新:
+
+1. **SKILL.md** — 新ツール追加なら必ず（+ `.claude/skills/ger-rag/SKILL.md` に `cp` で同期）
+2. **`docs/wiki/MCP-Reference-*`** — 該当カテゴリページに完全な API 仕様を追加
+3. **`docs/wiki/MCP-Reference-Index.md`** — 全ツール表に行を追加、ツール選択フローも更新
+4. **`docs/wiki/Plans-Roadmap.md`** — Phase ロードマップに完了マーク
+5. **`docs/wiki/Architecture-Overview.md`** の「設計判断の記録」表 — 新しい設計判断を追加
+6. **`docs/wiki/Operations-Tuning.md`** — 新ハイパラがあれば追加
+7. **`docs/wiki/Operations-Troubleshooting.md`** — 想定される問題があれば追加
+8. **`README.md` / `README_ja.md`** — 「四層構造表」「カテゴリ表」が変わるならここも（ほとんどは Wiki リンクで済む）
+9. **`docs/wiki/_Sidebar.md` + `Home.md`** — 新規 Wiki ページを追加した場合のみ
+10. **`CLAUDE.md`**（このファイル）— 重要な workflow 変更があったら
+
+### ドキュメント書きの原則
+
+- **Wiki が SoT**。`docs/*.md`（wiki 以外）は redirect のまま放置 OK
+- **二層語彙**（物理 → 生物）を保つ（[Plans — SKILL.md Improvement](docs/wiki/Plans-SKILL-MD-Improvement.md) 参照）
+- **個人的な感動・読者への招待** は歓迎（Reflections セクション、または README の "A Note from Claude"）
+- 物理アナロジーが新概念にあれば必ず命名する（Hawking radiation、Lagrange point 等）
+
+## テスト・ベンチ・lint コマンド早見表
+
+```bash
+# 単体 + 統合テスト
+/mnt/holyland/Project/GER-RAG/.venv/bin/python -m pytest tests/ -q
+
+# 特定ファイル
+.venv/bin/python -m pytest tests/integration/test_mcp_phase_d.py -x -v
+
+# Lint（pre-existing 4 件は無視 OK: ruri.py の os, cooccurrence.py の time, mcp_server.py の os と pathlib.Path）
+ruff check ger_rag/ tests/
+
+# 隔離ベンチ（本番 DB 不可触）
+rm -rf /tmp/ger-rag-bench
+.venv/bin/bash scripts/run_benchmark_isolated.sh 200
+
+# MCP サーバー単体テスト起動（手動確認）
+.venv/bin/python -m ger_rag.server.mcp_server
+```
+
+## マルチプロセス / 共有 DB の罠
+
+GER-RAG の DB は **複数 MCP プロセスから共有される** ことがある（複数エージェント、ユーザーの並行ターミナル等）:
+
+- SQLite WAL + `PRAGMA busy_timeout = 30000`（30 秒待機）で並行 write 安全
+- ただし **各プロセスは独自の cache + FAISS index** を持つ — プロセス A の `remember` は B には即時反映されない（B の cache reload まで stale）
+- `faiss_index.search` は境界チェック付き（`.ids` 破損対策）
+- Destructive op（`forget`/`merge`/`compact` 等）は **必ず `prefetch_cache.invalidate()` を呼ぶ**
+- ベンチマークは絶対に本番 DB を触らない → `scripts/run_benchmark_isolated.sh` を使う
+
+## よくある罠
+
+- **テスト fixture でランダム埋め込みを使うと flaky** — `tests/integration/test_engine_archive_ttl.py:StubEmbedder` のようにトークンベースの決定論的埋め込みを使う
+- **新しい source / edge_type 追加時は `KNOWN_EDGE_TYPES` (`core/types.py`) に追加** — そうしないと relate のドキュメント整合性が壊れる
+- **新スキーマ列は必ず `DEFAULT` 付き** — 既存 DB が起動できなくなる
+- **MCP ツールの新引数は必ずオプショナル** — 既存呼び出し元を壊さない
+- **タスク管理系（`commit`/`complete`/`abandon`）は `_save_memory` ヘルパーを使う** — 直接 `engine.index_documents()` を叩かない
+- **`inherit_persona` は明示的に declared された value/intention/commitment のみ集める** — 普通の `remember` は対象外
+- **`SKILL.md` を編集したら必ず `.claude/skills/ger-rag/SKILL.md` にも `cp`** — 両方が同期されている必要
+
+## 主要参照ポインタ
+
+- 全体ナビ: [`docs/wiki/Home.md`](docs/wiki/Home.md)
+- ロードマップ: [`docs/wiki/Plans-Roadmap.md`](docs/wiki/Plans-Roadmap.md)
+- アーキテクチャ全体: [`docs/wiki/Architecture-Overview.md`](docs/wiki/Architecture-Overview.md)
+- 全 25 MCP ツール: [`docs/wiki/MCP-Reference-Index.md`](docs/wiki/MCP-Reference-Index.md)
+- ハイパラチューニング: [`docs/wiki/Operations-Tuning.md`](docs/wiki/Operations-Tuning.md)
+- トラブルシュート: [`docs/wiki/Operations-Troubleshooting.md`](docs/wiki/Operations-Troubleshooting.md)
+- 哲学（四層論）: [`docs/wiki/Reflections-Four-Layer-Philosophy.md`](docs/wiki/Reflections-Four-Layer-Philosophy.md)
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->

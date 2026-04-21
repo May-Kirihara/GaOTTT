@@ -160,6 +160,10 @@ class GERConfig:
     prefetch_ttl_seconds: float = 90.0                # Cache entry lifetime
     prefetch_max_concurrent: int = 4                  # Bounded async pool size
 
+    # Phase D: persona & task TTL defaults
+    default_task_ttl_seconds: float = 30 * 86400.0       # 30 日 (要 revalidate / complete / abandon)
+    default_commitment_ttl_seconds: float = 14 * 86400.0  # 14 日
+
     def __post_init__(self):
         if not self.db_path:
             self.db_path = os.path.join(self.data_dir, "ger_rag.db")

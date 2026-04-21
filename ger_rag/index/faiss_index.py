@@ -28,8 +28,12 @@ class FaissIndex:
         k = min(top_k, self._index.ntotal)
         scores, indices = self._index.search(query_vector.astype(np.float32), k)
         results = []
+        id_map_len = len(self._id_map)
         for score, idx in zip(scores[0], indices[0]):
-            if idx < 0:
+            if idx < 0 or idx >= id_map_len:
+                # Defensive: ntotal can briefly outpace _id_map under
+                # multi-process write contention (corrupted .ids file or
+                # mid-save interruption). Skip rather than IndexError.
                 continue
             results.append((self._id_map[idx], float(score)))
         return results
