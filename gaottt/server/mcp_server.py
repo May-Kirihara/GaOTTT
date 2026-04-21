@@ -1,13 +1,14 @@
-"""GER-RAG MCP Server — AI Agent Long-Term Memory
+"""GaOTTT MCP Server — AI Agent Long-Term Memory (formerly GER-RAG)
 
 Provides gravitational displacement-powered memory for AI agents.
+Phase R4 will reframe the philosophy as "TTT framework that happens to look like RAG".
 
 Usage:
     # stdio (Claude Code / Claude Desktop)
-    python -m ger_rag.server.mcp_server
+    python -m gaottt.server.mcp_server
 
     # SSE (remote clients)
-    python -m ger_rag.server.mcp_server --transport sse --port 8001
+    python -m gaottt.server.mcp_server --transport sse --port 8001
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ async def get_engine() -> GaOTTTEngine:
         if _engine is not None:
             return _engine
         config = GaOTTTConfig.from_config_file()
-        logger.info("Initializing GER-RAG engine for MCP server...")
+        logger.info("Initializing GaOTTT engine for MCP server...")
         embedder = RuriEmbedder(model_name=config.model_name, batch_size=config.batch_size)
         faiss_index = FaissIndex(dimension=config.embedding_dim)
         store = SqliteStore(db_path=config.db_path)
@@ -62,16 +63,16 @@ async def get_engine() -> GaOTTTEngine:
         )
         await engine.startup()
         _engine = engine
-        logger.info("GER-RAG engine ready (%d nodes, %d vectors)", len(cache.node_cache), faiss_index.size)
+        logger.info("GaOTTT engine ready (%d nodes, %d vectors)", len(cache.node_cache), faiss_index.size)
         return engine
 
 
 # --- MCP Server ---
 
 mcp = FastMCP(
-    "ger-rag-memory",
+    "gaottt",
     instructions=(
-        "GER-RAG: Gravitational long-term memory for AI agents. "
+        "GaOTTT (formerly GER-RAG): Gravitational long-term memory for AI agents. "
         "Use 'remember' to store knowledge (source='hypothesis' or ttl_seconds "
         "for ephemeral, emotion/certainty for affective weighting), 'recall' to "
         "search with gravitational relevance (transparently consumes 'prefetch' "
@@ -1319,7 +1320,7 @@ async def context_recall(topic: str) -> str:
         f"The following long-term memories are relevant to \"{topic}\":\n\n"
         f"{memory_text}\n\n"
         f"Use these memories to inform your response. "
-        f"They are ranked by GER-RAG's gravitational model based on past access patterns."
+        f"They are ranked by GaOTTT's gravitational model based on past access patterns."
     )
 
 

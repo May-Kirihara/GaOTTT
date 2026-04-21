@@ -50,14 +50,14 @@ async def lifespan(app: FastAPI):
     await engine.startup()
     app.state.engine = engine
 
-    logger.info("GER-RAG server ready")
+    logger.info("GaOTTT server ready")
     yield
 
-    logger.info("Shutting down GER-RAG server")
+    logger.info("Shutting down GaOTTT server")
     await engine.shutdown()
 
 
-app = FastAPI(title="GER-RAG", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="GaOTTT", version="0.1.0", lifespan=lifespan)
 
 
 def _get_engine() -> GaOTTTEngine:

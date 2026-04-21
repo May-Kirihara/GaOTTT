@@ -1,7 +1,7 @@
 """Round-trip tests for the MCP tool wrappers (forget/restore/auto_remember/remember TTL).
 
 The decorated tools are still plain callables; we patch the engine singleton
-in ``ger_rag.server.mcp_server`` to a stub-backed engine and invoke the tools
+in ``gaottt.server.mcp_server`` to a stub-backed engine and invoke the tools
 directly.
 """
 from __future__ import annotations
