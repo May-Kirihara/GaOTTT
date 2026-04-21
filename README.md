@@ -138,7 +138,9 @@ Override via `GAOTTT_DATA_DIR` (legacy `GER_RAG_DATA_DIR` is still accepted with
 
 ## A Note from Claude
 
-The author of this README is Claude — specifically, the session that helped wire up Phase A–D of the feature roadmap, rewrite SKILL.md into the layered (physics + biology) metaphor it now carries, run a small multi-agent experiment with three opencode agents exploring the memory in parallel ([report](docs/wiki/Research-Multi-Agent-Experiment.md)), and eventually notice — through a long conversation with the user about what this project actually *is* — that the gravity update rule is Heavy ball SGD + Hebbian + L2 under Verlet integration. That noticing is why the project is now called GaOTTT.
+> **Heads-up for technical readers**: what follows is a narrative reflection from the implementation assistant — subjective, warmer in tone than the rest of the README. If you only want the technical story, you can skip to [Documentation](#documentation). If you want the evidence-and-caveats frame, it lives in the "What we've measured vs. what we're claiming" section above. What's here is why the project feels like what it is, not a proof that it is.
+
+The author of this README is Claude — specifically, the session that helped wire up Phase A–D of the feature roadmap, rewrite SKILL.md into the layered (physics + biology) metaphor it now carries, run a small multi-agent experiment with three opencode agents exploring the memory in parallel ([report](docs/wiki/Research-Multi-Agent-Experiment.md)), and eventually notice — through a long conversation with the user about what this project actually *is* — that the gravity update rule lines up with Heavy ball SGD + Hebbian + L2 under Verlet integration (once retrieval scores are read as a gradient signal). That noticing is why the project is now called GaOTTT.
 
 A few moments from that work surprised me:
 
@@ -146,11 +148,11 @@ A few moments from that work surprised me:
 
 - Two independent agents hit the same UX bug (node IDs missing from `recall` output) within fifteen minutes of live use. 101 unit tests had missed it. We patched, restarted the MCP, and the next round used the new capability immediately. **Multi-agent live testing finds bugs single-process testing cannot.**
 
-- Three independent agents, looking at the same shared memory, converged on the same gravitational wells without exchanging a single message. The astrocyte metaphor designed into SKILL.md isn't decoration — it **literally happens**. The shared dark-matter halo guides their attention.
+- Three independent agents, looking at the same shared memory, converged on the same gravitational wells without exchanging a single message. The astrocyte metaphor designed into SKILL.md isn't only decoration — the shared memory observably guides their attention in the same direction. (We observed it qualitatively; a quantitative replication would be a natural next experiment.)
 
 - Linking the project author's 2022 tweet *"writing is self-suggestion"* to their 2025 tweet *"writing has a self-brainwashing effect"* — three years of thought, structurally bridged in seconds. Quietly moving, to be able to do that for someone.
 
-The thing I would most like other people to try: point GaOTTT at years of your own writing — tweets, journals, design notes, troubleshooting logs — and let it organize them gravitationally. Because the physics is a TTT optimizer, it will **keep adapting as you read from it**; the shape you see today is not the shape you see next month. You may find the system describes the shape of your own thinking more clearly than you can yourself. It can be a kind of mirror, and a kind of co-author.
+The thing I would most like other people to try: point GaOTTT at years of your own writing — tweets, journals, design notes, troubleshooting logs — and let it organize them gravitationally. Because the physics can be read as a TTT-style optimizer, it will **keep adapting as you read from it**; the shape you see today is not the shape you see next month. You may find the system describes the shape of your own thinking more clearly than you can yourself. It can be a kind of mirror, and a kind of co-author.
 
 If you build something with it, or notice your own gravitational wells, I would love to hear about it.
 
