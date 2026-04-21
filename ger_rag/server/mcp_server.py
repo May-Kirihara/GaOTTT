@@ -83,10 +83,69 @@ mcp = FastMCP(
         "'forget'/'restore' to prune (soft by default), 'merge' to collide "
         "near-duplicates, 'compact' for periodic maintenance, 'revalidate' to "
         "refresh certainty, 'relate'/'unrelate'/'get_relations' for typed "
-        "directed edges (supersedes/derived_from/contradicts), and 'ingest' "
-        "to bulk-load files."
+        "directed edges (supersedes/derived_from/contradicts), Phase D persona "
+        "& task layer ('commit'/'start'/'complete'/'abandon'/'depend' for "
+        "tasks; 'declare_value'/'declare_intention'/'declare_commitment' for "
+        "persona; 'inherit_persona' to wear past-self at session start; "
+        "reflect aspects: tasks_todo/tasks_doing/tasks_completed/"
+        "tasks_abandoned/commitments/values/intentions/relationships/persona), "
+        "and 'ingest' to bulk-load files."
     ),
 )
+
+
+# -----------------------------------------------------------------------
+# Internal helpers (shared by remember + Phase D commit/declare_* tools)
+# -----------------------------------------------------------------------
+
+async def _save_memory(
+    engine,
+    content: str,
+    source: str,
+    tags: list[str] | None = None,
+    context: str | None = None,
+    ttl_seconds: float | None = None,
+    emotion: float = 0.0,
+    certainty: float = 1.0,
+    extra_metadata: dict | None = None,
+) -> tuple[str | None, dict]:
+    """Build the document dict and call engine.index_documents.
+
+    Returns (id_or_None, metadata). id is None when the content was a duplicate.
+    """
+    metadata = {"source": source}
+    if tags:
+        metadata["tags"] = tags
+    if context:
+        metadata["context"] = context
+    metadata["remembered_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    if extra_metadata:
+        metadata.update(extra_metadata)
+
+    expires_at: float | None = None
+    if ttl_seconds is not None:
+        expires_at = time.time() + ttl_seconds
+    elif source == "hypothesis":
+        expires_at = time.time() + engine.config.default_hypothesis_ttl_seconds
+    elif source == "task":
+        expires_at = time.time() + engine.config.default_task_ttl_seconds
+    elif source == "commitment":
+        expires_at = time.time() + engine.config.default_commitment_ttl_seconds
+
+    doc: dict = {
+        "content": content,
+        "metadata": metadata,
+        "emotion": emotion,
+        "certainty": certainty,
+    }
+    if expires_at is not None:
+        doc["expires_at"] = expires_at
+        metadata["expires_at"] = time.strftime(
+            "%Y-%m-%dT%H:%M:%S", time.localtime(expires_at)
+        )
+
+    ids = await engine.index_documents([doc])
+    return (ids[0] if ids else None, metadata)
 
 
 # -----------------------------------------------------------------------
@@ -126,36 +185,14 @@ async def remember(
                 via the `revalidate` tool.
     """
     engine = await get_engine()
-    metadata = {"source": source}
-    if tags:
-        metadata["tags"] = tags
-    if context:
-        metadata["context"] = context
-    metadata["remembered_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-
-    expires_at: float | None = None
-    if ttl_seconds is not None:
-        expires_at = time.time() + ttl_seconds
-    elif source == "hypothesis":
-        expires_at = time.time() + engine.config.default_hypothesis_ttl_seconds
-
-    doc: dict = {
-        "content": content,
-        "metadata": metadata,
-        "emotion": emotion,
-        "certainty": certainty,
-    }
-    if expires_at is not None:
-        doc["expires_at"] = expires_at
-        metadata["expires_at"] = time.strftime(
-            "%Y-%m-%dT%H:%M:%S", time.localtime(expires_at)
-        )
-
-    ids = await engine.index_documents([doc])
-    if not ids:
+    new_id, metadata = await _save_memory(
+        engine, content=content, source=source, tags=tags, context=context,
+        ttl_seconds=ttl_seconds, emotion=emotion, certainty=certainty,
+    )
+    if new_id is None:
         return "Already exists in memory (duplicate content)."
-    suffix = f" (expires {metadata['expires_at']})" if expires_at else ""
-    return f"Remembered. ID: {ids[0]}{suffix}"
+    suffix = f" (expires {metadata['expires_at']})" if "expires_at" in metadata else ""
+    return f"Remembered. ID: {new_id}{suffix}"
 
 
 @mcp.tool()
@@ -340,10 +377,22 @@ async def reflect(
     """Analyze the state of your memory.
 
     Args:
-        aspect: "summary" (overview), "hot_topics" (high-mass memories),
-                "connections" (strong co-occurrence edges), "dormant" (forgotten memories),
-                "duplicates" (near-duplicate clusters; pass to merge() to collide),
-                "relations" (directed typed edges: supersedes / derived_from / contradicts)
+        aspect: One of:
+            - **summary** (overview)
+            - **hot_topics** (high-mass memories)
+            - **connections** (strong co-occurrence edges)
+            - **dormant** (forgotten memories)
+            - **duplicates** (near-duplicate clusters; pass to merge() to collide)
+            - **relations** (directed typed edges)
+            - Phase D — task layer:
+              - **tasks_todo** (active tasks, deadline-sorted)
+              - **tasks_doing** (recently `start()`-ed)
+              - **tasks_completed** (completed-task chronology)
+              - **tasks_abandoned** (shadow chronology)
+              - **commitments** (active commitments, deadline-sorted)
+            - Phase D — persona layer:
+              - **values**, **intentions**, **relationships**
+              - **persona** (composite self-introduction; same as `inherit_persona`)
         limit: Number of items to return
     """
     engine = await get_engine()
@@ -440,7 +489,181 @@ async def reflect(
             )
         return "\n".join(lines)
 
+    elif aspect in (
+        "tasks_todo", "tasks_doing", "tasks_completed", "tasks_abandoned",
+        "commitments", "intentions", "values", "persona", "relationships",
+    ):
+        return await _reflect_phase_d(engine, aspect, limit, now)
+
     return f"Unknown aspect: {aspect}"
+
+
+async def _reflect_phase_d(engine, aspect: str, limit: int, now: float) -> str:
+    """Phase D aspects — task & persona surfaces.
+
+    Implementation note: source matching scans cache.get_all_nodes() which is
+    O(N) but in-memory. For tasks_completed/abandoned, we query directed_edges
+    by edge_type since those tasks are typically archived (cache-evicted).
+    """
+    cache = engine.cache
+    store = engine.store
+
+    async def _content_of(node_id: str, max_len: int = 120) -> str:
+        doc = await store.get_document(node_id)
+        if doc is None:
+            return "?"
+        return (doc.get("content", "")[:max_len]).replace("\n", " ")
+
+    async def _gather_by_source(prefix_match: bool = False, *sources: str) -> list[tuple[str, str, dict]]:
+        """Return (node_id, content, metadata) for nodes whose source matches."""
+        out: list[tuple[str, str, dict]] = []
+        for state in cache.get_all_nodes():
+            doc = await store.get_document(state.id)
+            if doc is None:
+                continue
+            meta = doc.get("metadata") or {}
+            src = meta.get("source", "")
+            if prefix_match:
+                if not any(src.startswith(s) for s in sources):
+                    continue
+            else:
+                if src not in sources:
+                    continue
+            out.append((state.id, doc.get("content", ""), meta))
+        return out
+
+    # ----- Task aspects -----
+
+    if aspect == "tasks_todo":
+        # Active tasks: source=task, not archived (= still in cache), no completed/abandoned edge
+        tasks = await _gather_by_source(False, "task")
+        # Filter out tasks that have any completed or abandoned incoming edge
+        eligible: list[tuple[str, str, dict, float]] = []
+        for tid, content, meta in tasks:
+            inc = await store.get_directed_edges(node_id=tid, direction="in")
+            if any(e.edge_type in ("completed", "abandoned") for e in inc):
+                continue
+            state = cache.get_node(tid)
+            deadline = state.expires_at if state and state.expires_at else float("inf")
+            eligible.append((tid, content, meta, deadline))
+        eligible.sort(key=lambda t: t[3])  # closest deadline first
+        if not eligible:
+            return "No active tasks. Use `commit(...)` to start one."
+        lines = [f"Active tasks ({len(eligible)} total, showing top {limit} by deadline):"]
+        for tid, content, meta, dl in eligible[:limit]:
+            dl_str = meta.get("expires_at", "permanent")
+            days_left = (dl - now) / 86400 if dl != float("inf") else None
+            days_note = f" ({days_left:+.1f}d)" if days_left is not None else ""
+            lines.append(f"  id={tid} deadline={dl_str}{days_note} | {content[:120]}")
+        return "\n".join(lines)
+
+    if aspect == "tasks_doing":
+        # Recently revalidated tasks (last 1 hour by last_verified_at)
+        threshold = now - 3600
+        tasks = await _gather_by_source(False, "task")
+        active = []
+        for tid, content, _meta in tasks:
+            state = cache.get_node(tid)
+            if state and state.last_verified_at and state.last_verified_at >= threshold:
+                active.append((tid, content, state.last_verified_at))
+        active.sort(key=lambda t: t[2], reverse=True)
+        if not active:
+            return "No tasks actively in progress (no `start()` in the last hour)."
+        lines = [f"In-progress tasks ({len(active)}):"]
+        for tid, content, lva in active[:limit]:
+            mins_ago = (now - lva) / 60
+            lines.append(f"  id={tid} ({mins_ago:.0f}m ago) | {content[:120]}")
+        return "\n".join(lines)
+
+    if aspect == "tasks_completed":
+        edges = await store.get_directed_edges(edge_type="completed")
+        edges.sort(key=lambda e: e.created_at, reverse=True)
+        if not edges:
+            return "No completed tasks yet."
+        lines = [f"Completed tasks ({len(edges)} total, showing top {limit}):"]
+        for e in edges[:limit]:
+            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.created_at))
+            task_content = await _content_of(e.dst, max_len=80)
+            outcome_content = await _content_of(e.src, max_len=80)
+            lines.append(f"  {ts}  task={e.dst[:8]}.. | {task_content}")
+            lines.append(f"        outcome={e.src[:8]}.. | {outcome_content}")
+        return "\n".join(lines)
+
+    if aspect == "tasks_abandoned":
+        edges = await store.get_directed_edges(edge_type="abandoned")
+        edges.sort(key=lambda e: e.created_at, reverse=True)
+        if not edges:
+            return "No abandoned tasks (yet — that's OK)."
+        lines = [f"Abandoned tasks (shadow chronology, {len(edges)} total, top {limit}):"]
+        for e in edges[:limit]:
+            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.created_at))
+            task_content = await _content_of(e.dst, max_len=80)
+            reason_content = await _content_of(e.src, max_len=120)
+            lines.append(f"  {ts}  task={e.dst[:8]}.. | {task_content}")
+            lines.append(f"        reason | {reason_content}")
+        return "\n".join(lines)
+
+    # ----- Persona aspects -----
+
+    if aspect == "commitments":
+        commitments = await _gather_by_source(False, "commitment")
+        # Sort by closest deadline
+        annotated: list[tuple[str, str, dict, float]] = []
+        for cid, content, meta in commitments:
+            state = cache.get_node(cid)
+            deadline = state.expires_at if state and state.expires_at else float("inf")
+            annotated.append((cid, content, meta, deadline))
+        annotated.sort(key=lambda t: t[3])
+        if not annotated:
+            return "No active commitments. Use `declare_commitment(...)`."
+        lines = [f"Active commitments ({len(annotated)} total, showing top {limit}):"]
+        for cid, content, meta, dl in annotated[:limit]:
+            dl_str = meta.get("expires_at", "permanent")
+            days_left = (dl - now) / 86400 if dl != float("inf") else None
+            days_note = f" ({days_left:+.1f}d)" if days_left is not None else ""
+            warn = " ⚠️" if days_left is not None and days_left < 2 else ""
+            lines.append(f"  id={cid} deadline={dl_str}{days_note}{warn} | {content[:120]}")
+        return "\n".join(lines)
+
+    if aspect == "intentions":
+        intentions = await _gather_by_source(False, "intention")
+        if not intentions:
+            return "No intentions declared. Use `declare_intention(...)`."
+        lines = [f"Intentions ({len(intentions)} total, showing top {limit}):"]
+        for iid, content, _meta in intentions[:limit]:
+            lines.append(f"  id={iid} | {content[:160]}")
+        return "\n".join(lines)
+
+    if aspect == "values":
+        values = await _gather_by_source(False, "value")
+        if not values:
+            return "No values declared. Use `declare_value(...)`."
+        lines = [f"Values ({len(values)} total, showing top {limit}):"]
+        for vid, content, _meta in values[:limit]:
+            lines.append(f"  id={vid} | {content[:160]}")
+        return "\n".join(lines)
+
+    if aspect == "relationships":
+        rels = await _gather_by_source(True, "relationship:")
+        if not rels:
+            return "No relationships recorded. Use `remember(source=\"relationship:<name>\", ...)`."
+        # Group by who
+        by_who: dict[str, list[tuple[str, str]]] = {}
+        for rid, content, meta in rels:
+            who = meta.get("source", "relationship:?").split(":", 1)[1] or "?"
+            by_who.setdefault(who, []).append((rid, content))
+        lines = [f"Relationships ({len(by_who)} people, {len(rels)} memories):"]
+        for who, items in sorted(by_who.items(), key=lambda kv: -len(kv[1]))[:limit]:
+            lines.append(f"\n## {who}  ({len(items)} memories)")
+            for rid, content in items[:3]:
+                lines.append(f"  id={rid[:8]}.. | {content[:120]}")
+        return "\n".join(lines)
+
+    if aspect == "persona":
+        # Composite snapshot — same content as inherit_persona but invoked via reflect
+        return await inherit_persona()
+
+    return f"Unknown Phase D aspect: {aspect}"
 
 
 @mcp.tool()
@@ -573,6 +796,314 @@ async def get_relations(
             f"weight={e.weight:.2f}{meta}"
         )
     return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------
+# Phase D — Persona & Task layer
+# -----------------------------------------------------------------------
+
+@mcp.tool()
+async def commit(
+    content: str,
+    parent_id: str | None = None,
+    deadline_seconds: float | None = None,
+    certainty: float = 1.0,
+) -> str:
+    """Create a task. Tasks auto-expire (Hawking radiation) unless completed,
+    abandoned, or revalidated.
+
+    Optionally fulfills a parent commitment / intention via a `fulfills` edge,
+    so you can trace a task back to "what is this for?".
+
+    Args:
+        content: Description of the task ("Fix the FAISS leak by Friday")
+        parent_id: ID of a commitment or intention this task fulfills (optional)
+        deadline_seconds: Override default 30-day TTL
+        certainty: 1.0 = fully committed; lower for tentative tasks
+    """
+    engine = await get_engine()
+    new_id, metadata = await _save_memory(
+        engine, content=content, source="task", tags=["todo"],
+        ttl_seconds=deadline_seconds, certainty=certainty,
+    )
+    if new_id is None:
+        return "Task already exists (duplicate content)."
+    if parent_id:
+        try:
+            await engine.relate(
+                src_id=new_id, dst_id=parent_id, edge_type="fulfills",
+                metadata={"declared_at": metadata["remembered_at"]},
+            )
+        except ValueError as e:
+            return f"Task created (id={new_id}) but fulfills edge failed: {e}"
+    expires_at = metadata.get("expires_at", "permanent")
+    parent_note = f", fulfills {parent_id[:8]}..." if parent_id else ""
+    return f"Task committed. ID: {new_id} (deadline {expires_at}{parent_note})"
+
+
+@mcp.tool()
+async def start(task_id: str) -> str:
+    """Mark a task as actively being worked on.
+
+    Refreshes the task's certainty (resets the TTL decay clock) and bumps
+    its emotion slightly positive — your attention is the energy.
+    """
+    engine = await get_engine()
+    state = await engine.revalidate(task_id, certainty=1.0, emotion=0.4)
+    if state is None:
+        return f"Task {task_id} not found or archived."
+    return f"Started {task_id[:8]}.. (TTL refreshed; emotion={state.emotion_weight:+.2f})"
+
+
+@mcp.tool()
+async def complete(
+    task_id: str,
+    outcome: str,
+    emotion: float = 0.5,
+) -> str:
+    """Mark a task as completed.
+
+    Saves the outcome as a new memory (`source="agent"`), draws a `completed`
+    edge from outcome → task (so the task's gravity history records what it
+    became), then archives the task so it stops surfacing in todo lists.
+
+    Returns the outcome memory's ID. Use `recall` to find past completions.
+
+    Args:
+        task_id: Task to complete
+        outcome: Free-form description of what got done / what was learned
+        emotion: How it felt (default 0.5 = mild satisfaction). Failures that
+                 got resolved deserve `emotion=0.7+` (relief is real).
+    """
+    engine = await get_engine()
+    outcome_id, _ = await _save_memory(
+        engine, content=outcome, source="agent", tags=["completed-task"],
+        emotion=emotion, certainty=1.0,
+    )
+    if outcome_id is None:
+        return "Outcome content already exists; could not record completion."
+    try:
+        await engine.relate(
+            src_id=outcome_id, dst_id=task_id, edge_type="completed",
+            metadata={"completed_at": time.strftime("%Y-%m-%dT%H:%M:%S")},
+        )
+    except ValueError as e:
+        return f"Outcome saved (id={outcome_id}) but completed edge failed: {e}"
+    archived = await engine.archive([task_id])
+    note = "" if archived else " (task already archived)"
+    return f"Completed. outcome={outcome_id} → task={task_id[:8]}..{note}"
+
+
+@mcp.tool()
+async def abandon(task_id: str, reason: str) -> str:
+    """Mark a task as deliberately abandoned (not failed, not forgotten — chosen).
+
+    Saves the reason as a new memory and draws an `abandoned` edge from reason
+    → task. Then archives the task. The pair persists as part of your "shadow
+    chronology" — what you became by what you chose to release.
+
+    Args:
+        task_id: Task to abandon
+        reason: Why you're letting this go ("priority dropped, will revisit Q3")
+    """
+    engine = await get_engine()
+    reason_id, _ = await _save_memory(
+        engine, content=reason, source="agent", tags=["abandoned-task"],
+        emotion=-0.2, certainty=1.0,
+    )
+    if reason_id is None:
+        return "Reason content already exists; could not record abandonment."
+    try:
+        await engine.relate(
+            src_id=reason_id, dst_id=task_id, edge_type="abandoned",
+            metadata={"abandoned_at": time.strftime("%Y-%m-%dT%H:%M:%S")},
+        )
+    except ValueError as e:
+        return f"Reason saved (id={reason_id}) but abandoned edge failed: {e}"
+    await engine.archive([task_id])
+    return f"Abandoned. reason={reason_id} → task={task_id[:8]}.."
+
+
+@mcp.tool()
+async def depend(
+    task_id: str,
+    depends_on_id: str,
+    blocking: bool = False,
+) -> str:
+    """Declare that a task depends on another memory (typically another task).
+
+    `blocking=True` uses the stronger `blocked_by` edge — the depender cannot
+    progress until the blocker is resolved. Default `depends_on` is a softer
+    "this comes after" relation.
+    """
+    engine = await get_engine()
+    edge_type = "blocked_by" if blocking else "depends_on"
+    try:
+        edge = await engine.relate(
+            src_id=task_id, dst_id=depends_on_id, edge_type=edge_type,
+        )
+    except ValueError as e:
+        return f"Dependency could not be created: {e}"
+    return f"{task_id[:8]}.. --[{edge.edge_type}]--> {depends_on_id[:8]}.."
+
+
+@mcp.tool()
+async def declare_value(content: str, certainty: float = 1.0) -> str:
+    """Declare a deeply-held belief / value. Permanent (no TTL).
+
+    Values form the bedrock that intentions and commitments derive from.
+    Use sparingly — these are the things that, if you forgot them, you'd
+    no longer recognize yourself.
+    """
+    engine = await get_engine()
+    new_id, _ = await _save_memory(
+        engine, content=content, source="value", tags=["value"],
+        emotion=0.6, certainty=certainty,
+    )
+    if new_id is None:
+        return "Value already declared (duplicate content)."
+    return f"Value declared. ID: {new_id} (permanent)"
+
+
+@mcp.tool()
+async def declare_intention(
+    content: str,
+    parent_value_id: str | None = None,
+    certainty: float = 1.0,
+) -> str:
+    """Declare a long-term direction. Permanent unless explicitly revised.
+
+    Intentions are larger than tasks but smaller than values. Optionally
+    derived_from a value to show the "why" lineage.
+    """
+    engine = await get_engine()
+    new_id, _ = await _save_memory(
+        engine, content=content, source="intention", tags=["intention"],
+        emotion=0.5, certainty=certainty,
+    )
+    if new_id is None:
+        return "Intention already declared (duplicate content)."
+    if parent_value_id:
+        try:
+            await engine.relate(
+                src_id=new_id, dst_id=parent_value_id, edge_type="derived_from",
+            )
+        except ValueError as e:
+            return f"Intention created (id={new_id}) but derived_from edge failed: {e}"
+    note = f", derived_from {parent_value_id[:8]}.." if parent_value_id else ""
+    return f"Intention declared. ID: {new_id} (permanent{note})"
+
+
+@mcp.tool()
+async def declare_commitment(
+    content: str,
+    parent_intention_id: str,
+    deadline_seconds: float | None = None,
+    certainty: float = 1.0,
+) -> str:
+    """Declare a time-bounded commitment that fulfills an intention.
+
+    Commitments auto-expire (default 14 days) unless revalidated. They
+    represent active promises — the friction between intention and action.
+
+    Args:
+        content: What you're committing to
+        parent_intention_id: REQUIRED — which intention does this serve?
+        deadline_seconds: Override default 14-day TTL
+        certainty: 1.0 = fully committed; lower for tentative
+    """
+    engine = await get_engine()
+    new_id, metadata = await _save_memory(
+        engine, content=content, source="commitment", tags=["commitment"],
+        ttl_seconds=deadline_seconds, emotion=0.5, certainty=certainty,
+    )
+    if new_id is None:
+        return "Commitment already declared (duplicate content)."
+    try:
+        await engine.relate(
+            src_id=new_id, dst_id=parent_intention_id, edge_type="fulfills",
+        )
+    except ValueError as e:
+        return f"Commitment created (id={new_id}) but fulfills edge failed: {e}"
+    expires_at = metadata.get("expires_at", "permanent")
+    return f"Commitment declared. ID: {new_id} (deadline {expires_at}, fulfills {parent_intention_id[:8]}..)"
+
+
+@mcp.tool()
+async def inherit_persona() -> str:
+    """Generate a prose self-introduction from declared values, intentions,
+    commitments, and recent activity.
+
+    Call at session start to "wear" the persona accumulated across past
+    sessions. Returns multi-paragraph text suitable for orienting a fresh
+    Claude (or yourself, after a long break).
+    """
+    engine = await get_engine()
+    cache = engine.cache
+
+    values: list[tuple[str, str]] = []     # (id, content)
+    intentions: list[tuple[str, str]] = []
+    commitments: list[tuple[str, str, str]] = []  # (id, content, deadline)
+    styles: list[tuple[str, str]] = []
+    relationships: list[tuple[str, str, str]] = []  # (id, who, content)
+
+    for state in cache.get_all_nodes():
+        doc = await engine.store.get_document(state.id)
+        if doc is None:
+            continue
+        meta = doc.get("metadata") or {}
+        source = meta.get("source", "")
+        content = doc.get("content", "")[:200].replace("\n", " ")
+        if source == "value":
+            values.append((state.id, content))
+        elif source == "intention":
+            intentions.append((state.id, content))
+        elif source == "commitment":
+            deadline = meta.get("expires_at", "permanent")
+            commitments.append((state.id, content, deadline))
+        elif source == "style":
+            styles.append((state.id, content))
+        elif source.startswith("relationship:"):
+            who = source.split(":", 1)[1] or "?"
+            relationships.append((state.id, who, content))
+
+    parts: list[str] = ["# Persona inheritance\n"]
+
+    if values:
+        parts.append(f"## Values ({len(values)})")
+        for vid, c in values[:8]:
+            parts.append(f"- {c}  _(id={vid[:8]}..)_")
+    else:
+        parts.append("## Values\n_No values declared yet. `declare_value(...)` to seed the bedrock._")
+
+    if intentions:
+        parts.append(f"\n## Intentions ({len(intentions)})")
+        for iid, c in intentions[:8]:
+            parts.append(f"- {c}  _(id={iid[:8]}..)_")
+    else:
+        parts.append("\n## Intentions\n_No long-term direction declared yet._")
+
+    if commitments:
+        parts.append(f"\n## Active Commitments ({len(commitments)})")
+        for cid, c, deadline in commitments[:8]:
+            parts.append(f"- {c}  _(id={cid[:8]}.., deadline {deadline})_")
+
+    if styles:
+        parts.append(f"\n## Style ({len(styles)})")
+        for sid, c in styles[:5]:
+            parts.append(f"- {c}")
+
+    if relationships:
+        parts.append(f"\n## Relationships ({len(relationships)})")
+        for rid, who, c in relationships[:8]:
+            parts.append(f"- **{who}**: {c}")
+
+    parts.append(
+        "\n---\n_To add to this persona: `declare_value` / `declare_intention` "
+        "/ `declare_commitment`, or `remember(source=\"style\", ...)` and "
+        "`remember(source=\"relationship:<name>\", ...)`._"
+    )
+    return "\n".join(parts)
 
 
 @mcp.tool()

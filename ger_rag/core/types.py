@@ -46,7 +46,17 @@ class DirectedEdge(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
-KNOWN_EDGE_TYPES: tuple[str, ...] = ("supersedes", "derived_from", "contradicts")
+KNOWN_EDGE_TYPES: tuple[str, ...] = (
+    # Phase B (F3)
+    "supersedes", "derived_from", "contradicts",
+    # Phase D — task & persona layer
+    "completed",    # outcome → task
+    "abandoned",    # reason → task
+    "depends_on",   # task → task
+    "blocked_by",   # task → blocker (specialised depends_on)
+    "working_on",   # session_marker → task (active engagement)
+    "fulfills",     # task → commitment, commitment → intention, intention → value
+)
 
 
 # --- Request / Response models ---

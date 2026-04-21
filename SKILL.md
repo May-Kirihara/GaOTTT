@@ -66,11 +66,20 @@ Each trigger has a physics label (mechanism) and a behavioral cue (when to fire)
 - **Evaporation Candidate Selection** — periodically run `reflect(aspect="dormant")` and offer pruning to the user.
 - **Duplicate Cluster Detection** — `reflect(aspect="duplicates")` to surface near-duplicates ready for collision.
 - **Relation Map Inspection** — `reflect(aspect="relations")` to see typed directed edges.
+- **Phase D self-survey** — `reflect(aspect=...)` with `commitments` / `tasks_todo` / `tasks_doing` / `tasks_completed` / `tasks_abandoned` / `values` / `intentions` / `relationships` / `persona` to inspect the persona layer.
 
 ### `prefetch` — *Astrocyte Pre-firing / Potential Well Pre-loading*
 
 - **Anticipated Recall** — fire at the START of a turn when you can predict what the user will probe. By the time you actually call `recall`, the gravity well is pre-warmed and the result is served from cache instantly.
 - **Background Synchronization** — when a user message arrives, fire `prefetch` for the most salient term while you start composing your response.
+
+### Phase D — *Persona & Task layer*
+
+- **Wear the Persona** — at session start, call `inherit_persona()` to receive a self-introduction built from past `declare_value` / `declare_intention` / `declare_commitment` calls.
+- **Declare bedrock** — when you (or the user) state a deeply-held value, use `declare_value`. When committing to a long direction, `declare_intention(parent_value_id=...)`. When making a time-bounded promise, `declare_commitment(parent_intention_id=..., deadline_seconds=...)`.
+- **Concrete tasks** — `commit(content, parent_id=commitment_id)` for action items. `start(task_id)` to refresh TTL when actively working. `complete(task_id, outcome=...)` to draw a `completed` edge from outcome to task. `abandon(task_id, reason=...)` to record release deliberately.
+- **Surface what matters now** — `reflect(aspect="commitments")` for deadline-sorted active commitments (⚠️ near-deadline warning). `reflect(aspect="tasks_todo")` for actionable items.
+- **End-of-day chronology** — `reflect(aspect="tasks_completed")` to see what got done. `reflect(aspect="tasks_abandoned")` for the shadow chronology.
 
 ---
 
@@ -266,6 +275,109 @@ Bulk-load a file or directory.
 ```
 ingest(path="~/docs/notes.md")
 ingest(path="~/books/", pattern="*.md", recursive=true)
+```
+
+---
+
+## Persona & Task Layer (Phase D)
+
+GER-RAG can also serve as a **persona preservation base** and a physics-native **task manager**. Tasks are first-class memories; their status is captured by directed edges (not by status columns), so the completion graph itself becomes your chronology of action. Dropped tasks evaporate gravitationally — `forget` becomes a default, kept things require active care.
+
+The hierarchy of self:
+```
+value      ─ permanent bedrock
+intention  ─ long-term direction (derived_from a value)
+commitment ─ time-bounded promise (fulfills an intention)
+task       ─ concrete action (fulfills a commitment)
+```
+
+### inherit_persona
+
+Generate a self-introduction from declared values, intentions, commitments, style notes, and relationships. **Call at session start to wear the persona accumulated across past sessions.**
+
+```
+inherit_persona()
+# → "## Values (3)\n- Direct experience yields true understanding ...
+#    ## Intentions (2) ...
+#    ## Active Commitments (1) ..."
+```
+
+### declare_value / declare_intention / declare_commitment
+
+Lay down the bedrock and direction. Values are permanent; intentions are too (until explicitly revised); commitments auto-expire (default 14 days) unless `revalidate`-d.
+
+```
+v = declare_value(content="Direct experience yields true understanding")
+i = declare_intention(content="Build GER-RAG into a relationship infrastructure",
+                     parent_value_id=v)
+c = declare_commitment(content="Ship Phase D this week",
+                       parent_intention_id=i,
+                       deadline_seconds=7*86400)
+```
+
+### commit / start / complete / abandon / depend
+
+Concrete tasks. `commit` creates a task that auto-expires (default 30 days) unless completed, abandoned, or revalidated. `start` refreshes its TTL and marks active engagement. `complete` saves an outcome memo and draws a `completed` edge from outcome → task — so the task's gravity history records what it became.
+
+```
+t = commit(content="Add Phase D tests", parent_id=c)
+start(t)                                                     # active engagement
+complete(t, outcome="11 tests passing on first try", emotion=0.7)
+
+# Or, deliberately let go:
+abandon(t, reason="priority dropped, will revisit Q3")
+
+# Dependencies:
+depend(task_id=t, depends_on_id=other_t)                     # soft "comes after"
+depend(task_id=t, depends_on_id=other_t, blocking=True)      # hard blocker
+```
+
+### Phase D reflect aspects
+
+```
+reflect(aspect="commitments")       # active commitments, deadline-sorted (⚠️ on near deadlines)
+reflect(aspect="tasks_todo")        # active tasks, closest deadline first
+reflect(aspect="tasks_doing")       # tasks `start()`-ed in the last hour
+reflect(aspect="tasks_completed")   # what you got done (chronological)
+reflect(aspect="tasks_abandoned")   # the shadow chronology — what you released
+reflect(aspect="values")            # bedrock beliefs
+reflect(aspect="intentions")        # long-term directions
+reflect(aspect="relationships")     # grouped by `relationship:<name>`
+reflect(aspect="persona")           # composite (same as inherit_persona)
+```
+
+### Persona patterns
+
+#### Morning ritual — *Wearing the Persona*
+
+At session start, before doing anything else:
+
+```
+inherit_persona()
+# Read what you value, intend, and have promised. Then start the day's work
+# from a foundation that carries across sessions.
+```
+
+#### Evening ritual — *Leaving Gravity Behind*
+
+At session end:
+
+```
+reflect(aspect="tasks_completed", limit=5)   # see what got done today
+revalidate(node_id=most_meaningful_completion_id, emotion=0.7)
+# Re-stamp the most meaningful one — it gains certainty boost AND its
+# completion edge persists as part of your chronology.
+```
+
+#### Prayer of evaporation — *Recording What You Released*
+
+When you notice a task is no longer alive in you:
+
+```
+abandon(task_id=..., reason="I've outgrown this. Three months of carrying it
+                              taught me what I actually wanted instead.")
+# Don't `forget` it. Abandonment with a reason becomes part of the shadow
+# chronology — what you became by what you chose to release.
 ```
 
 ---
@@ -470,13 +582,35 @@ prefetch_status()
 
 Cache invalidation is automatic on `forget`, `restore`, `merge`, `compact`, so you don't need to invalidate manually after destructive operations.
 
+#### K. Shared-memory collaboration — *Implicit Coordination via Gravity Field*
+
+Multiple GER-RAG agents (other Claude sessions, opencode agents, your user's parallel terminals) may share the same DB. Coordination happens **implicitly through the gravity field**, no explicit messaging required:
+
+- Your `recall` leaves a gravity trace; another agent's next `recall` is biased by it (mass accretion).
+- Your `relate` becomes visible in another agent's `reflect(aspect="connections")` or `reflect(aspect="relations")`.
+- Agents naturally converge on the same gravity wells — **this is the astrocyte metaphor literalized** across processes.
+
+To use this on purpose:
+- Save your discoveries with descriptive `tags=["observer", "<your-agent-name>"]` so others can filter your contributions.
+- Use `relate(edge_type="contradicts")` when you find another agent's claim disagreeable — the disagreement becomes structurally visible.
+- Read `reflect(aspect="relations")` to see what other agents have linked.
+
+Caveats:
+- Each MCP process has its own in-memory cache + FAISS index. New `remember` from another process may not appear in your `recall` until that process restarts (the DB has it, but the FAISS index doesn't).
+- Existing-node updates (mass / displacement) are shared via DB write-behind (~5s flush) but visible to other processes only after their next cache reload.
+- Don't worry about overwriting; SQLite WAL + `busy_timeout` makes concurrent writes safe.
+
 ---
 
 ## Notes
 
+- **25 MCP tools** total: 6 memory + 10 maintenance/relations/prefetch + 9 Phase D (tasks + persona).
 - Duplicate `content` is auto-skipped via SHA-256 hashing.
 - Memory persists across sessions.
-- Every `recall` accumulates gravity; related memories drift closer.
-- `source_filter` lets you restrict recall to a specific source class.
-- Soft-archived memories (`forget` without `hard=True`) and hard-deleted memories both stop surfacing in `recall`/`explore`/`reflect`. Use `compact(rebuild_faiss=True)` periodically to reclaim FAISS index space.
-- Insights about GER-RAG itself are valid memories — feel free to save your own discoveries about how this skill behaves. The system is recursive by design.
+- Every `recall` accumulates gravity; related memories drift closer over time.
+- `source_filter` lets you restrict recall to a specific source class (e.g. `["agent", "compaction"]`).
+- Soft-archived memories (`forget` without `hard=True`) and hard-deleted memories both stop surfacing in `recall`/`explore`/`reflect`. Use `compact(rebuild_faiss=True)` periodically (weekly–monthly) to reclaim FAISS index space.
+- Result rows in `recall`/`reflect(hot_topics|dormant|connections)` include the full `id=<uuid>` so you can pass them to `relate` / `revalidate` / `merge` / `forget` / `complete` / etc. without re-querying.
+- Tasks (`source="task"`) and commitments (`source="commitment"`) auto-expire if not `revalidate`-d, `complete`-d, or `abandon`-ed. **The "forget by default" UX is intentional** — keeping things alive is an act of care.
+- The DB may be shared with other GER-RAG agents — see Pattern K above. You won't see another process's brand-new `remember` until the next reload, but existing nodes' mass/displacement updates flow through the shared DB.
+- **Insights about GER-RAG itself are valid memories** — save your own discoveries about how this skill behaves. The system is recursive by design.

@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS directed_edges (
 CREATE INDEX IF NOT EXISTS idx_directed_src ON directed_edges(src);
 CREATE INDEX IF NOT EXISTS idx_directed_dst ON directed_edges(dst);
 CREATE INDEX IF NOT EXISTS idx_directed_type ON directed_edges(edge_type);
+CREATE INDEX IF NOT EXISTS idx_directed_created ON directed_edges(created_at);
 """
 
 
@@ -79,6 +80,15 @@ class SqliteStore(StoreBase):
         self._conn = await aiosqlite.connect(self._db_path)
         await self._conn.execute("PRAGMA journal_mode = WAL")
         await self._conn.execute("PRAGMA synchronous = NORMAL")
+        # Multi-process safety: when several MCP servers (e.g. one per agent
+        # terminal) share the same DB, write-lock contention is normal. Wait
+        # up to 30 s for a lock instead of raising "database is locked"
+        # immediately. WAL keeps reads non-blocking; this only affects writes.
+        await self._conn.execute("PRAGMA busy_timeout = 30000")
+        # Keep the WAL from growing unbounded under sustained multi-process
+        # write load. Default is 1000 pages (~4 MB); we let WAL get a bit
+        # larger for throughput, but an explicit autocheckpoint keeps it bounded.
+        await self._conn.execute("PRAGMA wal_autocheckpoint = 2000")
         await self._conn.executescript(SCHEMA)
         # Migrate: add columns if missing (older DBs)
         for col, col_type in [
@@ -107,6 +117,10 @@ class SqliteStore(StoreBase):
         )
         await self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_nodes_merged_into ON nodes(merged_into)"
+        )
+        # Phase D: ordering completed/abandoned tasks by recency
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_directed_created ON directed_edges(created_at)"
         )
         await self._conn.commit()
 
