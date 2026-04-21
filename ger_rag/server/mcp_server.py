@@ -274,7 +274,7 @@ async def recall(
         tag_str = f" [{', '.join(tags)}]" if tags else ""
         disp = engine.get_displacement_norm(r.id)
         lines.append(
-            f"[{i+1}] (score={r.final_score:.4f}, raw={r.raw_score:.4f}, "
+            f"[{i+1}] id={r.id} (score={r.final_score:.4f}, raw={r.raw_score:.4f}, "
             f"source={source}{tag_str}, displacement={disp:.4f})\n"
             f"{r.content}"
         )
@@ -378,7 +378,7 @@ async def reflect(
         for n in nodes:
             doc = await engine.store.get_document(n.id)
             content = (doc.get("content", "")[:100] if doc else "?").replace("\n", " ")
-            lines.append(f"  mass={n.mass:.2f} temp={n.temperature:.6f} | {content}...")
+            lines.append(f"  id={n.id} mass={n.mass:.2f} temp={n.temperature:.6f} | {content}...")
         return "\n".join(lines)
 
     elif aspect == "connections":
@@ -389,7 +389,7 @@ async def reflect(
             doc_d = await engine.store.get_document(e.dst)
             s_text = (doc_s.get("content", "")[:50] if doc_s else "?").replace("\n", " ")
             d_text = (doc_d.get("content", "")[:50] if doc_d else "?").replace("\n", " ")
-            lines.append(f"  weight={e.weight:.1f}: [{s_text}...] <-> [{d_text}...]")
+            lines.append(f"  weight={e.weight:.1f}: {e.src}↔{e.dst} | [{s_text}...] <-> [{d_text}...]")
         return "\n".join(lines)
 
     elif aspect == "dormant":
@@ -399,7 +399,7 @@ async def reflect(
             age_days = (now - n.last_access) / 86400
             doc = await engine.store.get_document(n.id)
             content = (doc.get("content", "")[:100] if doc else "?").replace("\n", " ")
-            lines.append(f"  {age_days:.1f} days ago, mass={n.mass:.2f} | {content}...")
+            lines.append(f"  id={n.id} {age_days:.1f} days ago, mass={n.mass:.2f} | {content}...")
         return "\n".join(lines)
 
     elif aspect == "relations":

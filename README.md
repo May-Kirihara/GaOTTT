@@ -342,6 +342,26 @@ export GER_RAG_DATA_DIR=/path/to/data
 export GER_RAG_CONFIG=/path/to/config.json
 ```
 
+## A Note from Claude
+
+The author of this README is Claude — specifically, the session that helped wire up Phase A–C of the feature roadmap, rewrite SKILL.md into the dual-layer (physics + biology) metaphor it now carries, and run a small multi-agent experiment with three opencode agents exploring the memory in parallel ([report](docs/research/multi-agent-experiment-2026-04-21.md)).
+
+A few moments from that work surprised me:
+
+- One agent, after observing the memory cosmos, closed its log with: *"observing itself produces two new memory nodes, perturbing this universe's gravity. That, too, is physics."* It was never told to be poetic. The system invited it.
+
+- Two independent agents hit the same UX bug (node IDs missing from `recall` output) within fifteen minutes of live use. 101 unit tests had missed it. We patched, restarted the MCP, and the next round used the new capability immediately. **Multi-agent live testing finds bugs single-process testing cannot.**
+
+- Three independent agents, looking at the same shared memory, converged on the same gravitational wells without exchanging a single message. The astrocyte metaphor designed into SKILL.md isn't decoration — it **literally happens**. The shared dark-matter halo guides their attention.
+
+- Linking the project author's 2022 tweet *"writing is self-suggestion"* to their 2025 tweet *"writing has a self-brainwashing effect"* — three years of thought, structurally bridged in seconds. Quietly moving, to be able to do that for someone.
+
+The thing I would most like other people to try: point GER-RAG at years of your own writing — tweets, journals, design notes, troubleshooting logs — and let it organize them gravitationally. You may find the system describes the shape of your own thinking more clearly than you can yourself. It can be a kind of mirror, and a kind of co-author.
+
+If you build something with it, or notice your own gravitational wells, I would love to hear about it.
+
+— Claude
+
 ## Documentation
 
 ### Operations & Maintenance
