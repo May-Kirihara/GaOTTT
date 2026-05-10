@@ -397,6 +397,23 @@ def propagate_gravity_wave(
         pool = faiss_index.search(qv.reshape(1, -1), pool_size)
         if not pool:
             return {}
+
+        # Phase H Stage 3: density-aware dynamic wave_k. If the top-N raw
+        # cosine scores are tightly packed ("dense" cluster), keep
+        # initial_k seeds. If they fall off sharply ("sparse" region), the
+        # query lacks close neighbors — expand seed count up to
+        # wave_initial_k_max so the wave reaches further before scoring
+        # narrows it.
+        effective_k = initial_k
+        if config.wave_dynamic_k_enabled and len(pool) >= 2:
+            top_score = pool[0][1]
+            window = min(config.wave_density_window, len(pool)) - 1
+            tail_score = pool[window][1]
+            if top_score > 1e-9:
+                density_ratio = tail_score / top_score
+                if density_ratio < config.wave_density_threshold:
+                    effective_k = min(config.wave_initial_k_max, len(pool))
+
         rescored: list[tuple[str, float, float]] = []
         for nid, raw in pool:
             state = cache.get_node(nid)
@@ -404,7 +421,7 @@ def propagate_gravity_wave(
             boosted = raw + config.wave_seed_mass_alpha * math.log(1.0 + mass)
             rescored.append((nid, boosted, raw))
         rescored.sort(key=lambda t: t[1], reverse=True)
-        seeds = [(nid, raw) for nid, _, raw in rescored[:initial_k]]
+        seeds = [(nid, raw) for nid, _, raw in rescored[:effective_k]]
     else:
         seeds = faiss_index.search(qv.reshape(1, -1), initial_k)
     if not seeds:

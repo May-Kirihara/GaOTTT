@@ -152,6 +152,24 @@ def propagate_gravity_wave(qv, faiss_index, cache, config, *,
 
 ただし Phase G priming で 22k 件の displacement が動いているので、Stage 4 で virtual FAISS を作れば「priming で寄せた agent doc」が virtual cosine で近づく可能性がある。Stage 3 + 4 の組み合わせが次の候補。
 
+### Stage 3 実装結果 (2026-05-10)
+
+`propagate_gravity_wave` の mass-aware path 内で、top-N (`wave_density_window`=10) raw cosine score を見て、**tail/top の比率が `wave_density_threshold`=0.95 未満**（＝ 急峻な減衰 = 「sparse」領域）なら **`effective_k` を `wave_initial_k_max`=50 まで拡大** する。dense 領域では `initial_k` のまま。
+
+`source_filter` 指定時は Stage 2 path に分岐するため Stage 3 は適用されない（pool は既に `wave_k_with_filter=500` で広い）。Stage 3 は filter なしの recall で sparse 領域 reach を広げる役割。
+
+**Measured**:
+| 観点 | 値 |
+|---|---|
+| pytest | 164/164 PASS（新規 dynamic seed 3 ケース含む） |
+| isolated bench | p50 = 16.1ms（< 50ms 必達 OK） |
+| ruff | clean |
+| 単体テスト | sparse 配置で seed > initial_k、dense 配置で seed = initial_k、disabled で = initial_k を確認 |
+
+**設計上の含意**: Stage 3 は「query が sparse 領域に着地した場合に reach を広げる」効果。最終 top_k=3 の結果が大きく変わる場面は限定的（reach 拡大は wave depth 経由でしか scoring に反映されない）。Stage 4（virtual FAISS）と組み合わせると、priming で動いた virtual position 経由で sparse 領域の候補が bubble up する可能性。
+
+**Open**: 本番 DB で Stage 3 のうれしさを定量化するベンチが未整備。「query が sparse のとき reach 件数が増える」を測る合成シナリオが必要。
+
 ---
 
 ## 推奨組み合わせと実装順序
@@ -160,7 +178,7 @@ def propagate_gravity_wave(qv, faiss_index, cache, config, *,
 |---|---|---|---|
 | Stage 1 | **H.3 Mass-aware seed boosting** | 最小実装、まず効果を測る | ✅ 完了 (2026-05-10) — scoring 改善は確認、sparse class 救済には不足判明 |
 | Stage 2 | **H.4 Source-aware seed filtering** | sparse class 救済の本筋（H.3 で不足が確認されたため優先度上昇） | ✅ 完了 (2026-05-10) — 一部クエリで agent surface 達成、embedding 距離が遠いクエリは依然届かず |
-| Stage 3 | **H.1 Dynamic wave_initial_k** | sparse 領域の救済を上乗せ | 保留 |
+| Stage 3 | **H.1 Dynamic wave_initial_k** | sparse 領域の救済を上乗せ | ✅ 完了 (2026-05-10) — 密度応答型 seed 拡大、test で確認、本番 DB の filter=none 経路で reach 拡大 |
 | Stage 4 | **H.2 Virtual FAISS（条件付き）** | 上記で不足なら最終手段 | 保留 |
 
 ### Stage 1 実装結果（2026-05-10）

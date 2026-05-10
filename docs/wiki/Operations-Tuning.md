@@ -55,6 +55,10 @@
 | wave_k_with_filter | 500 | `recall(source_filter=...)` 指定時の seed top-k（dense corpus で sparse class を救済、Phase H Stage 2 で 200→500 引き上げ） |
 | wave_seed_mass_alpha | 0.1 | seed 段階の mass-aware rerank 重み（Phase H Stage 1）。`raw + α*log(1+mass)` で pool を再 rank。`0` で legacy 挙動 |
 | wave_seed_pool_size | 50 | seed 再 rank の pool 大きさ（Phase H Stage 1） |
+| wave_dynamic_k_enabled | `True` | top-N 密度応答型の seed 拡大（Phase H Stage 3）。`False` で固定 initial_k |
+| wave_density_window | 10 | density 評価で見る top-N の N |
+| wave_density_threshold | 0.95 | tail/top 比率の閾値。これ未満で「sparse」と判定して seed 拡大 |
+| wave_initial_k_max | 50 | sparse 判定時の effective_k 上限（Phase H Stage 3） |
 
 ## 誕生時の重力 kick（Phase G — Stage 1）
 

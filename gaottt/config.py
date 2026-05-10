@@ -227,6 +227,18 @@ class GaOTTTConfig:
     wave_seed_mass_alpha: float = 0.1
     wave_seed_pool_size: int = 50
 
+    # Phase H Stage 3 — Density-aware dynamic wave_k:
+    # Look at top_N raw cosine scores and decide if the query landed in
+    # a "dense" cluster (top scores all close together) or a "sparse"
+    # region (top-1 alone, then sharp dropoff). For sparse regions we
+    # expand the effective seed pool up to `wave_initial_k_max` so that
+    # the wave can reach further before mass / source rerank narrows it.
+    # Set wave_dynamic_k_enabled=False to fall back to fixed initial_k.
+    wave_dynamic_k_enabled: bool = True
+    wave_density_window: int = 10            # how many top-N to inspect
+    wave_density_threshold: float = 0.95     # tail/top ratio above this = "dense"
+    wave_initial_k_max: int = 50             # cap for sparse-region expansion
+
     # Phase D: persona & task TTL defaults
     default_task_ttl_seconds: float = 30 * 86400.0       # 30 日 (要 revalidate / complete / abandon)
     default_commitment_ttl_seconds: float = 14 * 86400.0  # 14 日
