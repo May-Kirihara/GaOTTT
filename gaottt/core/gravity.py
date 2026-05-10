@@ -297,7 +297,10 @@ def compute_gravity_kick(
     velocity = clamp_vector(velocity, config.orbital_max_velocity)
     displacement = clamp_vector(velocity.copy(), config.max_displacement_norm)
 
-    mass_boost = config.genesis_mass_boost_alpha * float(np.linalg.norm(acc))
+    raw_boost = config.genesis_mass_boost_alpha * float(np.linalg.norm(acc))
+    # Cap so a single kick can never make mass leap close to m_max — keeps
+    # accretion physically gradual and aligned with the rest of the model.
+    mass_boost = min(raw_boost, config.genesis_mass_boost_cap)
 
     return (
         displacement.astype(np.float32),

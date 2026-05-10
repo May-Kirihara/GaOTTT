@@ -46,6 +46,16 @@ async def _faiss_save_loop(self) -> None:
 - 残る race: 「save 中の新規 add は次の tick で saved」（実用上影響なし）
 - 残る競合: A と B が**同時に save** すると後勝ち → 重要書き込み後は `engine.compact(rebuild_faiss=True)` で再構築可（保険）
 
+### 逆方向上書きの罠（Bidirectional cache overwrite）
+
+`cache.flush_to_store` は dirty フラグベースで、自プロセス内 cache の現在値を SQLite に push する。これは startup 時の `load_from_store` でしか他プロセスの変更を pull しない設計のため、**古い cache を持つプロセスが flush し続ける限り、別プロセスが書いた新しい値を逆方向に上書き** する。
+
+具体例: 2026-05-10 Phase G Stage 0 priming セッションで、隔離スクリプト A がすべての node に `displacement` / `velocity` / `mass` を加算 → cache.flush_to_store で SQLite に書き込み。同時に古い MCP server プロセス B (cache に Stage 0 効果なし) が 5 秒後の write-behind tick で flush → A の書き込みを上書き。次の dry-run で「適用したはずの 500 件のうち 1 件しか pre-existing displacement > 0 にならない」現象として顕在化した。
+
+対処:
+- 一時的な bulk 書き換え（Stage 0 priming 等）の前に、他の MCP server プロセスを `kill` して flush ループを止める。書き込み完了後に再起動。
+- 段階的に運用したい場合は、書き換え対象 node の `last_access` を更新するなど、**通常の write-behind tick で自然に dirty になる経路** を経由する。
+
 ### Dream loop（Phase G — Stage 2）
 
 `startup()` で起動するもう一つのバックグラウンドタスク。`config.dream_interval_seconds`（既定 60s）周期で quiet node を synthetic recall し、co-occurrence と gravity 場を時間軸で育てる。

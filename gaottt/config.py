@@ -231,6 +231,11 @@ class GaOTTTConfig:
     genesis_kick_neighbor_k: int = 5      # heaviest K to include in the kick
     genesis_kick_pool_size: int = 50       # FAISS top-N pool to mass-rank from
     genesis_mass_boost_alpha: float = 0.5  # initial mass boost = α * |kick force|
+    # Mass boost cap per kick — raw |acc| can spike for nodes near dense
+    # cluster centers (observed max ~71 on the 23k production DB before
+    # capping). Without a cap a single step could push mass close to m_max
+    # in one go, which violates the "gradual accretion" feel of the model.
+    genesis_mass_boost_cap: float = 1.0
 
     # Phase G — Dream consolidation (Stage 2): a background loop that picks
     # quiet (low-mass, idle) nodes and runs synthetic recalls against them

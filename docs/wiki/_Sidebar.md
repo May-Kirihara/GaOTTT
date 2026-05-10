@@ -49,6 +49,7 @@
 - [Backend Phase A/B/C](Plans-Backend-Phase-A-B-C.md)
 - [Phase D — Persona & Tasks](Plans-Phase-D-Persona-Tasks.md)
 - [Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md)
+- [Phase H — Wave Seed Redesign](Plans-Phase-H-Wave-Seed-Redesign.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
 
 ### 🔬 Research

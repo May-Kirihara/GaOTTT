@@ -137,6 +137,39 @@ async def test_genesis_kick_disabled_keeps_legacy_zero_state(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_genesis_kick_caps_extreme_mass_boost(tmp_path):
+    """Near a dense cluster of heavy neighbors, raw |acc| can spike to
+    ~70+ without a cap. genesis_mass_boost_cap must keep mass growth
+    physically gradual (no single step jumps near m_max)."""
+    engine = _make_engine(tmp_path, kick_enabled=True)
+    await engine.startup()
+    try:
+        await engine.index_documents([
+            {"content": f"tight-cluster-{i}", "metadata": {"source": "agent"}}
+            for i in range(20)
+        ])
+        # Pump masses so multiple cluster neighbors are heavy.
+        for _ in range(20):
+            await engine.query(text="tight-cluster-0", top_k=15)
+
+        new_ids = await engine.index_documents([
+            {
+                "content": "fresh-doc-arriving-near-tight-cluster",
+                "metadata": {"source": "agent"},
+            },
+        ])
+        new_id = new_ids[0]
+        state = engine.cache.get_node(new_id)
+        cap = engine.config.genesis_mass_boost_cap
+        assert state.mass <= 1.0 + cap + 1e-6, (
+            f"genesis kick exceeded mass cap: "
+            f"mass={state.mass}, cap={cap}"
+        )
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_genesis_kick_empty_db_safe(tmp_path):
     """First-ever document in an empty DB has no neighbors; the kick path
     must not crash and should leave the new node in a sensible state."""
