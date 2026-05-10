@@ -118,7 +118,7 @@ GaOTTT の主要な設計選択とその根拠:
 |---|---|---|
 | 二重座標系 | 原始 embedding（不変）+ 仮想座標（重力変動） | Phase 1 評価で単一空間の限界が判明 |
 | 重力モデル | 万有引力 `F = G×m_i×m_j/d²` | 物理的直感に合致、パラメータが明快 |
-| 変位上限 | `max_displacement_norm=0.3` | 暴走防止、同一大トピック内の移動に制限 |
+| 変位上限 | `max_displacement_norm=1e6` (Phase I で 0.3 → 1e6 に引き上げ、実質 ∞) | 当初は暴走防止のハードキャップだったが、Hooke 復元力 + displacement_decay + velocity cap が物理的均衡 (`d ≈ (G·m/k)^(1/3) ≈ 0.8–3.0`) を作るため冗長と判明 (Phase I, 2026-05-11)。boundary 張り付き → homogenization の発生源だった (P7-X)。詳細: [Plans — Phase I — Free Star Movement](Plans-Phase-I-Free-Star-Movement.md) |
 | 候補拡張 | FAISS top-K × 3 → 仮想座標で再計算 | FAISS リビルド不要、レイテンシ維持 |
 | graph_boost 廃止 | 重力変位に統合 | スコア加算では順位変動が不足 |
 | 並行性 | Last-write-wins（ロックなし） | シングルインスタンス前提（後に WAL + busy_timeout で複数 OK） |

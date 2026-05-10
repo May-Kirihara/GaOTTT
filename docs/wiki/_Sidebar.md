@@ -50,6 +50,7 @@
 - [Phase D — Persona & Tasks](Plans-Phase-D-Persona-Tasks.md)
 - [Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md)
 - [Phase H — Wave Seed Redesign](Plans-Phase-H-Wave-Seed-Redesign.md)
+- [Phase I — Free Star Movement](Plans-Phase-I-Free-Star-Movement.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
 
 ### 🔬 Research

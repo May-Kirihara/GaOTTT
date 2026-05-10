@@ -140,7 +140,7 @@ class GaOTTTConfig:
     gravity_epsilon: float = 1e-6      # Zero-division guard
     displacement_decay: float = 0.995  # Per-step displacement decay
     displacement_age_delta: float = 0.005  # Access-age based decay rate
-    max_displacement_norm: float = 0.3 # Max L2 norm of displacement vector
+    max_displacement_norm: float = 1e6 # L2 norm cap on displacement. Phase I (2026-05-11): default raised from 0.3 → 1e6 (effectively ∞). Hooke (orbital_anchor_strength) + displacement_decay + orbital_max_velocity provide physical equilibrium around d ≈ (G·m/k)^(1/3) ≈ 0.8–3.0 without a hard cap. Set to a small value only as an emergency knob.
 
     # Gravity wave propagation
     wave_initial_k: int = 3            # Initial FAISS top-k for seed nodes

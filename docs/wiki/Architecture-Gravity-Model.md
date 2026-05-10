@@ -83,7 +83,7 @@ def compute_gravity_radius(mass) -> float:
 # gaottt/core/gravity.py — compute_gravity_kick
 acc = Σ_j [G × m_j / (r² + ε)] × dir(new → j)   # j は top-K heaviest neighbors
 v   = clamp(gravity_eta × acc, max_velocity)
-d   = clamp(v.copy(), max_displacement_norm)
+d   = clamp(v.copy(), max_displacement_norm)  # Phase I 以降は実質 no-op (1e6)
 mass_boost = α_genesis × |acc|
 state.mass = max(1.0, 1.0 + mass_boost)
 ```

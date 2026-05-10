@@ -24,7 +24,7 @@
 | gravity_G | 0.01 | 万有引力定数 | 急速に引き寄せ合う（創発的） | 穏やかな変位（安定） |
 | gravity_eta | 0.005 | 変位の学習率 | 1 回のクエリでの変位↑ | 段階的に変位 |
 | displacement_decay | 0.995 | 変位の定期減衰 | 変位が長く維持 | 早く元に戻る |
-| max_displacement_norm | 0.3 | 変位の上限 | 探索的（遠くまで移動可能） | 原始位置から離れにくい（安全） |
+| max_displacement_norm | 1e6 | 変位の上限 (Phase I で実質 ∞ 化) | n/a (cap が事実上 off) | 小さい値で疑似的なハードキャップに戻せる（緊急ノブ） |
 | candidate_multiplier | 3 | FAISS 候補倍率 | 広い候補から選べる | 高速だが候補が狭い |
 
 ## 軌道力学
@@ -143,8 +143,9 @@ quiet node を idle 時間に synthetic recall で再活性化し、co-occurrenc
 
 - `gamma` ↑（temperature が大きくなる）
 - `gravity_G` ↑（引力が強い）
-- `max_displacement_norm` ↑（遠くまで動ける）
 - `wave_max_depth` ↑（広く伝播）
+
+> Note: Phase I 以降、`max_displacement_norm` は事実上 ∞ (`1e6`)。displacement の届く距離は Hooke (`orbital_anchor_strength`) + `displacement_decay` + `orbital_max_velocity` で物理的に均衡する。「もっと遠くまで」したい時は `orbital_anchor_strength` ↓ または `gravity_G` ↑。
 
 ### 「もっと安定的にしたい」
 
