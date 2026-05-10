@@ -12,6 +12,7 @@ GaOTTT の Phase 進捗と未実装機能の俯瞰。
 | **Phase C** | F6 バックグラウンド prefetch | ✅ 完了 |
 | **Phase D** | 人格保存基盤 + タスク管理 | ✅ 完了 |
 | **Phase S** | REST × MCP 共有サービス層に集約、REST を MCP parity まで引き上げ | ✅ 完了（2026-04-22） |
+| **Phase G** | 新規 memory への重力法則の起動時適用（軌道捕獲 + 夢） | 📋 計画中（2026-05-10 ドラフト） |
 
 ## 累積 MCP ツール数
 
@@ -23,6 +24,7 @@ GaOTTT の Phase 進捗と未実装機能の俯瞰。
 
 - [Backend Phase A/B/C](Plans-Backend-Phase-A-B-C.md) — F1〜F7 の機能ロードマップ
 - [Phase D — Persona & Tasks](Plans-Phase-D-Persona-Tasks.md) — 人格層追加の設計
+- [Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md) — 軌道捕獲 + 夢で新規 memory を gravity 場に sink させる（計画中）
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md) — 二層語彙、パターンカタログ
 - [REST × MCP Unification Plan (Phase S)](https://github.com/May-Kirihara/GaOTTT/blob/main/docs/maintainers/rest-mcp-unification-plan.md) — 保守者向け、Phase S0–S6 の作業計画
 
