@@ -40,6 +40,7 @@
 ### ⚙ Operations
 - [Server Setup](Operations-Server-Setup.md)
 - [Tuning](Operations-Tuning.md)
+- [Migration (upgrade)](Operations-Migration.md)
 - [Compact & Backup](Operations-Compact-And-Backup.md)
 - [Isolated Benchmark](Operations-Isolated-Benchmark.md)
 - [Troubleshooting](Operations-Troubleshooting.md)

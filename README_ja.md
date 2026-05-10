@@ -96,6 +96,19 @@ uv pip install -e ".[dev]"
 
 → 5 分でできるステップガイド: [Getting Started](docs/wiki/Getting-Started.md)
 
+## アップグレード
+
+既存の GaOTTT install を更新するとき、重力物理の breaking change (Phase G/H/I など) を跨ぐ場合は、最初に data migration ツールを走らせてください。これで旧い memory も新しい物理を受け取れるようになります:
+
+```bash
+pkill -f gaottt.server.mcp_server                       # 稼働中の MCP サーバーを停止
+.venv/bin/python scripts/migrate.py                     # dry-run で何が起きるか確認
+.venv/bin/python scripts/migrate.py --apply --backup    # 必要な migration を適用
+# その後 MCP サーバーを再起動
+```
+
+Migration は idempotent なので再実行も安全。適用状態は `gaottt.db` 内の `_migrations` テーブルに記録されます。詳細: [Operations — Migration](docs/wiki/Operations-Migration.md)。
+
 ## MCP ツール（全 25 個）
 
 エージェント向けプロトコルは **[`SKILL.md`](SKILL.md)** で定義されています（英語、MCP がランタイムでロード）。

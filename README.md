@@ -91,6 +91,19 @@ uv pip install -e ".[dev]"
 
 → Step-by-step (~5 minutes): [Getting Started](docs/wiki/Getting-Started.md)
 
+## Upgrade
+
+When updating an existing GaOTTT install across breaking gravity-physics changes (e.g. Phase G/H/I), run the data migration tool first so legacy memories pick up the new physics:
+
+```bash
+pkill -f gaottt.server.mcp_server                       # stop running MCP server(s)
+.venv/bin/python scripts/migrate.py                     # dry-run — see the plan
+.venv/bin/python scripts/migrate.py --apply --backup    # apply pending migrations
+# then restart your MCP server
+```
+
+Migrations are idempotent — re-running is safe. State is recorded in a `_migrations` table inside `gaottt.db`. Full guide: [Operations — Migration](docs/wiki/Operations-Migration.md).
+
 ## MCP Tools (25 total)
 
 The agent-facing protocol is defined in **[`SKILL.md`](SKILL.md)** (English, MCP-loaded at runtime).
