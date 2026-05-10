@@ -510,8 +510,13 @@ class GaOTTTEngine:
                 state.return_count *= (1.0 - self.config.habituation_recovery_rate)
                 self.cache.set_node(state, dirty=True)
 
-        # Step 6: Simulation update — ALL reached nodes
-        self._update_simulation(all_reached_ids, reached, original_embs, now)
+        # Step 6: Simulation update — ALL reached nodes.
+        # Phase I Stage 2: pass the query vector + wave scores so the orbital
+        # step can apply the query-attraction term to reached nodes.
+        self._update_simulation(
+            all_reached_ids, reached, original_embs, now,
+            query_anchor=query_vec_flat,
+        )
         self._update_cooccurrence(result_ids)
 
         return results
@@ -522,6 +527,7 @@ class GaOTTTEngine:
         reached: dict[str, float],
         original_embs: dict[str, np.ndarray],
         now: float,
+        query_anchor: np.ndarray | None = None,
     ) -> None:
         """Update gravity simulation for ALL wave-reached nodes.
 
@@ -576,6 +582,8 @@ class GaOTTTEngine:
                 current_displacements, current_velocities,
                 masses, last_accesses, now, self.config,
                 cache=self.cache,
+                query_anchor=query_anchor,
+                query_scores=reached if query_anchor is not None else None,
             )
 
             for nid in new_disps:

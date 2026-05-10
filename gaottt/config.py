@@ -142,6 +142,15 @@ class GaOTTTConfig:
     displacement_age_delta: float = 0.005  # Access-age based decay rate
     max_displacement_norm: float = 1e6 # L2 norm cap on displacement. Phase I (2026-05-11): default raised from 0.3 → 1e6 (effectively ∞). Hooke (orbital_anchor_strength) + displacement_decay + orbital_max_velocity provide physical equilibrium around d ≈ (G·m/k)^(1/3) ≈ 0.8–3.0 without a hard cap. Set to a small value only as an emergency knob.
 
+    # Phase I Stage 2 — Query-aware displacement (implicit kick)
+    # Adds a 4th term to compute_acceleration: F_query = α · score · (q - pos);
+    # a_query = F_query / m. Acts as the Hebbian gradient term in the TTT reading.
+    # Hooke (orbital_anchor_strength) continues to pull back toward the raw
+    # embedding anchor — query attraction is a transient force, not anchor
+    # migration. Set to 0.0 as a clean roll-back.
+    query_kick_strength: float = 0.01  # α — start small. Per-step accel is bounded by orbital_max_velocity (0.05), so α larger than ~0.05 saturates immediately. d=0.01 means ~10 recalls of the same query → ~0.1 drift toward query (Hooke equilibrium ~0.8).
+    query_kick_enabled: bool = True    # Global off-switch; if False, skip the 4th term entirely.
+
     # Gravity wave propagation
     wave_initial_k: int = 3            # Initial FAISS top-k for seed nodes
     wave_max_depth: int = 2            # Maximum recursion depth

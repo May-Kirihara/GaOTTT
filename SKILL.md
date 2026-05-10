@@ -45,6 +45,8 @@ Read as an optimizer — that is, with retrieval scores taken as a stochastic gr
 
 Concretely, under this reading: every `recall` plays the role of a gradient step, every `remember` a parameter initialization, every `merge` a model consolidation. The representations (the embedding-space geometry) **change as the user interacts** — which is the behavior that motivates the "test-time training" label.
 
+As of **Phase I Stage 2 (2026-05-11)** this is no longer just a reading. The recall path now applies a 4th term in `compute_acceleration`: `a = (α · score / m_i) · (q - pos_i)`. That is the Heavy ball update with retrieval score acting as the gradient magnitude, the query embedding as the gradient direction, and mass providing per-parameter inertia (`F = ma`). Hooke continues to pull back to the raw embedding (the L2 term), so query attraction is a *transient force* — the parameter never permanently relocates, it drifts toward queries that retrieve it and decays back when those queries stop firing. The TTT correspondence is now implementation, not interpretation.
+
 ### Emergent behavior — Astrocyte
 
 The physics + TTT substrate produces an **astrocyte-like supporting role** for your neuronal token reasoning:
@@ -629,12 +631,14 @@ Caveats:
 ## Notes
 
 - **25 MCP tools** total: 6 memory + 10 maintenance/relations/prefetch + 9 Phase D (tasks + persona).
-- ★ **Phase G + H complete (2026-05-11)**. Practical effects you can rely on now:
+- ★ **Phase G + H + I complete (2026-05-11)**. Practical effects you can rely on now:
   - Fresh `remember()` is **immediately findable** by `recall()` — genesis kick gives non-zero displacement / velocity / mass at index time, no warm-up needed.
   - `recall(query, source_filter=["agent"])` works at the seed step. On corpus-heavy DBs, sparse classes (agent / value / commitment / compaction) reach the wave reliably. If a query is far in embedding space, pass `wave_k=1000` to widen the seed pool further.
   - `recall()` without `source_filter` benefits from priming through the **virtual FAISS** index (built from raw + displacement). Top1 scores on the production DB jumped 5–6× after Phase H Stage 4.
   - Background **dream loop** revisits quiet nodes silently — co-occurrence accumulates while you idle. No explicit recall ritual required.
-- ★ **Limits to keep in mind**: agent docs are pushed by Phase G priming toward neighbouring high-mass clusters, **not** toward arbitrary future queries. If a query is far from any priming direction, surface may still fail. This is the design boundary of Phase H — query-aware displacement is the next phase.
+  - **Phase I Stage 1** removed the displacement boundary (`max_displacement_norm`: 0.3 → 1e6). Stars are free to move; Hooke + decay + velocity cap supply natural equilibrium without a hard cap.
+  - **Phase I Stage 2** wires the actual gradient step into `compute_acceleration`. Repeated `recall(q)` gradually pulls retrieved nodes' displacement toward `q`; `F=ma` damps heavy (BH) nodes; raw anchor stays put (no concept drift). `query_kick_strength=0` rolls it back.
+- ★ **Limits to keep in mind**: Stage 2 makes recall-time gradient steps active, but α=0.01 means a single recall barely moves anything — drift accumulates over many recalls of similar queries. Long-term displacement balance under multi-query load is observed in production over weeks, not seconds. Heavy BH nodes are nearly immobile by design (mass damping).
 - Duplicate `content` is auto-skipped via SHA-256 hashing.
 - Memory persists across sessions.
 - Every `recall` accumulates gravity; related memories drift closer over time.

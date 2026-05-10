@@ -124,13 +124,24 @@ def compute_acceleration(
     node_id: str | None = None,
     cache: "CacheLayer | None" = None,
     all_positions: dict[str, np.ndarray] | None = None,
+    mass_i: float | None = None,
+    query_anchor: np.ndarray | None = None,
+    query_score: float | None = None,
 ) -> np.ndarray:
     """Compute total gravitational acceleration on node i.
 
-    Three components:
+    Four components:
     1. Neighbor gravity: a = Σ_j [ G * m_j / (r² + ε) * direction(i→j) ]
     2. Anchor restoring force: a = -k * displacement (Hooke's law)
     3. Co-occurrence BH gravity: attraction toward cluster centroid
+    4. Query attraction (Phase I Stage 2): a = (α · score / m) · (q - pos)
+       Transient mass-damped force toward the query embedding. Acts as the
+       Hebbian gradient term in the TTT reading — repeated retrievals for a
+       given query gradually pull the node toward that direction. Hooke
+       (component 2) continues to pull back to the raw anchor, so query
+       attraction is a force, not an anchor migration. Active iff
+       config.query_kick_enabled, config.query_kick_strength > 0, and the
+       caller passes mass_i + query_anchor + query_score.
     """
     acc = np.zeros_like(pos_i)
 
@@ -151,6 +162,19 @@ def compute_acceleration(
         node_state = cache.get_node(node_id)
         temp_i = node_state.temperature if node_state else 0.0
         acc = acc + compute_bh_acceleration(pos_i, node_id, temp_i, cache, all_positions, config)
+
+    # 4. Query attraction (Phase I Stage 2)
+    if (
+        config.query_kick_enabled
+        and config.query_kick_strength > 0.0
+        and query_anchor is not None
+        and query_score is not None
+        and mass_i is not None
+        and mass_i > 0.0
+    ):
+        diff_q = query_anchor - pos_i
+        kick = (config.query_kick_strength * float(query_score) / float(mass_i)) * diff_q
+        acc = acc + kick
 
     return acc.astype(np.float32)
 
@@ -195,10 +219,14 @@ def update_orbital_state(
     now: float,
     config: GaOTTTConfig,
     cache: "CacheLayer | None" = None,
+    query_anchor: np.ndarray | None = None,
+    query_scores: dict[str, float] | None = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     """Full orbital mechanics step for all nodes.
 
-    Stage 1: Compute accelerations (neighbor gravity + anchor + co-occurrence BH)
+    Stage 1: Compute accelerations (neighbor gravity + anchor + co-occurrence BH
+             + Phase I Stage 2 query attraction, if query_anchor + query_scores
+             are provided)
     Stage 2: Update velocities (+ friction)
     Stage 3: Update displacements (+ clamp)
 
@@ -228,9 +256,13 @@ def update_orbital_state(
             if other != nid
         ]
         disp = displacements.get(nid, np.zeros(dim, dtype=np.float32))
+        q_score = query_scores.get(nid) if query_scores is not None else None
         accelerations[nid] = compute_acceleration(
             positions[nid], original_embeddings[nid], disp, neighbors, config,
             node_id=nid, cache=cache, all_positions=positions,
+            mass_i=masses.get(nid, 1.0),
+            query_anchor=query_anchor,
+            query_score=q_score,
         )
 
     # Stage 2 & 3: Update velocity then displacement

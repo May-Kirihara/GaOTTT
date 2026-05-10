@@ -26,9 +26,10 @@ final = (gravity_sim × decay
 
 ```
 Stage 1: 加速度
-  a = Σ_j [G × m_j / r²] × dir(i→j)    ← 近傍引力
-    + (-k × displacement)               ← Hooke's law（アンカー復元）
-    + a_bh × escape                      ← 共起 BH 引力（飽和+温度脱出）
+  a = Σ_j [G × m_j / r²] × dir(i→j)            ← 近傍引力
+    + (-k × displacement)                       ← Hooke's law（アンカー復元）
+    + a_bh × escape                              ← 共起 BH 引力（飽和+温度脱出）
+    + (α · score / m_i) × (q - pos_i)            ← Phase I Stage 2: query 引力
 
 Stage 2: 速度
   v += a × dt
@@ -40,6 +41,8 @@ Stage 3: 位置
   displacement += v × dt
   displacement = clamp(displacement, max_norm)
 ```
+
+**Phase I Stage 2 — Query attraction (implicit kick)**: 4 番目の項は recall path から `query_anchor = query embedding` と `score = wave 到達スコア` を受け取って計算する。retrieval が起きるたびに retrieved nodes に **query 方向への小さな引力** が発生。Hooke (項 2) は引き続き raw embedding を anchor として引き戻すので、これは **transient force** であって anchor migration ではない (raw embedding は永久不変)。`F=ma` の `1/m_i` で **mass damping** が物理的に供給されるため、BH 化した重い node はほぼ動かず、軽い node のみ反応する。TTT 解釈の「retrieval = stochastic gradient step」が **構造的対応の主張ではなく実装として literal に成立** したのが Stage 2 の意義。`query_kick_strength=0` で完全 no-op (roll-back)。`query_kick_enabled=False` で 4 項目を skip。詳細: [Plans — Phase I](Plans-Phase-I-Free-Star-Movement.md) §Stage 2。
 
 ## 重力波伝播
 

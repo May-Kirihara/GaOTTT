@@ -152,6 +152,7 @@ GaOTTT の主要な設計選択とその根拠:
 | **Phase H Stage 2 — source-aware seed filtering (2026-05-10)** | `source_filter` 指定時に `cache.source_by_id` で seed pool から source 一致のみ抽出 | 23k corpus-heavy DB で初の agent class surface 達成。`wave_k_with_filter=500` 既定 (sparse class ~1.7%、expected 8.5 件) |
 | **Phase H Stage 3 — density-aware dynamic wave_k (2026-05-10)** | top-N の tail/top 比率で sparse 判定、`wave_initial_k_max=50` まで拡大 | query が embedding 空間の sparse 領域に着地した場合の reach を救う保険 |
 | **Phase H Stage 4 — virtual FAISS (2026-05-11)** | 第二の FAISS index を `virtual_pos = raw + displacement` で構築、seed pool は raw + virtual の union | priming で動いた displacement が seed step に効くようになり、本番 filter=none top1 score が 5.6x 改善 |
+| **Phase I Stage 2 — implicit query-aware kick (2026-05-11)** | `compute_acceleration` に 4 番目の項 `a = (α · score / m_i) · (q - pos_i)` を追加 (`query_kick_strength=0.01`)。recall が retrieved nodes の displacement を query 方向に nudge する | TTT 解釈の「retrieval = gradient step」が構造的対応の主張ではなく **実装として literal に成立**。`F=ma` が mass damping を物理的に供給するので BH は動かず軽い node のみ反応。Hooke (項 2) が raw anchor を引き続き保持するので **transient force であって anchor migration ではない** (concept drift しない)。explicit `kick()` ツール案 (option B) は J2 bootstrap curator 批判の再現を避けるため不採用、implicit が選ばれた。詳細: [Plans — Phase I — Free Star Movement](Plans-Phase-I-Free-Star-Movement.md) §Stage 2 |
 | **逆方向 cache 上書きの罠 (2026-05-10 発見)** | bulk 書き換え (Stage 0 priming 等) は他 MCP server プロセスを kill してから実施 | 古い cache を持つプロセスが flush し続ける限り新しい書き込みを上書きする。CLAUDE.md と Architecture-Concurrency.md に記載 |
 
 ## エントリポイントの読み方

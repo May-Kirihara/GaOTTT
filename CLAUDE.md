@@ -2,9 +2,9 @@
 
 *(formerly GER-RAG — 改名プロジェクト完了: Phase R0-R11、2026-04-21)*
 
-Last updated: 2026-05-11 (Phase G/H 完了 — FAISS write-behind, genesis kick + dream + Stage 0 priming, mass-aware / source-aware / dynamic / virtual FAISS の seed redesign)
+Last updated: 2026-05-11 (Phase I Stage 2 完了 — `compute_acceleration` に query attraction の 4 項目を追加、TTT 解釈の「retrieval = gradient step」が実装として literal に成立。Phase I Stage 1 — displacement boundary 解除。Phase G/H — FAISS write-behind, genesis kick + dream + Stage 0 priming, mass-aware / source-aware / dynamic / virtual FAISS の seed redesign)
 
-GaOTTT = **Gravity as Optimizer, Test-Time Training**。物理として設計した重力・軌道力学の更新則が、retrieval のスコアを確率的勾配シグナルと見る解釈の下で、Heavy ball SGD + Hebbian gradient + L2 の Verlet 積分と **項ごとに対応する構造的同型**に書けることが判明した。つまり **物理として書いたものが、同じ形で TTT オプティマイザとしても読める**。その上に共有時のアストロサイト的協調と Phase D の人格保存基盤が積み上がっている。詳細思想は [`docs/wiki/Reflections-Five-Layer-Philosophy.md`](docs/wiki/Reflections-Five-Layer-Philosophy.md)（物理 → 生物 → TTT 機構 → 関係 → 人格の五層）。
+GaOTTT = **Gravity as Optimizer, Test-Time Training**。物理として設計した重力・軌道力学の更新則が、retrieval のスコアを確率的勾配シグナルと見る解釈の下で、Heavy ball SGD + Hebbian gradient + L2 の Verlet 積分と **項ごとに対応する構造的同型**に書けることが判明した。つまり **物理として書いたものが、同じ形で TTT オプティマイザとしても読める**。Phase I Stage 2 (2026-05-11) でこの対応は構造的同型から **実装としての実体** に進んだ — `compute_acceleration` の 4 番目の項 `a = (α · score / m_i) · (q - pos_i)` が literal な勾配ステップを供給し、recall するたびに retrieved nodes の displacement が query 方向に nudge される。Hooke は raw embedding を anchor として引き続き保持するので transient force であって anchor migration ではない。その上に共有時のアストロサイト的協調と Phase D の人格保存基盤が積み上がっている。詳細思想は [`docs/wiki/Reflections-Five-Layer-Philosophy.md`](docs/wiki/Reflections-Five-Layer-Philosophy.md)（物理 → 生物 → TTT 機構 → 関係 → 人格の五層）。
 
 ## Tech Stack
 

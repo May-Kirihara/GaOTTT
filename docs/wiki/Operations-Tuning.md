@@ -35,6 +35,17 @@
 | orbital_max_velocity | 0.05 | 速度の上限ノルム |
 | orbital_anchor_strength | 0.02 | アンカー復元力（Hooke's k） |
 
+## Query 引力（Phase I — Stage 2）
+
+`compute_acceleration` の 4 番目の項。recall 時に retrieved nodes へ query 方向の小さな引力を加える。`F = α · score · (q - pos)`, `a = F / m_i` で **mass damping** が自動で効く (BH 化 node はほぼ動かない)。**transient force** — Hooke が raw embedding を anchor として引き続き保持するので anchor migration ではない。詳細: [Plans — Phase I](Plans-Phase-I-Free-Star-Movement.md) §Stage 2。
+
+| パラメータ | 既定 | 影響 | 上げると | 下げると |
+|---|---|---|---|---|
+| query_kick_strength | 0.01 | 結合定数 α (G に類似) | recall ごとの drift ↑（短期で query 方向に集まる） | drift が緩慢、長期累積でしか効かない。`0` で完全 no-op (roll-back) |
+| query_kick_enabled | `True` | グローバル off スイッチ | n/a | `False` で 4 項目を完全 skip (config 即時 off) |
+
+> **チューニング助言**: per-step acceleration は `orbital_max_velocity=0.05` で cap されるので、`α / m × score × \|q-pos\|` が ~0.05 を超えると効きが頭打ち。質量 1 の新規 node + score=1 + |q-pos|=1.4 (unit-norm 直交) で α=0.035 が cap 境界。`α=0.01` (既定) は安全側、上げるなら `0.02-0.03` まで観察しつつ。`α=0` で legacy 挙動完全復元。
+
 ## 馴化・温度脱出
 
 | パラメータ | 既定 | 影響 | 上げると | 下げると |
