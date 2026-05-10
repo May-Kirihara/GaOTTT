@@ -102,21 +102,73 @@ def _seed_with_mass_boost(qv, K_pool=50, K_actual=3):
 
 ### H.4 — Source-aware seed selection
 
-`recall(source_filter=[...])` 指定時、FAISS pool から source 一致を優先選定。これは**部分的に既に実装済み**（`config.wave_k_with_filter=200`、2026-05-10 commit `c049fc0`）。本番では効果が確認できていなかったが、Phase G Stage 0 priming で sparse class の displacement / mass が改善した今、**再評価する価値**。
+`recall(source_filter=[...])` 指定時、FAISS pool から **source 一致のものを seed として優先選定** する。**Stage 1 の検証結果から、これが Phase H の本筋となった**（2026-05-10 確認）。
 
-- 影響: source_filter 必須なので user 側の使い方変化を要請
-- Phase H の他案と排他ではない、独立に共存
+**動機**: H.3 (mass-based rerank) では超えられない壁があった — sparse class の embedding 自体が dense cluster と FAISS 距離で離れている場合、mass をいくら持ち上げても raw cosine top-K に入らない。`source_filter` を **seed 段階に持ち込む** ことで、FAISS pool 内の sparse class を最初から seed に含める。
+
+**設計案**:
+
+```python
+# gaottt/core/gravity.py — propagate_gravity_wave に source_filter 引数を追加
+def propagate_gravity_wave(qv, faiss_index, cache, config, *,
+                           wave_k=None, wave_depth=None,
+                           source_filter=None):
+    ...
+    if source_filter:
+        # sparse class 救済: pool から source 一致を抽出して seed に
+        pool_size = max(initial_k, config.wave_k_with_filter)
+        pool = faiss_index.search(qv.reshape(1, -1), pool_size)
+        # source は cache.NodeState には現状無いので、metadata 経由で引く
+        # (要 NodeState への source 追加 migration もしくは別 path)
+        ...
+    elif config.wave_seed_mass_alpha > 0:
+        # H.3 mass-aware boost
+        ...
+    else:
+        # Legacy raw cosine top-K
+        seeds = faiss_index.search(qv.reshape(1, -1), initial_k)
+```
+
+**実装上の障害**: 現状 `cache.NodeState` には `source` が無い（metadata 経由で `store.get_document(nid)` を呼ぶ必要、コストあり）。選択肢:
+
+1. **schema migration** — `NodeState` に `source: str | None` を追加、`store/sqlite_store.py` の自動マイグレーションで全 row に backfill
+2. **別 cache** — `cache._source_by_id: dict[str, str]` を新設、startup の load 時に投入
+3. **lazy fetch** — pool top-N までの subset だけ document を fetch（latency 影響を限定）
+
+優先順位: 1 > 2 > 3。長期的整合性のため schema を進化させるのが筋。
+
+- Stage 1 の memory.py 既存実装（post-filter で source 一致を抽出）は **seed が dense cluster だらけだと post-filter が空になる構造的限界** が確認された
+- Stage 2 で seed 段階の filter に置き換える
 
 ---
 
 ## 推奨組み合わせと実装順序
 
-| Stage | 案 | 期待効果 |
-|---|---|---|
-| Stage 1 | **H.3 Mass-aware seed boosting** | 最小実装、まず効果を測る |
-| Stage 2 | **H.1 Dynamic wave_initial_k** | sparse 領域の救済を上乗せ |
-| Stage 3 | **H.2 Virtual FAISS（条件付き）** | H.1+H.3 で不足なら最終手段 |
-| 並行 | **H.4 source_filter の再評価** | 既存実装のまま、本番で測定するだけ |
+| Stage | 案 | 期待効果 | 状態 |
+|---|---|---|---|
+| Stage 1 | **H.3 Mass-aware seed boosting** | 最小実装、まず効果を測る | ✅ 完了 (2026-05-10) — scoring 改善は確認、sparse class 救済には不足判明 |
+| Stage 2 | **H.4 Source-aware seed filtering** | sparse class 救済の本筋（H.3 で不足が確認されたため優先度上昇） | 📋 計画中 |
+| Stage 3 | **H.1 Dynamic wave_initial_k** | sparse 領域の救済を上乗せ | 保留 |
+| Stage 4 | **H.2 Virtual FAISS（条件付き）** | 上記で不足なら最終手段 | 保留 |
+
+### Stage 1 実装結果（2026-05-10）
+
+`gaottt/core/gravity.py:propagate_gravity_wave` の seed 段階で
+`raw_cosine + α * log(1+mass)` で再 rank する H.3 を実装、本番 23k DB で検証。
+
+**Measured**:
+| 観点 | 値 |
+|---|---|
+| pytest | 157/157 PASS（新規 H seed boost 2 ケース含む） |
+| isolated bench | p50 = 15.8ms（前回 14.9ms から微増、< 50ms 必達 OK） |
+| ruff | clean |
+| 本番 DB scoring | 自然文クエリ top1 score 0.05 → **0.31**（5x 改善、α=0.1 / pool=50） |
+| 本番 DB scoring (α=1.0) | top1 score 0.05 → **0.31** 程度（α=0.1 と同等の上限挙動） |
+| 本番 DB sparse class surface | `source_filter=["agent"]` は **0 hits**（α=0.1 / 1.0 両方で確認） |
+
+**観察された限界**: α を 0.1 → 1.0 に強めても sparse class（agent / value / commitment）の surface は **0 件のまま**。原因は `mass × log` rerank が raw cosine 順位を覆せるのは差が小さいときだけで、agent 280 件は本番 DB の embedding 空間で **dense corpus cluster と物理的に距離がある**ため、そもそも FAISS raw cosine top-200 にすら入らない。displacement / mass の改善は scoring 段階でしか効かず、**FAISS 側の物理的距離**を変えるものではない。
+
+→ Stage 2 では **source による filter を seed 段階に持ち込む** H.4 を本筋として採用。
 
 ---
 

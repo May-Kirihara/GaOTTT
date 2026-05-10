@@ -216,6 +216,15 @@ class GaOTTTConfig:
     # corpora with sparse target classes (~1% of total).
     wave_k_with_filter: int = 200
 
+    # Phase H — Wave seed redesign (H.3 Mass-aware seed boosting):
+    # FAISS raw cosine top-K seed alone misses heavy nodes that sit
+    # slightly outside top cosine. We pull a wider pool, rerank by
+    # `raw + α * log(1+mass)`, then take the top initial_k. With α=0
+    # the behaviour is identical to legacy raw cosine top-K seeding,
+    # so existing setups can opt out by setting it to 0.
+    wave_seed_mass_alpha: float = 0.1
+    wave_seed_pool_size: int = 50
+
     # Phase D: persona & task TTL defaults
     default_task_ttl_seconds: float = 30 * 86400.0       # 30 日 (要 revalidate / complete / abandon)
     default_commitment_ttl_seconds: float = 14 * 86400.0  # 14 日

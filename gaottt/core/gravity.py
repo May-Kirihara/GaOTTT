@@ -348,13 +348,36 @@ def propagate_gravity_wave(
     wave_k: int | None = None,
     wave_depth: int | None = None,
 ) -> dict[str, float]:
-    """Propagate gravity wave recursively through embedding space."""
+    """Propagate gravity wave recursively through embedding space.
+
+    Phase H Stage 1 — Mass-aware seed boosting: the seed step takes a
+    wider FAISS pool than ``initial_k`` and reranks by
+    ``raw_cosine + α * log(1+mass)``. Heavy nodes that sit just outside
+    raw cosine top-K still enter the wave, which is critical for sparse
+    classes (agent / value / commitment) that lose seed competition to
+    dense corpus clusters. Set ``config.wave_seed_mass_alpha=0`` to opt
+    out and recover legacy raw-cosine top-K seeding.
+    """
     initial_k = wave_k if wave_k is not None else config.wave_initial_k
     max_depth = wave_depth if wave_depth is not None else config.wave_max_depth
 
     qv = query_vector[0] if query_vector.ndim == 2 else query_vector
 
-    seeds = faiss_index.search(qv.reshape(1, -1), initial_k)
+    if config.wave_seed_mass_alpha > 0.0:
+        pool_size = max(initial_k, config.wave_seed_pool_size)
+        pool = faiss_index.search(qv.reshape(1, -1), pool_size)
+        if not pool:
+            return {}
+        rescored: list[tuple[str, float, float]] = []
+        for nid, raw in pool:
+            state = cache.get_node(nid)
+            mass = state.mass if state is not None else 1.0
+            boosted = raw + config.wave_seed_mass_alpha * math.log(1.0 + mass)
+            rescored.append((nid, boosted, raw))
+        rescored.sort(key=lambda t: t[1], reverse=True)
+        seeds = [(nid, raw) for nid, _, raw in rescored[:initial_k]]
+    else:
+        seeds = faiss_index.search(qv.reshape(1, -1), initial_k)
     if not seeds:
         return {}
 

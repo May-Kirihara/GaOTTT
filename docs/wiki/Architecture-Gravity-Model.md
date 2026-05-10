@@ -46,7 +46,9 @@ Stage 3: 位置
 ```
 クエリ
   ↓
-FAISS top-k で seed ノード取得
+FAISS top-pool_size で候補 pool 取得
+  ↓
+raw + α * log(1+mass) で再 rank → top-K を seed に（Phase H Stage 1）
   ↓
 seed から再帰的に近傍展開（mass 依存 top-k）
   ↓
@@ -54,6 +56,8 @@ seed から再帰的に近傍展開（mass 依存 top-k）
   ↓
 gravity_radius（mass から物理導出）でカットオフ
 ```
+
+**Phase H Stage 1 — Mass-aware seed boosting**: `wave_seed_mass_alpha=0` で legacy 挙動（raw cosine top-K）。`> 0` で wider pool (`wave_seed_pool_size`) を取り、mass で再 rank。高 mass が raw cosine 上位に居なくても seed に入れる。詳細: [Plans — Phase H](Plans-Phase-H-Wave-Seed-Redesign.md)。
 
 ```python
 # gaottt/config.py
