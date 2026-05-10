@@ -46,6 +46,18 @@ async def _faiss_save_loop(self) -> None:
 - 残る race: 「save 中の新規 add は次の tick で saved」（実用上影響なし）
 - 残る競合: A と B が**同時に save** すると後勝ち → 重要書き込み後は `engine.compact(rebuild_faiss=True)` で再構築可（保険）
 
+### Dream loop（Phase G — Stage 2）
+
+`startup()` で起動するもう一つのバックグラウンドタスク。`config.dream_interval_seconds`（既定 60s）周期で quiet node を synthetic recall し、co-occurrence と gravity 場を時間軸で育てる。
+
+- 並行 task: `_dream_task`（停止 event は `_dream_stop`）
+- shutdown 順: dream → faiss save → cache write-behind の順で停止
+- 例外は loop 内で握りつぶし、次 tick で retry
+- `dream_enabled=False` または `dream_interval_seconds=0` で完全 skip
+- マルチプロセス: 各プロセスが独自の dream loop を持つ。同じ DB に対して複数プロセスが synthetic recall を撃つ → mass 加算が二重に進む可能性は理論上あるが、`return_count` は更新しないので saturation は乱れず、運用上の影響は小さい
+
+詳細: [Plans — Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md)、[Architecture — Gravity Model](Architecture-Gravity-Model.md) の「夢による継続的な軌道捕獲」節
+
 ### 防御的境界チェック
 
 `faiss_index.search` は `_id_map[idx]` の境界を明示的にチェック:

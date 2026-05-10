@@ -65,6 +65,19 @@
 | genesis_kick_pool_size | 50 | FAISS top-N pool（mass 降順で K に絞る前段） | 真の重力中心を見つけやすい | 計算速い |
 | genesis_mass_boost_alpha | 0.5 | `|acc|` → mass boost 変換係数 | 新規が surface しやすい | homogenization 抑制 |
 
+## 夢による継続的軌道捕獲（Phase G — Stage 2）
+
+quiet node を idle 時間に synthetic recall で再活性化し、co-occurrence エッジ + gravity 場を時間軸で build up するバックグラウンドループ。`_is_synthetic=True` で `return_count` は増やさない（saturation 非発火）。
+
+| パラメータ | 既定 | 影響 | 上げると | 下げると |
+|---|---|---|---|---|
+| dream_enabled | `True` | Phase G G.2 の全体 ON/OFF | — | 夢ループ無し（Stage 1 のみ） |
+| dream_interval_seconds | 60.0 | 夢 tick 周期 | CPU 占有率↓、quiet 救済が遅い | 早く quiet が育つが CPU↑ |
+| dream_batch_size | 5 | 1 tick で再活性化する quiet node 数 | 多数同時に育つ | レイテンシ少、深く育つ |
+| dream_mass_ceiling | 1.5 | quiet と判定する mass 上限 | 高 mass まで再活性化 | 真に育っていないノードのみ救済 |
+| dream_min_idle_seconds | 300.0 | 最終 access からこれ以上経った node のみ対象 | 多くが対象になる | 本当に休眠中のもののみ |
+| dream_top_k | 10 | 各 synthetic recall の top_k | 広く co-occurrence | 焦点絞った re-activation |
+
 ## TTL 短期記憶（F4 + Phase D）
 
 | パラメータ | 既定 | 用途 |

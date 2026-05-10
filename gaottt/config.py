@@ -232,6 +232,19 @@ class GaOTTTConfig:
     genesis_kick_pool_size: int = 50       # FAISS top-N pool to mass-rank from
     genesis_mass_boost_alpha: float = 0.5  # initial mass boost = α * |kick force|
 
+    # Phase G — Dream consolidation (Stage 2): a background loop that picks
+    # quiet (low-mass, idle) nodes and runs synthetic recalls against them
+    # so they accumulate co-occurrence edges and gravity field updates over
+    # time. Hippocampal-replay analog. Distinct from genesis kick — kick is
+    # the single bound-to-orbit moment, dream is gradual tidal capture
+    # spread across idle wall-clock.
+    dream_enabled: bool = True
+    dream_interval_seconds: float = 60.0   # tick cadence; 0 disables loop
+    dream_batch_size: int = 5              # quiet nodes revisited per tick
+    dream_mass_ceiling: float = 1.5        # only nodes with mass below this
+    dream_min_idle_seconds: float = 300.0  # only nodes idle this long
+    dream_top_k: int = 10                  # top_k for the synthetic recall
+
     def __post_init__(self):
         if not self.db_path:
             new_db = os.path.join(self.data_dir, "gaottt.db")

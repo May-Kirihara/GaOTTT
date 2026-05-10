@@ -69,6 +69,12 @@ class GaOTTTEngine:
         self._faiss_dirty: bool = False
         self._faiss_save_task: asyncio.Task | None = None
         self._faiss_save_stop: asyncio.Event | None = None
+        # Phase G — Dream loop: revisits quiet nodes on a slow cadence with
+        # synthetic recalls so co-occurrence and gravity state build up even
+        # without user query (hippocampal-replay analog). Disabled when
+        # dream_enabled=False or dream_interval_seconds<=0.
+        self._dream_task: asyncio.Task | None = None
+        self._dream_stop: asyncio.Event | None = None
 
     async def startup(self) -> None:
         await self.store.initialize()
@@ -81,6 +87,12 @@ class GaOTTTEngine:
         if self.config.faiss_save_interval_seconds > 0:
             self._faiss_save_stop = asyncio.Event()
             self._faiss_save_task = asyncio.create_task(self._faiss_save_loop())
+        if (
+            self.config.dream_enabled
+            and self.config.dream_interval_seconds > 0
+        ):
+            self._dream_stop = asyncio.Event()
+            self._dream_task = asyncio.create_task(self._dream_loop())
         logger.info(
             "Engine started: %d nodes cached, %d vectors indexed, %d displacements",
             len(self.cache.node_cache),
@@ -90,6 +102,13 @@ class GaOTTTEngine:
 
     async def shutdown(self) -> None:
         await self.prefetch_pool.drain(timeout=5.0)
+        if self._dream_stop is not None:
+            self._dream_stop.set()
+        if self._dream_task is not None:
+            try:
+                await asyncio.wait_for(self._dream_task, timeout=10.0)
+            except asyncio.TimeoutError:
+                self._dream_task.cancel()
         if self._faiss_save_stop is not None:
             self._faiss_save_stop.set()
         if self._faiss_save_task is not None:
@@ -132,6 +151,63 @@ class GaOTTTEngine:
                 except Exception:  # noqa: BLE001
                     self._faiss_dirty = True
                     logger.exception("Periodic FAISS save failed; will retry")
+
+    def _pick_dream_candidates(self, limit: int) -> list[str]:
+        """Quiet nodes worth revisiting in a dream tick.
+
+        Picks non-archived nodes whose mass is still below
+        ``dream_mass_ceiling`` and whose ``last_access`` is older than
+        ``dream_min_idle_seconds``. Sorted by oldest-access-first so the
+        coldest memories get revived earliest.
+        """
+        now = time.time()
+        ceiling = self.config.dream_mass_ceiling
+        min_idle = self.config.dream_min_idle_seconds
+        quiet = [
+            s for s in self.cache.get_all_nodes()
+            if not s.is_archived
+            and s.mass < ceiling
+            and (now - s.last_access) > min_idle
+        ]
+        quiet.sort(key=lambda s: s.last_access)
+        return [s.id for s in quiet[:limit]]
+
+    async def _dream_loop(self) -> None:
+        """Hippocampal-replay analog. While the user is silent, revisit
+        quiet nodes via synthetic recall so they accumulate co-occurrence
+        and gravity field updates without ever being shown to the LLM.
+        """
+        assert self._dream_stop is not None
+        interval = self.config.dream_interval_seconds
+        while not self._dream_stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._dream_stop.wait(), timeout=interval,
+                )
+                break  # stop signalled
+            except asyncio.TimeoutError:
+                pass
+
+            try:
+                candidates = self._pick_dream_candidates(
+                    limit=self.config.dream_batch_size,
+                )
+                for nid in candidates:
+                    if self._dream_stop.is_set():
+                        break
+                    doc = await self.store.get_document(nid)
+                    if not doc:
+                        continue
+                    await self._query_internal(
+                        text=doc["content"],
+                        top_k=self.config.dream_top_k,
+                        wave_depth=None,
+                        wave_k=None,
+                        _is_synthetic=True,
+                    )
+            except Exception:  # noqa: BLE001
+                # A bad tick should not kill the loop. Log and try again.
+                logger.exception("Dream tick failed; will retry next cycle")
 
     # --- US1: Document Indexing ---
 
@@ -292,6 +368,7 @@ class GaOTTTEngine:
         top_k: int,
         wave_depth: int | None,
         wave_k: int | None,
+        _is_synthetic: bool = False,
     ) -> list[QueryResultItem]:
         k = top_k
         query_vec = self.embedder.encode_query(text)
@@ -374,13 +451,17 @@ class GaOTTTEngine:
         results.sort(key=lambda r: r.final_score, reverse=True)
         results = results[:k]
 
-        # Step 5: Update return_count for presented nodes + habituation recovery for all
+        # Step 5: Update return_count for presented nodes + habituation recovery for all.
+        # Synthetic recalls (Phase G dream loop) skip return_count so that
+        # background revisits don't trip presentation saturation — the user
+        # never saw these results, so habituation must not punish them.
         result_ids = [r.id for r in results]
-        for node_id in result_ids:
-            state = self.cache.get_node(node_id)
-            if state:
-                state.return_count += 1.0
-                self.cache.set_node(state, dirty=True)
+        if not _is_synthetic:
+            for node_id in result_ids:
+                state = self.cache.get_node(node_id)
+                if state:
+                    state.return_count += 1.0
+                    self.cache.set_node(state, dirty=True)
 
         # Habituation recovery: all reached nodes slowly recover freshness
         all_reached_ids = list(reached.keys())

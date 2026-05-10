@@ -12,7 +12,7 @@ GaOTTT の Phase 進捗と未実装機能の俯瞰。
 | **Phase C** | F6 バックグラウンド prefetch | ✅ 完了 |
 | **Phase D** | 人格保存基盤 + タスク管理 | ✅ 完了 |
 | **Phase S** | REST × MCP 共有サービス層に集約、REST を MCP parity まで引き上げ | ✅ 完了（2026-04-22） |
-| **Phase G** | 新規 memory への重力法則の起動時適用（軌道捕獲 + 夢） | 🚧 進行中 — Stage 1 (G.1 軌道捕獲) 完了 (2026-05-10)、Stage 2 (G.2 夢) 未着手 |
+| **Phase G** | 新規 memory への重力法則の起動時適用（軌道捕獲 + 夢） | ✅ 完了（2026-05-10） — Stage 1 (G.1 軌道捕獲) + Stage 2 (G.2 夢) 実装、Stage 3 (G.3 重心アンカー) は homogenization リスクで永久保留 |
 
 ## 累積 MCP ツール数
 

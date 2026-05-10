@@ -90,6 +90,38 @@ state.mass = max(1.0, 1.0 + mass_boost)
 - `genesis_kick_pool_size`（既定 `50`）— FAISS top-N pool（mass 降順で K 個に絞る前段）
 - `genesis_mass_boost_alpha`（既定 `0.5`）— `|acc|` から mass boost への変換係数
 
+## 夢による継続的な軌道捕獲（Phase G — Stage 2）
+
+誕生時の kick (G.1) は 1 step だけ。それで終わりではなく、**まだ動きの少ない `quiet node` をバックグラウンドの "夢" 周期で再活性化する**。dream loop は user query が無い時間に黙々と走り、quiet node に対して `_query_internal(_is_synthetic=True)` を呼ぶ。
+
+```python
+# gaottt/core/engine.py — _dream_loop（疑似コード）
+while not stop.is_set():
+    await wait(dream_interval_seconds)            # 既定 60s
+    candidates = pick_quiet(
+        mass < dream_mass_ceiling,                # 既定 1.5
+        idle > dream_min_idle_seconds,            # 既定 300s
+    )[:dream_batch_size]                          # 既定 5
+    for nid in candidates:
+        await _query_internal(
+            text=doc_content_of(nid),
+            top_k=dream_top_k,                    # 既定 10
+            _is_synthetic=True,
+        )
+```
+
+`_is_synthetic=True` のとき:
+- ✅ wave 伝播 / mass / displacement / velocity / 共起 BH 引力すべて通常通り更新
+- ✅ co-occurrence エッジ更新通常通り（これが dream の本懐）
+- ❌ `return_count` を増やさない（user に提示していないので saturation を発火させない）
+- ❌ prefetch cache に書かない（実 user query ではないため）
+
+**物理的読み**: tidal interaction による段階的軌道捕獲。quiet node が時間をかけて重力場に深く沈み込む。
+
+**生物的読み**: hippocampal replay。user が黙っている間、海馬から皮質へ記憶が転写され、既存ネットワークと統合される。
+
+詳細: [Plans — Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md)
+
 ## 衝突合体（F2.1）
 
 近接ノードが merge_threshold（既定 0.95）以上の類似度になると衝突:
