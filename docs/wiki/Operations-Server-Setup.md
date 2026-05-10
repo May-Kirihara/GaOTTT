@@ -110,6 +110,23 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
 
 初回起動時に RURI-v3-310m（約 1.2GB）が HuggingFace からダウンロードされる。2 回目以降はローカルキャッシュ（`~/.cache/huggingface/hub/`）から即座にロード、HTTP リクエストは発生しない。
 
+## Virtual FAISS (Phase H Stage 4 以降)
+
+2026-05-11 から、`virtual_faiss_enabled=True`（既定）のとき engine は **2 つの FAISS index** を並走させる:
+
+| ファイル | 内容 |
+|---|---|
+| `gaottt.faiss` | 原始 embedding そのまま (raw FAISS) |
+| `gaottt.virtual.faiss` | `virtual_pos = raw + displacement` (Phase G priming 反映) |
+
+- **初回 startup**: `gaottt.virtual.faiss` が disk に存在しなければ、raw + cache.displacement から自動 build される。23k 件規模で数十秒の追加 startup 時間。
+- **shutdown**: 両 index が save される。
+- **`compact(rebuild_faiss=True)`**: raw rebuild 後に virtual も rebuild。
+- **無効化**: `virtual_faiss_enabled=False` で legacy 挙動（raw のみ）。`gaottt.virtual.faiss` ファイルは残るが使われない。
+- **マルチプロセス安全性**: raw FAISS と同じ write-behind 周期で save されるが、現状 virtual FAISS は **shutdown または compact でのみ更新**。長期常駐プロセスの累積 displacement 変化は次の compact までは virtual に反映されない。
+
+bootstrap_report.py の neighbor preview は raw FAISS のみを見ている点に注意（Phase G priming 後の virtual 距離は別途診断スクリプトで）。
+
 ## データディレクトリ
 
 | OS | データディレクトリ | 設定ファイル |

@@ -619,15 +619,22 @@ To use this on purpose:
 - Read `reflect(aspect="relations")` to see what other agents have linked.
 
 Caveats:
-- Each MCP process has its own in-memory cache + FAISS index. New `remember` from another process may not appear in your `recall` until that process restarts (the DB has it, but the FAISS index doesn't).
+- Each MCP process has its own in-memory cache + FAISS index. New `remember` from another process is propagated by the FAISS write-behind loop (`faiss_save_interval_seconds`, default 5s) and a startup/cache reload on the reader.
 - Existing-node updates (mass / displacement) are shared via DB write-behind (~5s flush) but visible to other processes only after their next cache reload.
-- Don't worry about overwriting; SQLite WAL + `busy_timeout` makes concurrent writes safe.
+- ★ **Bidirectional cache overwrite risk**: a process holding a stale cache will overwrite another process's writes during its own write-behind tick. For bulk re-writes (Phase G Stage 0 priming and similar) **kill all other MCP processes first**, then run, then restart. Architecture-Concurrency.md has the full pattern.
+- Don't worry about ordinary overwriting; SQLite WAL + `busy_timeout` makes concurrent writes safe.
 
 ---
 
 ## Notes
 
 - **25 MCP tools** total: 6 memory + 10 maintenance/relations/prefetch + 9 Phase D (tasks + persona).
+- ★ **Phase G + H complete (2026-05-11)**. Practical effects you can rely on now:
+  - Fresh `remember()` is **immediately findable** by `recall()` — genesis kick gives non-zero displacement / velocity / mass at index time, no warm-up needed.
+  - `recall(query, source_filter=["agent"])` works at the seed step. On corpus-heavy DBs, sparse classes (agent / value / commitment / compaction) reach the wave reliably. If a query is far in embedding space, pass `wave_k=1000` to widen the seed pool further.
+  - `recall()` without `source_filter` benefits from priming through the **virtual FAISS** index (built from raw + displacement). Top1 scores on the production DB jumped 5–6× after Phase H Stage 4.
+  - Background **dream loop** revisits quiet nodes silently — co-occurrence accumulates while you idle. No explicit recall ritual required.
+- ★ **Limits to keep in mind**: agent docs are pushed by Phase G priming toward neighbouring high-mass clusters, **not** toward arbitrary future queries. If a query is far from any priming direction, surface may still fail. This is the design boundary of Phase H — query-aware displacement is the next phase.
 - Duplicate `content` is auto-skipped via SHA-256 hashing.
 - Memory persists across sessions.
 - Every `recall` accumulates gravity; related memories drift closer over time.
