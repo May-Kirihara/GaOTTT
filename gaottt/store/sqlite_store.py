@@ -170,6 +170,22 @@ class SqliteStore(StoreBase):
             "metadata": json.loads(row[2]) if row[2] else None,
         }
 
+    async def get_all_sources(self) -> dict[str, str]:
+        """Bulk fetch {id: metadata.source} via SQLite's JSON1 extension.
+
+        Skips rows where source is missing. Phase H Stage 2 uses this at
+        cache load time to populate `cache.source_by_id`, enabling
+        source_filter to be applied at the wave seed step without paying
+        a per-node store fetch.
+        """
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT id, json_extract(metadata, '$.source') "
+            "FROM documents WHERE metadata IS NOT NULL"
+        )
+        rows = await cursor.fetchall()
+        return {row[0]: row[1] for row in rows if row[1] is not None}
+
     _NODE_COLS = (
         "id, mass, temperature, last_access, sim_history, return_count, "
         "expires_at, is_archived, merged_into, merge_count, merged_at, "

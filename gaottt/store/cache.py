@@ -18,6 +18,10 @@ class CacheLayer:
         self.graph_cache: dict[str, dict[str, float]] = {}
         self.displacement_cache: dict[str, np.ndarray] = {}
         self.velocity_cache: dict[str, np.ndarray] = {}
+        # Phase H Stage 2: id → metadata.source. Populated on load_from_store
+        # and on index_documents. Lets propagate_gravity_wave apply
+        # source_filter at the seed step without per-node store fetches.
+        self.source_by_id: dict[str, str] = {}
         self.dirty_nodes: set[str] = set()
         self.dirty_edges: set[tuple[str, str]] = set()
         self.dirty_displacements: set[str] = set()
@@ -38,6 +42,14 @@ class CacheLayer:
 
     def get_all_nodes(self) -> list[NodeState]:
         return list(self.node_cache.values())
+
+    # --- Source lookup (Phase H Stage 2) ---
+
+    def get_source(self, node_id: str) -> str | None:
+        return self.source_by_id.get(node_id)
+
+    def set_source(self, node_id: str, source: str) -> None:
+        self.source_by_id[node_id] = source
 
     # --- Displacement ---
 
@@ -112,11 +124,14 @@ class CacheLayer:
 
         self.displacement_cache = await store.load_displacements()
         self.velocity_cache = await store.load_velocities()
+        self.source_by_id = await store.get_all_sources()
 
         logger.info(
-            "Cache loaded: %d active nodes (%d archived skipped), %d edges, %d displacements, %d velocities",
+            "Cache loaded: %d active nodes (%d archived skipped), %d edges, "
+            "%d displacements, %d velocities, %d sources",
             len(self.node_cache), len(archived_ids), loaded_edges,
             len(self.displacement_cache), len(self.velocity_cache),
+            len(self.source_by_id),
         )
 
     # --- Archive (F4 + F5) ---
@@ -130,6 +145,7 @@ class CacheLayer:
         self.node_cache.pop(node_id, None)
         self.displacement_cache.pop(node_id, None)
         self.velocity_cache.pop(node_id, None)
+        self.source_by_id.pop(node_id, None)
         self.dirty_nodes.discard(node_id)
         self.dirty_displacements.discard(node_id)
         self.dirty_velocities.discard(node_id)

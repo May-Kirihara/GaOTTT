@@ -13,7 +13,7 @@ GaOTTT の Phase 進捗と未実装機能の俯瞰。
 | **Phase D** | 人格保存基盤 + タスク管理 | ✅ 完了 |
 | **Phase S** | REST × MCP 共有サービス層に集約、REST を MCP parity まで引き上げ | ✅ 完了（2026-04-22） |
 | **Phase G** | 新規 memory への重力法則の起動時適用（軌道捕獲 + 夢 + 全件 priming） | ✅ 完了（2026-05-10） — Stage 1 (G.1 軌道捕獲) + Stage 2 (G.2 夢) + Stage 0 (priming) を実装。Stage 3 (G.3 重心アンカー) は homogenization リスクで永久保留。新規 doc の surface 改善は構造的に Phase H の領域と判明 |
-| **Phase H** | Wave seed redesign — 新規 / sparse class が wave 入口で排除される問題の修正 | 🚧 進行中 — Stage 1 (H.3 mass-aware boost) 完了 (2026-05-10、scoring 改善のみ確認、sparse class 救済不足判明)、Stage 2 (H.4 source-aware) を本筋として優先度上昇 |
+| **Phase H** | Wave seed redesign — 新規 / sparse class が wave 入口で排除される問題の修正 | 🚧 進行中 — Stage 1 (H.3 mass-aware boost) + Stage 2 (H.4 source-aware seed filtering) 完了 (2026-05-10)。本番 DB の一部クエリで初の agent surface 達成。embedding 距離が遠いクエリ向けに Stage 3+ (H.1 dynamic wave_k / H.2 virtual FAISS) は保留 |
 
 ## 累積 MCP ツール数
 

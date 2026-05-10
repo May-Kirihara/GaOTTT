@@ -52,7 +52,7 @@
 | wave_max_depth | 2 | 再帰最大深度 |
 | wave_attenuation | 0.7 | 深度ごとの減衰係数 |
 | wave_mass_scale | 1.5 | mass 依存 top-k のスケール |
-| wave_k_with_filter | 200 | `recall(source_filter=...)` 指定時の seed top-k（dense corpus で sparse class を救済） |
+| wave_k_with_filter | 500 | `recall(source_filter=...)` 指定時の seed top-k（dense corpus で sparse class を救済、Phase H Stage 2 で 200→500 引き上げ） |
 | wave_seed_mass_alpha | 0.1 | seed 段階の mass-aware rerank 重み（Phase H Stage 1）。`raw + α*log(1+mass)` で pool を再 rank。`0` で legacy 挙動 |
 | wave_seed_pool_size | 50 | seed 再 rank の pool 大きさ（Phase H Stage 1） |
 

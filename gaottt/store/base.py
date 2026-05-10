@@ -32,6 +32,14 @@ class StoreBase(ABC):
         ...
 
     @abstractmethod
+    async def get_all_sources(self) -> dict[str, str]:
+        """Return {node_id: source} for every document with a non-null
+        `metadata.source`. Used by the cache to fast-path source-aware
+        seed filtering (Phase H Stage 2) without paying a per-recall
+        document fetch."""
+        ...
+
+    @abstractmethod
     async def get_all_node_states(self) -> list[NodeState]:
         """Get all node states."""
         ...

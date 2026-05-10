@@ -129,16 +129,28 @@ def propagate_gravity_wave(qv, faiss_index, cache, config, *,
         seeds = faiss_index.search(qv.reshape(1, -1), initial_k)
 ```
 
-**実装上の障害**: 現状 `cache.NodeState` には `source` が無い（metadata 経由で `store.get_document(nid)` を呼ぶ必要、コストあり）。選択肢:
+**採用した実装** (2026-05-10): 案 2「別 cache」。`CacheLayer.source_by_id: dict[str, str]` を新設、`startup → load_from_store` で `store.get_all_sources()`（SQLite JSON1 `json_extract(metadata, '$.source')`）から一括 populate。`index_documents` でも metadata.source を `set_source` する。schema migration なしで済む。
 
-1. **schema migration** — `NodeState` に `source: str | None` を追加、`store/sqlite_store.py` の自動マイグレーションで全 row に backfill
-2. **別 cache** — `cache._source_by_id: dict[str, str]` を新設、startup の load 時に投入
-3. **lazy fetch** — pool top-N までの subset だけ document を fetch（latency 影響を限定）
+`propagate_gravity_wave` に `source_filter: list[str] | None` 引数を追加し、source_filter があれば pool（`wave_k_with_filter` まで広げる）から source 一致のものだけを候補に。`wave_seed_mass_alpha > 0` のときは候補に対して mass rerank も適用。
 
-優先順位: 1 > 2 > 3。長期的整合性のため schema を進化させるのが筋。
+### Stage 2 実装結果 (2026-05-10)
 
-- Stage 1 の memory.py 既存実装（post-filter で source 一致を抽出）は **seed が dense cluster だらけだと post-filter が空になる構造的限界** が確認された
-- Stage 2 で seed 段階の filter に置き換える
+**Measured**:
+| 観点 | 値 |
+|---|---|
+| pytest | 161/161 PASS（新規 source-aware 4 ケース含む） |
+| isolated bench | p50 = 15.2ms（< 50ms 必達 OK、Stage 1 の 15.8ms とほぼ同等） |
+| ruff | clean |
+| 本番 23k DB `cache.source_by_id` | 23,497 件 populate（json_extract で startup 時に一括取得、p99 ~数百 ms） |
+| **本番 DB agent surface（pool=1000）** | クエリ "Phase G priming kick orbital capture" で **agent 3 hits**（earlier の e2e で保存した node が初めて surface）。他 4 クエリは 0 hits |
+
+**設計判断**: `wave_k_with_filter` のデフォルトを 200 → **500** に引き上げ。本番 23k の agent 1.7% 比率で expected 8.5 件、200 だと 3.4 件で確率的に 0 件もありえた。500 はレイテンシ影響が許容範囲（hot path の `recall` には effect なし、source_filter 指定時のみ pool 拡大）。
+
+**残った構造的限界**: pool=1000 でも届かないクエリは、agent docs と query embedding の **raw cosine 距離自体が広く離れている** ため。Stage 3+ の方向性:
+- Stage 3 (H.1 Dynamic wave_k): query 周辺密度に応じて pool を動的拡大
+- Stage 4 (H.2 Virtual FAISS): displacement を含む virtual position で別 FAISS index を構築、両 index から seed を統合
+
+ただし Phase G priming で 22k 件の displacement が動いているので、Stage 4 で virtual FAISS を作れば「priming で寄せた agent doc」が virtual cosine で近づく可能性がある。Stage 3 + 4 の組み合わせが次の候補。
 
 ---
 
@@ -147,7 +159,7 @@ def propagate_gravity_wave(qv, faiss_index, cache, config, *,
 | Stage | 案 | 期待効果 | 状態 |
 |---|---|---|---|
 | Stage 1 | **H.3 Mass-aware seed boosting** | 最小実装、まず効果を測る | ✅ 完了 (2026-05-10) — scoring 改善は確認、sparse class 救済には不足判明 |
-| Stage 2 | **H.4 Source-aware seed filtering** | sparse class 救済の本筋（H.3 で不足が確認されたため優先度上昇） | 📋 計画中 |
+| Stage 2 | **H.4 Source-aware seed filtering** | sparse class 救済の本筋（H.3 で不足が確認されたため優先度上昇） | ✅ 完了 (2026-05-10) — 一部クエリで agent surface 達成、embedding 距離が遠いクエリは依然届かず |
 | Stage 3 | **H.1 Dynamic wave_initial_k** | sparse 領域の救済を上乗せ | 保留 |
 | Stage 4 | **H.2 Virtual FAISS（条件付き）** | 上記で不足なら最終手段 | 保留 |
 

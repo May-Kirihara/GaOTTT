@@ -212,9 +212,11 @@ class GaOTTTConfig:
     # intention / commitment / compaction) get squeezed out of the seed
     # pool entirely on corpus-heavy DBs (~10k+ entries). Boosting wave_k
     # for filtered queries oversamples seeds so the requested sources have
-    # a real chance of being reached. Default 200 is calibrated for 20-30k
-    # corpora with sparse target classes (~1% of total).
-    wave_k_with_filter: int = 200
+    # a real chance of being reached. Default 500 is calibrated for 20-30k
+    # corpora with sparse target classes (~1-2% of total) — at 1.7% sparsity
+    # the expected agent-class count in top-500 is ~8.5, robust against
+    # the all-zero outcome that hit at 200 (expected ~3.4).
+    wave_k_with_filter: int = 500
 
     # Phase H — Wave seed redesign (H.3 Mass-aware seed boosting):
     # FAISS raw cosine top-K seed alone misses heavy nodes that sit

@@ -251,6 +251,10 @@ class GaOTTTEngine:
                 last_verified_at=now if "certainty" in doc_in else None,
             )
             self.cache.set_node(state, dirty=True)
+            meta = metadatas[i] or {}
+            src = meta.get("source")
+            if src:
+                self.cache.set_source(doc_id, src)
             docs_for_store.append({
                 "id": doc_id,
                 "content": contents[i],
@@ -341,6 +345,7 @@ class GaOTTTEngine:
         wave_depth: int | None = None,
         wave_k: int | None = None,
         use_cache: bool = False,
+        source_filter: list[str] | None = None,
     ) -> list[QueryResultItem]:
         """Run a recall query.
 
@@ -349,14 +354,22 @@ class GaOTTTEngine:
         (and crucially, without re-applying simulation updates — the prefetch
         already paid that cost). Cache hits are bounded by
         ``config.prefetch_ttl_seconds``.
+
+        ``source_filter`` (Phase H Stage 2) lets the seed step trim the
+        FAISS pool to nodes whose ``metadata.source`` matches. Source
+        filtering is not part of the prefetch cache key, so any call with
+        ``source_filter`` set bypasses the cache.
         """
         k = top_k or self.config.top_k
+        if source_filter:
+            use_cache = False
         if use_cache:
             cached = self.prefetch_cache.get(text, k)
             if cached is not None:
                 return cached
         results = await self._query_internal(
             text=text, top_k=k, wave_depth=wave_depth, wave_k=wave_k,
+            source_filter=source_filter,
         )
         if use_cache:
             self.prefetch_cache.put(text, k, results)
@@ -369,6 +382,7 @@ class GaOTTTEngine:
         wave_depth: int | None,
         wave_k: int | None,
         _is_synthetic: bool = False,
+        source_filter: list[str] | None = None,
     ) -> list[QueryResultItem]:
         k = top_k
         query_vec = self.embedder.encode_query(text)
@@ -377,6 +391,7 @@ class GaOTTTEngine:
         reached = propagate_gravity_wave(
             query_vec, self.faiss_index, self.cache, self.config,
             wave_k=wave_k, wave_depth=wave_depth,
+            source_filter=source_filter,
         )
 
         if not reached:

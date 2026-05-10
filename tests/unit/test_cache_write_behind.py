@@ -37,6 +37,7 @@ class _RecordingStore(StoreBase):
 
     async def get_node_states(self, ids: list[str]) -> dict[str, NodeState]: return {}
     async def get_all_node_states(self) -> list[NodeState]: return []
+    async def get_all_sources(self) -> dict[str, str]: return {}
 
     async def save_edges(self, edges: list[CooccurrenceEdge]) -> None:
         self.saved_edges.extend(edges)

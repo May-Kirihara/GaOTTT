@@ -347,23 +347,52 @@ def propagate_gravity_wave(
     config: GaOTTTConfig,
     wave_k: int | None = None,
     wave_depth: int | None = None,
+    source_filter: list[str] | None = None,
 ) -> dict[str, float]:
     """Propagate gravity wave recursively through embedding space.
 
-    Phase H Stage 1 — Mass-aware seed boosting: the seed step takes a
-    wider FAISS pool than ``initial_k`` and reranks by
-    ``raw_cosine + α * log(1+mass)``. Heavy nodes that sit just outside
-    raw cosine top-K still enter the wave, which is critical for sparse
-    classes (agent / value / commitment) that lose seed competition to
-    dense corpus clusters. Set ``config.wave_seed_mass_alpha=0`` to opt
-    out and recover legacy raw-cosine top-K seeding.
+    Phase H Stage 1 — Mass-aware seed boosting: when ``wave_seed_mass_alpha
+    > 0``, the seed step takes a wider FAISS pool than ``initial_k`` and
+    reranks by ``raw_cosine + α * log(1+mass)``. Heavy nodes that sit just
+    outside raw cosine top-K still enter the wave.
+
+    Phase H Stage 2 — Source-aware seed filtering: when ``source_filter``
+    is set, the seed step pulls a wide pool (``wave_k_with_filter``) and
+    keeps only members whose ``cache.source_by_id`` matches one of the
+    requested sources. This is the only way sparse classes (agent / value
+    / commitment) reliably enter the wave on corpus-heavy DBs where they
+    lose every raw-cosine contest to dense Twitter / book clusters. Mass
+    boosting is still applied to the post-filter set if α > 0.
+
+    Set ``config.wave_seed_mass_alpha=0`` and pass no ``source_filter`` to
+    recover legacy raw-cosine top-K seeding.
     """
     initial_k = wave_k if wave_k is not None else config.wave_initial_k
     max_depth = wave_depth if wave_depth is not None else config.wave_max_depth
 
     qv = query_vector[0] if query_vector.ndim == 2 else query_vector
 
-    if config.wave_seed_mass_alpha > 0.0:
+    if source_filter:
+        sf_set = set(source_filter)
+        pool_size = max(initial_k, config.wave_k_with_filter)
+        pool = faiss_index.search(qv.reshape(1, -1), pool_size)
+        if not pool:
+            return {}
+        candidates: list[tuple[str, float, float]] = []
+        for nid, raw in pool:
+            src = cache.get_source(nid)
+            if src not in sf_set:
+                continue
+            state = cache.get_node(nid)
+            mass = state.mass if state is not None else 1.0
+            if config.wave_seed_mass_alpha > 0.0:
+                boosted = raw + config.wave_seed_mass_alpha * math.log(1.0 + mass)
+            else:
+                boosted = raw
+            candidates.append((nid, boosted, raw))
+        candidates.sort(key=lambda t: t[1], reverse=True)
+        seeds = [(nid, raw) for nid, _, raw in candidates[:initial_k]]
+    elif config.wave_seed_mass_alpha > 0.0:
         pool_size = max(initial_k, config.wave_seed_pool_size)
         pool = faiss_index.search(qv.reshape(1, -1), pool_size)
         if not pool:

@@ -123,26 +123,26 @@ async def recall(
     wave_k: int | None = None,
     force_refresh: bool = False,
 ) -> RecallResponse:
-    # When source_filter narrows results to a sparse class on a corpus-heavy
-    # DB, the default wave_initial_k=3 seeds from the densest cluster only,
-    # so the requested sources never reach the seed pool. Boost wave_k via
-    # config.wave_k_with_filter so post-filtering has real candidates.
-    # Caller-supplied wave_k always wins.
-    effective_wave_k = wave_k
-    if source_filter and effective_wave_k is None:
-        effective_wave_k = engine.config.wave_k_with_filter
+    # Phase H Stage 2: source_filter is now applied at the wave seed step
+    # inside propagate_gravity_wave (engine.query → _query_internal). The
+    # post-filter below remains as a defensive belt-and-suspenders pass —
+    # cache.source_by_id can lag for nodes whose source was set via
+    # auto-migration paths, and we'd rather drop a stray hit than show
+    # the wrong source.
     raw = await engine.query(
         text=query,
         top_k=top_k * 10 if source_filter else top_k,
         wave_depth=wave_depth,
-        wave_k=effective_wave_k,
+        wave_k=wave_k,
         use_cache=not force_refresh,
+        source_filter=source_filter,
     )
     if source_filter:
+        sf = set(source_filter)
         filtered = []
         for r in raw:
             meta = r.metadata or {}
-            if meta.get("source") in source_filter:
+            if meta.get("source") in sf:
                 filtered.append(r)
         raw = filtered[:top_k]
     items = [_to_memory_item(engine, r) for r in raw]

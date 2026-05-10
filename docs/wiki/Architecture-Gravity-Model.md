@@ -57,7 +57,9 @@ seed から再帰的に近傍展開（mass 依存 top-k）
 gravity_radius（mass から物理導出）でカットオフ
 ```
 
-**Phase H Stage 1 — Mass-aware seed boosting**: `wave_seed_mass_alpha=0` で legacy 挙動（raw cosine top-K）。`> 0` で wider pool (`wave_seed_pool_size`) を取り、mass で再 rank。高 mass が raw cosine 上位に居なくても seed に入れる。詳細: [Plans — Phase H](Plans-Phase-H-Wave-Seed-Redesign.md)。
+**Phase H Stage 1 — Mass-aware seed boosting**: `wave_seed_mass_alpha=0` で legacy 挙動（raw cosine top-K）。`> 0` で wider pool (`wave_seed_pool_size`) を取り、mass で再 rank。高 mass が raw cosine 上位に居なくても seed に入れる。
+
+**Phase H Stage 2 — Source-aware seed filtering**: `source_filter` が指定されたとき、wider pool (`wave_k_with_filter`) を取り `cache.source_by_id` で source 一致のみを seed 候補に。dense corpus DB で sparse class（agent / value / commitment）が seed 競争に負けて永遠に reach されない問題への直接対処。`cache.source_by_id` は startup の `load_from_store` で SQLite の `json_extract(metadata, '$.source')` から一括 populate されるため per-recall fetch コストなし。詳細: [Plans — Phase H](Plans-Phase-H-Wave-Seed-Redesign.md)。
 
 ```python
 # gaottt/config.py

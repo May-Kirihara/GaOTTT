@@ -34,7 +34,10 @@ class StubEmbedder:
         return self._embed(text).reshape(1, -1).astype(np.float32)
 
     def _embed(self, text: str) -> np.ndarray:
-        seed = abs(hash(text)) & 0xFFFFFFFF
+        import hashlib
+        seed = int.from_bytes(
+            hashlib.md5(text.encode("utf-8")).digest()[:4], "big"
+        )
         rng = np.random.default_rng(seed)
         v = rng.standard_normal(self.dim).astype(np.float32)
         v /= np.linalg.norm(v) + 1e-9
@@ -113,43 +116,72 @@ async def test_heavy_isolated_enters_seeds_with_boost(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_alpha_zero_matches_legacy_raw_cosine_top_k(tmp_path):
-    """wave_seed_mass_alpha=0 should reproduce legacy seeding: heavy node
-    that's not in raw cosine top-K is NOT in wave seeds."""
-    engine = _make_engine(tmp_path, mass_alpha=0.0)
-    await engine.startup()
-    try:
-        await engine.index_documents([
-            {"content": f"topic-A-doc-{i}", "metadata": {"source": "tweet"}}
-            for i in range(10)
-        ])
-        heavy_ids = await engine.index_documents([
-            {"content": "lone-heavy-no-boost", "metadata": {"source": "agent"}},
-        ])
-        heavy_id = heavy_ids[0]
-        heavy_state = engine.cache.get_node(heavy_id)
-        heavy_state.mass = 30.0
-        engine.cache.set_node(heavy_state, dirty=True)
+async def test_alpha_zero_disables_mass_rerank(tmp_path):
+    """wave_seed_mass_alpha=0 should not promote heavy nodes into seeds.
 
-        query_vec = engine.embedder.encode_query("topic-A query about cluster")
-        reached_legacy = propagate_gravity_wave(
-            query_vec, engine.faiss_index, engine.cache, engine.config,
-            wave_k=3, wave_depth=1,
+    We compare seed sets between α=0 and α>0: a heavy node that the boost
+    would promote should appear under α>0 and disappear under α=0. This
+    is robust to which specific content embeddings happen to land where.
+    """
+    # Both engines use the same StubEmbedder (deterministic by content),
+    # so cluster + heavy embeddings are identical across the two runs.
+    cluster_docs = [
+        {"content": f"topic-A-doc-{i}", "metadata": {"source": "tweet"}}
+        for i in range(50)
+    ]
+    heavy_doc = {
+        "content": "lone-heavy-stable-content",
+        "metadata": {"source": "agent"},
+    }
+
+    # α > 0 path
+    eng_boost = _make_engine(tmp_path / "boost", mass_alpha=0.5, pool_size=60)
+    eng_boost.config.data_dir.rstrip("/")  # ensure no trailing slash issues
+    import os
+    os.makedirs(tmp_path / "boost", exist_ok=True)
+    os.makedirs(tmp_path / "no-boost", exist_ok=True)
+    await eng_boost.startup()
+    try:
+        await eng_boost.index_documents(cluster_docs)
+        heavy_ids = await eng_boost.index_documents([heavy_doc])
+        heavy_id = heavy_ids[0]
+        heavy_state = eng_boost.cache.get_node(heavy_id)
+        heavy_state.mass = 40.0
+        eng_boost.cache.set_node(heavy_state, dirty=True)
+
+        qv = eng_boost.embedder.encode_query("topic-A query about cluster")
+        reached_boost = propagate_gravity_wave(
+            qv, eng_boost.faiss_index, eng_boost.cache, eng_boost.config,
+            wave_k=3, wave_depth=0,
         )
-        # With alpha=0, mass cannot promote the heavy node into seeds.
-        # Whether it is in `reached` then depends purely on raw cosine top-3
-        # plus 1 hop of neighbor expansion. We assert the heavy node is
-        # NOT a seed by checking that the top-3 raw cosine pool excludes it.
-        seeds = engine.faiss_index.search(query_vec, 3)
-        seed_ids = [nid for nid, _ in seeds]
-        assert heavy_id not in seed_ids, (
-            "fixture failed: heavy doc happened to land in raw cosine top-3"
-        )
-        # And it should not have been promoted in the wave reach via
-        # depth-1 expansion either (this depends on neighbor topology;
-        # if it slipped in via depth, that's still a legitimate result —
-        # we only test that the *seeds* didn't promote it, which is the
-        # H.3 guarantee).
-        _ = reached_legacy  # used for sanity, not asserted
     finally:
-        await engine.shutdown()
+        await eng_boost.shutdown()
+
+    # α = 0 path
+    eng_legacy = _make_engine(tmp_path / "no-boost", mass_alpha=0.0)
+    await eng_legacy.startup()
+    try:
+        await eng_legacy.index_documents(cluster_docs)
+        heavy_ids = await eng_legacy.index_documents([heavy_doc])
+        heavy_id_legacy = heavy_ids[0]
+        heavy_state = eng_legacy.cache.get_node(heavy_id_legacy)
+        heavy_state.mass = 40.0
+        eng_legacy.cache.set_node(heavy_state, dirty=True)
+
+        qv = eng_legacy.embedder.encode_query("topic-A query about cluster")
+        reached_legacy = propagate_gravity_wave(
+            qv, eng_legacy.faiss_index, eng_legacy.cache, eng_legacy.config,
+            wave_k=3, wave_depth=0,
+        )
+    finally:
+        await eng_legacy.shutdown()
+
+    # Boost branch must reach the heavy node.
+    assert heavy_id in reached_boost, (
+        "α>0 should promote heavy into seeds via mass rerank"
+    )
+    # Legacy branch must not (heavy_id is structurally far from cluster
+    # query in raw cosine, with 50 cluster docs filling top-3).
+    assert heavy_id_legacy not in reached_legacy, (
+        "α=0 must not promote heavy into seeds"
+    )
