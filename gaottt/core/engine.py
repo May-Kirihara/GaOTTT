@@ -47,10 +47,12 @@ class GaOTTTEngine:
         faiss_index: FaissIndex,
         cache: CacheLayer,
         store: SqliteStore,
+        virtual_faiss_index: FaissIndex | None = None,
     ):
         self.config = config
         self.embedder = embedder
         self.faiss_index = faiss_index
+        self.virtual_faiss_index = virtual_faiss_index
         self.cache = cache
         self.store = store
         self.graph = CooccurrenceGraph(config, cache)
@@ -83,6 +85,15 @@ class GaOTTTEngine:
             logger.info("Auto-expired %d nodes past their TTL", expired)
         await self.cache.load_from_store(self.store)
         self.faiss_index.load(self.config.faiss_index_path)
+        if self.virtual_faiss_index is not None:
+            virtual_path = self.config.virtual_faiss_index_path
+            self.virtual_faiss_index.load(virtual_path)
+            if self.virtual_faiss_index.size == 0 and self.faiss_index.size > 0:
+                # No persisted virtual index yet — rebuild from raw + cache.
+                logger.info(
+                    "Virtual FAISS missing; building from raw + displacement"
+                )
+                await self._rebuild_virtual_faiss_index()
         self.cache.start_write_behind(self.store)
         if self.config.faiss_save_interval_seconds > 0:
             self._faiss_save_stop = asyncio.Event()
@@ -123,6 +134,11 @@ class GaOTTTEngine:
         await asyncio.to_thread(
             self.faiss_index.save, self.config.faiss_index_path,
         )
+        if self.virtual_faiss_index is not None:
+            await asyncio.to_thread(
+                self.virtual_faiss_index.save,
+                self.config.virtual_faiss_index_path,
+            )
         self._faiss_dirty = False
         await self.store.close()
         logger.info("Engine shut down, state persisted")
@@ -237,6 +253,13 @@ class GaOTTTEngine:
 
         vectors = self.embedder.encode_documents(contents)
         self.faiss_index.add(vectors, ids)
+        if self.virtual_faiss_index is not None:
+            # Fresh nodes have displacement=0, so virtual_pos == raw.
+            # The genesis kick below mutates cache.displacement; for now,
+            # raw and virtual stay aligned, and a later compact (or the
+            # next kick step) will pull virtual_pos away from raw if
+            # needed.
+            self.virtual_faiss_index.add(vectors, ids)
 
         now = time.time()
         docs_for_store = []
@@ -392,6 +415,7 @@ class GaOTTTEngine:
             query_vec, self.faiss_index, self.cache, self.config,
             wave_k=wave_k, wave_depth=wave_depth,
             source_filter=source_filter,
+            virtual_faiss_index=self.virtual_faiss_index,
         )
 
         if not reached:
@@ -939,6 +963,49 @@ class GaOTTTEngine:
         self.faiss_index.reset()
         self.faiss_index.add(matrix, [nid for nid, _ in present])
         self._faiss_dirty = True
+        if self.virtual_faiss_index is not None:
+            await self._rebuild_virtual_faiss_index()
+
+    async def _rebuild_virtual_faiss_index(self) -> None:
+        """Build the virtual FAISS index from raw embeddings + cached
+        displacement (Phase H Stage 4).
+
+        Uses ``compute_virtual_position`` for each active node so that
+        Phase G priming (which moves displacement on every active node)
+        becomes seedable. Without this index, raw FAISS top-K never sees
+        priming-induced cluster shifts."""
+        if self.virtual_faiss_index is None:
+            return
+        active_ids = [
+            s.id for s in self.cache.get_all_nodes() if not s.is_archived
+        ]
+        if not active_ids:
+            self.virtual_faiss_index.reset()
+            return
+        raw_vecs = self.faiss_index.get_vectors(active_ids)
+        virtual_vectors: list[np.ndarray] = []
+        virtual_ids: list[str] = []
+        for nid in active_ids:
+            original = raw_vecs.get(nid)
+            if original is None:
+                continue
+            displacement = self.cache.get_displacement(nid)
+            state = self.cache.get_node(nid)
+            temperature = state.temperature if state is not None else 0.0
+            virtual_pos = compute_virtual_position(
+                original, displacement, temperature,
+            )
+            virtual_vectors.append(virtual_pos)
+            virtual_ids.append(nid)
+        if not virtual_vectors:
+            self.virtual_faiss_index.reset()
+            return
+        matrix = np.stack(virtual_vectors).astype(np.float32)
+        self.virtual_faiss_index.reset()
+        self.virtual_faiss_index.add(matrix, virtual_ids)
+        logger.info(
+            "Virtual FAISS rebuilt: %d active vectors", len(virtual_ids),
+        )
 
     # --- US5: State Reset ---
 

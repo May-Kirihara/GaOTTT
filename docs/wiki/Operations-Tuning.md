@@ -59,6 +59,7 @@
 | wave_density_window | 10 | density 評価で見る top-N の N |
 | wave_density_threshold | 0.95 | tail/top 比率の閾値。これ未満で「sparse」と判定して seed 拡大 |
 | wave_initial_k_max | 50 | sparse 判定時の effective_k 上限（Phase H Stage 3） |
+| virtual_faiss_enabled | `True` | virtual_pos でビルドした第二 FAISS を並走（Phase H Stage 4）。priming 後の displacement を seed step に反映する |
 
 ## 誕生時の重力 kick（Phase G — Stage 1）
 

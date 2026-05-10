@@ -239,6 +239,19 @@ class GaOTTTConfig:
     wave_density_threshold: float = 0.95     # tail/top ratio above this = "dense"
     wave_initial_k_max: int = 50             # cap for sparse-region expansion
 
+    # Phase H Stage 4 — Virtual FAISS:
+    # A second FAISS index built on virtual_pos (= raw embedding +
+    # cached displacement, normalized). Phase G priming moves
+    # displacement on every active node, but raw FAISS does not see
+    # those updates — wave seeding therefore can't benefit from priming.
+    # Virtual FAISS does. propagate_gravity_wave unions seeds from raw
+    # and virtual indexes; if a node moved closer to the query through
+    # priming, it can enter the seed pool via the virtual index even
+    # when its raw cosine is far. Rebuilt at startup (if disk file is
+    # missing) and on compact(rebuild_faiss=True). Saved on shutdown.
+    virtual_faiss_enabled: bool = True
+    virtual_faiss_index_path: str = ""
+
     # Phase D: persona & task TTL defaults
     default_task_ttl_seconds: float = 30 * 86400.0       # 30 日 (要 revalidate / complete / abandon)
     default_commitment_ttl_seconds: float = 14 * 86400.0  # 14 日
@@ -292,6 +305,10 @@ class GaOTTTConfig:
                 self.faiss_index_path = legacy_faiss
             else:
                 self.faiss_index_path = new_faiss
+        if not self.virtual_faiss_index_path:
+            self.virtual_faiss_index_path = os.path.join(
+                self.data_dir, "gaottt.virtual.faiss"
+            )
 
     @classmethod
     def from_config_file(cls) -> "GaOTTTConfig":

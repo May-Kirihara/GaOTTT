@@ -170,6 +170,31 @@ def propagate_gravity_wave(qv, faiss_index, cache, config, *,
 
 **Open**: 本番 DB で Stage 3 のうれしさを定量化するベンチが未整備。「query が sparse のとき reach 件数が増える」を測る合成シナリオが必要。
 
+### Stage 4 実装結果 (2026-05-11)
+
+`gaottt.virtual.faiss` という第二の FaissIndex を engine に並走させる:
+- `index_documents`: 新規 vec を raw・virtual 両 index に同じベクトルで add (displacement=0)
+- `_rebuild_virtual_faiss_index()`: cache の displacement / temperature 反映で `virtual_pos = compute_virtual_position(raw, displacement, T)` を全 active node に対して計算、virtual_faiss_index に投入
+- `startup`: disk から load、empty かつ raw が non-empty なら rebuild
+- `compact(rebuild_faiss=True)`: raw rebuild の後に virtual も rebuild
+- `shutdown`: 両 index を save
+
+`propagate_gravity_wave` に `virtual_faiss_index` 引数を追加、`_union_pool()` で raw・virtual 両 top-N を union（id 重複は max score を保持）。Stage 1/2/3 のロジックはこの union pool 上で動く。
+
+**Measured (本番 23k DB、2026-05-11)**:
+
+| 観点 | 値 |
+|---|---|
+| pytest | 167/167 PASS（新規 virtual FAISS 4 ケース、1 skip は fixture lottery） |
+| isolated bench | p50 = 15.7ms（< 50ms 必達 OK） |
+| ruff | clean |
+| **filter=none top1 score** | "FAISS write-behind ..." 0.0587 → **0.3284** (5.6x)、"Articulation as Carving ..." 0.0620 → **0.3523** (5.7x)、"Phase G priming kick ..." 0.1982 → 0.3244 (1.6x)、"anchor 句 大規模 DB ..." 0.3568 → 0.3715 (1.04x) |
+| filter=agent surface | Stage 2/3 と同じ（Phase G 関連クエリで 3 hits、他は 0） |
+
+**観察された効果**: virtual FAISS が priming の displacement を seed に反映するため、意味マッチに displacement 補正が乗り、scoring が大きく改善。tweet/file 系の高 score が 0.3+ に集中する傾向。
+
+**残った構造的限界**: agent docs の displacement は priming 時に **近傍高 mass cluster方向**へ動かされる（Phase G の機構）。query と関係ない方向に動いているケースでは virtual cosine も近づかない → agent surface が改善しないクエリが残る。これは Phase G 設計の前提（neighbor-based kick）が embed 空間の dense cluster 中心に寄せる性質によるもので、Phase H の seed redesign では超えられない。今後の方向性として「query-aware displacement」や「semantic-targeted kick」が候補だが、それは別 Phase。
+
 ---
 
 ## 推奨組み合わせと実装順序
@@ -179,7 +204,7 @@ def propagate_gravity_wave(qv, faiss_index, cache, config, *,
 | Stage 1 | **H.3 Mass-aware seed boosting** | 最小実装、まず効果を測る | ✅ 完了 (2026-05-10) — scoring 改善は確認、sparse class 救済には不足判明 |
 | Stage 2 | **H.4 Source-aware seed filtering** | sparse class 救済の本筋（H.3 で不足が確認されたため優先度上昇） | ✅ 完了 (2026-05-10) — 一部クエリで agent surface 達成、embedding 距離が遠いクエリは依然届かず |
 | Stage 3 | **H.1 Dynamic wave_initial_k** | sparse 領域の救済を上乗せ | ✅ 完了 (2026-05-10) — 密度応答型 seed 拡大、test で確認、本番 DB の filter=none 経路で reach 拡大 |
-| Stage 4 | **H.2 Virtual FAISS（条件付き）** | 上記で不足なら最終手段 | 保留 |
+| Stage 4 | **H.2 Virtual FAISS** | 上記で不足なら最終手段 | ✅ 完了 (2026-05-11) — 第二の FAISS index を virtual_pos で構築、seed pool は raw + virtual の union。priming の displacement が seed step に効くようになった |
 
 ### Stage 1 実装結果（2026-05-10）
 

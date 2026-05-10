@@ -340,6 +340,34 @@ def apply_displacement_decay(
 # Gravity Wave Propagation (unchanged)
 # -----------------------------------------------------------------------
 
+def _union_pool(
+    qv: np.ndarray,
+    raw_index: "FaissIndex",
+    virtual_index: "FaissIndex | None",
+    pool_size: int,
+) -> list[tuple[str, float]]:
+    """Take top-N from raw FAISS, optionally union with virtual FAISS,
+    deduplicate by id keeping the best score. Phase H Stage 4 enables
+    seeds to come from the virtual position index, which sees Phase G
+    priming displacement updates that raw FAISS cannot."""
+    pool_raw = raw_index.search(qv.reshape(1, -1), pool_size)
+    if virtual_index is None or virtual_index.size == 0:
+        return pool_raw
+    pool_virtual = virtual_index.search(qv.reshape(1, -1), pool_size)
+    best: dict[str, float] = {}
+    for nid, score in pool_raw:
+        prev = best.get(nid)
+        if prev is None or score > prev:
+            best[nid] = score
+    for nid, score in pool_virtual:
+        prev = best.get(nid)
+        if prev is None or score > prev:
+            best[nid] = score
+    merged = list(best.items())
+    merged.sort(key=lambda t: t[1], reverse=True)
+    return merged
+
+
 def propagate_gravity_wave(
     query_vector: np.ndarray,
     faiss_index: "FaissIndex",
@@ -348,6 +376,7 @@ def propagate_gravity_wave(
     wave_k: int | None = None,
     wave_depth: int | None = None,
     source_filter: list[str] | None = None,
+    virtual_faiss_index: "FaissIndex | None" = None,
 ) -> dict[str, float]:
     """Propagate gravity wave recursively through embedding space.
 
@@ -364,8 +393,14 @@ def propagate_gravity_wave(
     lose every raw-cosine contest to dense Twitter / book clusters. Mass
     boosting is still applied to the post-filter set if α > 0.
 
-    Set ``config.wave_seed_mass_alpha=0`` and pass no ``source_filter`` to
-    recover legacy raw-cosine top-K seeding.
+    Phase H Stage 4 — Virtual FAISS: when ``virtual_faiss_index`` is
+    provided and non-empty, the seed pool is the union of top-N from raw
+    and from virtual indexes. Phase G priming moves displacement on every
+    active node, which raw FAISS does not see; virtual FAISS does, so
+    primed nodes can still enter the seed pool through it.
+
+    Set ``config.wave_seed_mass_alpha=0`` and pass no ``source_filter`` /
+    ``virtual_faiss_index`` to recover legacy raw-cosine top-K seeding.
     """
     initial_k = wave_k if wave_k is not None else config.wave_initial_k
     max_depth = wave_depth if wave_depth is not None else config.wave_max_depth
@@ -375,7 +410,7 @@ def propagate_gravity_wave(
     if source_filter:
         sf_set = set(source_filter)
         pool_size = max(initial_k, config.wave_k_with_filter)
-        pool = faiss_index.search(qv.reshape(1, -1), pool_size)
+        pool = _union_pool(qv, faiss_index, virtual_faiss_index, pool_size)
         if not pool:
             return {}
         candidates: list[tuple[str, float, float]] = []
@@ -394,7 +429,7 @@ def propagate_gravity_wave(
         seeds = [(nid, raw) for nid, _, raw in candidates[:initial_k]]
     elif config.wave_seed_mass_alpha > 0.0:
         pool_size = max(initial_k, config.wave_seed_pool_size)
-        pool = faiss_index.search(qv.reshape(1, -1), pool_size)
+        pool = _union_pool(qv, faiss_index, virtual_faiss_index, pool_size)
         if not pool:
             return {}
 
@@ -423,7 +458,9 @@ def propagate_gravity_wave(
         rescored.sort(key=lambda t: t[1], reverse=True)
         seeds = [(nid, raw) for nid, _, raw in rescored[:effective_k]]
     else:
-        seeds = faiss_index.search(qv.reshape(1, -1), initial_k)
+        seeds = _union_pool(
+            qv, faiss_index, virtual_faiss_index, initial_k,
+        )
     if not seeds:
         return {}
 

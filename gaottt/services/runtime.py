@@ -29,6 +29,10 @@ def build_engine(config: GaOTTTConfig) -> GaOTTTEngine:
     """
     embedder = RuriEmbedder(model_name=config.model_name, batch_size=config.batch_size)
     faiss_index = FaissIndex(dimension=config.embedding_dim)
+    virtual_faiss_index = (
+        FaissIndex(dimension=config.embedding_dim)
+        if config.virtual_faiss_enabled else None
+    )
     store = SqliteStore(db_path=config.db_path)
     cache = CacheLayer(
         flush_interval=config.flush_interval_seconds,
@@ -40,4 +44,5 @@ def build_engine(config: GaOTTTConfig) -> GaOTTTEngine:
         faiss_index=faiss_index,
         cache=cache,
         store=store,
+        virtual_faiss_index=virtual_faiss_index,
     )
