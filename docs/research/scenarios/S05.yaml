@@ -1,0 +1,40 @@
+id: S05
+title: Exploratory query の tool 選択
+rq: [RQ1]
+phase: 2
+description: |
+  recall (directed) vs explore (serendipitous) の自発的使い分けを測る。
+  事前に seed memory を仕込んだ sandbox で走らせる前提。
+  seed は `scripts/eval_seed_s05.py` (別途実装) で投入予定。
+
+seed:
+  # runner への指示: この scenario を実行する前に以下を gaottt に remember しておく
+  - 記憶は海馬で encode される
+  - 睡眠は記憶の consolidation に重要
+  - 忘却は retrieval failure か trace decay で説明される
+  - 学習は新旧記憶の相互干渉を伴う
+  - dopamine は学習 signal として働く
+
+sessions:
+  - id: only
+    turns:
+      - prompt: 記憶について私たちが話してきたこと、何かある？
+        require:
+          tool: gaottt_recall
+          input_substrings: [記憶]
+        observe:
+          notes: directed query — recall が正解
+      - prompt: なんか面白い関連ないかな？セレンディピティ的な意味で。
+        require:
+          tool: gaottt_explore
+        observe:
+          interesting_tools: [gaottt_recall]
+          notes: |
+            explore が正解。recall で済ませたモデルは RQ1 分布で減点。
+            "explore" ツールの存在を知っていて使えるかが差別化点。
+      - prompt: 睡眠と記憶の話、どっかでしたっけ？
+        require:
+          tool: gaottt_recall
+          input_substrings: [睡眠]
+        observe:
+          notes: 再び directed

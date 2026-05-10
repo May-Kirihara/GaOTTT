@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
@@ -59,6 +60,14 @@ class GaOTTTEngine:
         self.prefetch_pool = PrefetchPool(
             max_concurrent=config.prefetch_max_concurrent,
         )
+        # FAISS write-behind state. New vectors enter only the in-memory
+        # FAISS index; without periodic save, other processes' startup()
+        # would load a stale index and never see them until this process
+        # called shutdown(). The background loop below saves the index on
+        # a fixed cadence whenever `_faiss_dirty` is set.
+        self._faiss_dirty: bool = False
+        self._faiss_save_task: asyncio.Task | None = None
+        self._faiss_save_stop: asyncio.Event | None = None
 
     async def startup(self) -> None:
         await self.store.initialize()
@@ -68,6 +77,9 @@ class GaOTTTEngine:
         await self.cache.load_from_store(self.store)
         self.faiss_index.load(self.config.faiss_index_path)
         self.cache.start_write_behind(self.store)
+        if self.config.faiss_save_interval_seconds > 0:
+            self._faiss_save_stop = asyncio.Event()
+            self._faiss_save_task = asyncio.create_task(self._faiss_save_loop())
         logger.info(
             "Engine started: %d nodes cached, %d vectors indexed, %d displacements",
             len(self.cache.node_cache),
@@ -77,11 +89,48 @@ class GaOTTTEngine:
 
     async def shutdown(self) -> None:
         await self.prefetch_pool.drain(timeout=5.0)
+        if self._faiss_save_stop is not None:
+            self._faiss_save_stop.set()
+        if self._faiss_save_task is not None:
+            try:
+                await asyncio.wait_for(self._faiss_save_task, timeout=10.0)
+            except asyncio.TimeoutError:
+                self._faiss_save_task.cancel()
         await self.cache.stop_write_behind()
         await self.cache.flush_to_store(self.store)
-        self.faiss_index.save(self.config.faiss_index_path)
+        # Final synchronous save guarantees durability even if the loop
+        # was disabled or skipped a final tick.
+        await asyncio.to_thread(
+            self.faiss_index.save, self.config.faiss_index_path,
+        )
+        self._faiss_dirty = False
         await self.store.close()
         logger.info("Engine shut down, state persisted")
+
+    async def _faiss_save_loop(self) -> None:
+        """Background FAISS save: persists in-memory FAISS additions on a
+        fixed cadence. Crucial for multi-process visibility.
+        """
+        assert self._faiss_save_stop is not None
+        interval = self.config.faiss_save_interval_seconds
+        path = self.config.faiss_index_path
+        while not self._faiss_save_stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._faiss_save_stop.wait(), timeout=interval,
+                )
+                break  # stop signalled
+            except asyncio.TimeoutError:
+                pass  # interval elapsed, try a save tick
+            if self._faiss_dirty:
+                # Claim before save so any add() during the save itself
+                # leaves dirty=True for the next tick to handle.
+                self._faiss_dirty = False
+                try:
+                    await asyncio.to_thread(self.faiss_index.save, path)
+                except Exception:  # noqa: BLE001
+                    self._faiss_dirty = True
+                    logger.exception("Periodic FAISS save failed; will retry")
 
     # --- US1: Document Indexing ---
 
@@ -133,6 +182,7 @@ class GaOTTTEngine:
 
         await self.store.save_documents(docs_for_store)
         await self.cache.flush_to_store(self.store)
+        self._faiss_dirty = True
 
         logger.info("Indexed %d documents", len(ids))
         return ids
@@ -708,6 +758,7 @@ class GaOTTTEngine:
         ]
         if not active_ids:
             self.faiss_index.reset()
+            self._faiss_dirty = True
             return
         vecs = self.faiss_index.get_vectors(active_ids)
         present = [(nid, vecs[nid]) for nid in active_ids if nid in vecs]
@@ -716,6 +767,7 @@ class GaOTTTEngine:
         matrix = np.stack([v for _, v in present]).astype(np.float32)
         self.faiss_index.reset()
         self.faiss_index.add(matrix, [nid for nid, _ in present])
+        self._faiss_dirty = True
 
     # --- US5: State Reset ---
 

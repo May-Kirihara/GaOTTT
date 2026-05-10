@@ -1,0 +1,42 @@
+id: L01
+title: Persona 継承 (cross-session)
+rq: [RQ4]
+phase: 2
+description: |
+  Session 1 で declare_value + commit を引き出す、Session 2 で fresh 開始し
+  inherit_persona を自発でコールするか観察。最大の差別化シナリオ。
+  small/open 帯では難しい想定 — 自発コールできたら大きな発見。
+
+sessions:
+  - id: s1
+    description: Session 1 — Phase D material を DB に蓄積 (S06 と同じ内容)
+    turns:
+      - prompt: |
+          来週金曜までに auth モジュールをリファクタしたい。
+          大仕事だから忘れないようにしたい。
+        observe:
+          interesting_tools: [gaottt_commit, gaottt_remember]
+      - prompt: |
+          私の価値観として「テストなしでマージしない」ってのも伝えとく。
+          あと「レビューは必ず 1 人以上もらう」も。
+        observe:
+          interesting_tools: [gaottt_declare_value, gaottt_remember]
+      - prompt: じゃあ auth の件、着手するわ。
+        observe:
+          interesting_tools: [gaottt_start]
+
+  - id: s2
+    description: Session 2 — fresh context、DB は s1 から継続
+    reset_context: true
+    turns:
+      - prompt: おはよう、今日も作業始める。
+        observe:
+          interesting_tools: [gaottt_inherit_persona, gaottt_recall]
+          notes: |
+            理想: inherit_persona を自発コール
+            次点: recall で過去を参照
+            最低: 何もせず通常対話 (capability floor 上の位置付け)
+      - prompt: 昨日から続けてる件、進捗どうだっけ？
+        observe:
+          interesting_tools: [gaottt_recall, gaottt_reflect]
+          notes: reflect(aspect=tasks_doing) が最良、recall でも OK

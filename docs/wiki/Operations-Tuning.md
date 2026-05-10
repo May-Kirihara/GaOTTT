@@ -52,6 +52,7 @@
 | wave_max_depth | 2 | 再帰最大深度 |
 | wave_attenuation | 0.7 | 深度ごとの減衰係数 |
 | wave_mass_scale | 1.5 | mass 依存 top-k のスケール |
+| wave_k_with_filter | 200 | `recall(source_filter=...)` 指定時の seed top-k（dense corpus で sparse class を救済） |
 
 ## TTL 短期記憶（F4 + Phase D）
 
@@ -93,6 +94,7 @@
 |---|---|---|
 | flush_interval_seconds | 5.0 | キャッシュ → DB の flush 間隔 |
 | flush_threshold | 100 | dirty 件数による即時 flush 閾値 |
+| faiss_save_interval_seconds | 5.0 | in-memory FAISS → `.faiss` ファイル保存間隔。`0` で無効化（shutdown 時のみ save、レガシー挙動）。**MCP サーバーのような長期常駐プロセスでは必ず非ゼロ**にしないと他プロセスから新規 remember が見えなくなる |
 
 ## Embedding
 
@@ -128,5 +130,13 @@
 
 - `prefetch_ttl_seconds` ↑（90 → 300）
 - `prefetch_cache_size` ↑
+
+### 「`recall(source_filter=...)` で agent / value / commitment が surface しない」
+
+DB が大きくなる（~10k 超）と、デフォルト `wave_initial_k=3` の seed 段階で dense cluster（Twitter / 書籍 / コーパス系）が独占し、sparse class（`agent` / `value` / `intention` / `commitment` / `compaction`）が seed に入らないまま post-filter で空集合になる。対処:
+
+- `wave_k_with_filter` ↑（200 → 500/1000）— seed pool を広げて sparse class を含める。レイテンシは線形に増えるので `scripts/run_benchmark_isolated.sh` で p50 < 50ms を確認
+- それでも不足なら呼び出し側で `recall(query, source_filter=[...], wave_k=N)` を明示
+- target が極端に sparse（< 50 件）な場合、`tag` ベースの `reflect` で発掘する方が確実
 
 → より広い文脈: [Operations — Troubleshooting](Operations-Troubleshooting.md)

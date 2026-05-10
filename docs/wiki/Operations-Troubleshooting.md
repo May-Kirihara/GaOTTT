@@ -6,6 +6,19 @@
 
 正常動作。初回クエリ時、`last_access` がインデックス時刻のため `decay = exp(-δ × 経過時間)` が非常に小さくなる。2 回目以降は decay ≈ 1.0。
 
+## 別プロセスから新規 `remember` が見えない（FAISS stale）
+
+**症状**: 別プロセスの MCP サーバー / opencode エージェント等で `remember` した直後、自プロセスの `recall` でその memory が一切 surface しない。`reflect(aspect="summary")` の `Total memories` は増えていることがある（SQLite は WAL で共有されるが FAISS index はプロセス毎独立）。
+
+**原因（歴史的バグ、2026-05-10 修正済み）**: かつて `engine.shutdown()` でしか FAISS が disk に save されなかった。MCP サーバー等の長期常駐プロセスは shutdown しないため、新規 vector が永久に in-memory のまま、他プロセスからは invisible だった。
+
+**修正**: `faiss_save_interval_seconds`（既定 5s）周期の write-behind loop を導入（[Architecture — Concurrency](Architecture-Concurrency.md) 参照）。
+
+**それでも見えない場合の対処**:
+- 自プロセスを再起動（startup() で disk から最新 FAISS を load）
+- 修正前の DB で長期間積もった「FAISS に無く SQLite/cache にのみ存在する」ノードがある場合、`engine.compact(rebuild_faiss=True)` で全 active から再構築すれば解消（diagnostics: `len(faiss._id_map - cache.node_cache.keys())` と逆向きを比較）
+- `faiss_save_interval_seconds=0` に設定してしまっていないか確認（disable 設定）
+
 ## メモリ使用量が大きい
 
 - embedding モデル: ~1.5GB（GPU VRAM）

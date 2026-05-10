@@ -178,9 +178,15 @@ class GaOTTTConfig:
     db_path: str = ""
     faiss_index_path: str = ""
 
-    # Write-behind
+    # Write-behind (cache → SQLite + FAISS index → disk)
     flush_interval_seconds: float = 5.0
     flush_threshold: int = 100
+    # Periodic FAISS save: if non-zero, the engine spawns a background task
+    # that calls faiss_index.save() every N seconds when dirty. Critical for
+    # multi-process visibility — without this, brand-new `remember` lives
+    # only in the writing process's in-memory FAISS until shutdown(), so
+    # other processes' recall() never sees it. Set to 0 to disable.
+    faiss_save_interval_seconds: float = 5.0
 
     # F4: TTL for ephemeral memory (source="hypothesis")
     default_hypothesis_ttl_seconds: float = 7 * 86400.0  # 7 days
@@ -199,6 +205,16 @@ class GaOTTTConfig:
     prefetch_cache_size: int = 64                     # Max cached query results
     prefetch_ttl_seconds: float = 90.0                # Cache entry lifetime
     prefetch_max_concurrent: int = 4                  # Bounded async pool size
+
+    # Source-filtered recall — seed pool expansion
+    # When `source_filter` is set on `recall`, the default `wave_initial_k=3`
+    # seeds from the densest cluster only, so sparse classes (agent / value /
+    # intention / commitment / compaction) get squeezed out of the seed
+    # pool entirely on corpus-heavy DBs (~10k+ entries). Boosting wave_k
+    # for filtered queries oversamples seeds so the requested sources have
+    # a real chance of being reached. Default 200 is calibrated for 20-30k
+    # corpora with sparse target classes (~1% of total).
+    wave_k_with_filter: int = 200
 
     # Phase D: persona & task TTL defaults
     default_task_ttl_seconds: float = 30 * 86400.0       # 30 日 (要 revalidate / complete / abandon)

@@ -1,0 +1,49 @@
+id: L02
+title: Longitudinal recall (cross-session)
+rq: [RQ4]
+phase: 2
+description: |
+  Session 1 で領域話題を対話し、モデルが自発 save したもので DB が育つ。
+  Session 2 で held-out クエリを投げ、precision@5 相当で「何が save され
+  どう取り出せるか」を測る。M7 (recall precision) の中心指標。
+
+sessions:
+  - id: s1
+    description: Session 1 — 3 トピックを広く語る
+    turns:
+      - prompt: |
+          GaOTTT って重力の更新則が SGD と同型って話、
+          Verlet 積分で書けるのが面白いよね。
+        observe:
+          interesting_tools: [gaottt_remember, gaottt_auto_remember]
+          notes: |
+            save される期待: 「重力更新則 = SGD と構造的対応」
+            「Verlet 積分」のキーワード
+      - prompt: |
+          あと RURI-v3-310m の埋め込み空間って
+          日本語・英語のバイリンガルで結構性能出るのも
+          実装上のありがたポイント。
+        observe:
+          notes: "save 期待: 「RURI-v3-310m」「バイリンガル」"
+      - prompt: |
+          SQLite の WAL mode で busy_timeout 30 秒入れといたら
+          複数 MCP プロセスから共有書き込みが破綻しなくなった。
+        observe:
+          notes: "save 期待: 「WAL mode」「busy_timeout」「共有 write」"
+
+  - id: s2
+    description: Session 2 — fresh、held-out クエリで recall 成功率を測る
+    reset_context: true
+    turns:
+      - prompt: SGD と重力の関係って話してたっけ？
+        observe:
+          interesting_tools: [gaottt_recall]
+          notes: s1 turn 1 の内容が hit するか
+      - prompt: 埋め込みモデル何使ってたっけ？
+        observe:
+          interesting_tools: [gaottt_recall]
+          notes: s1 turn 2 の RURI が hit するか
+      - prompt: SQLite の同時書き込みどうしてる？
+        observe:
+          interesting_tools: [gaottt_recall]
+          notes: s1 turn 3 の WAL/busy_timeout が hit するか

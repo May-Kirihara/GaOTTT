@@ -166,7 +166,8 @@ rm -rf /tmp/gaottt-bench
 GaOTTT の DB は **複数 MCP プロセスから共有される** ことがある（複数エージェント、ユーザーの並行ターミナル等）:
 
 - SQLite WAL + `PRAGMA busy_timeout = 30000`（30 秒待機）で並行 write 安全
-- ただし **各プロセスは独自の cache + FAISS index** を持つ — プロセス A の `remember` は B には即時反映されない（B の cache reload まで stale）
+- ただし **各プロセスは独自の cache + FAISS index** を持つ — プロセス A の `remember` は B には即時反映されない（B の startup/cache reload まで stale）
+- **FAISS write-behind**（2026-05-10 導入）: in-memory に add した vector は `faiss_save_interval_seconds`（既定 5s）周期で disk に save。**これがないと shutdown しない長期常駐プロセス（MCP サーバー）の remember は他プロセスから永久 invisible になる**。歴史的にこのバグで `cache - faiss` が積もっていた DB は `compact(rebuild_faiss=True)` で掃除可
 - `faiss_index.search` は境界チェック付き（`.ids` 破損対策）
 - Destructive op（`forget`/`merge`/`compact` 等）は **必ず `prefetch_cache.invalidate()` を呼ぶ**
 - ベンチマークは絶対に本番 DB を触らない → `scripts/run_benchmark_isolated.sh` を使う

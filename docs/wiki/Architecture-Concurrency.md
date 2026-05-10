@@ -21,16 +21,30 @@ PRAGMA wal_autocheckpoint = 2000       # WAL 肥大化抑制
 | 操作 | 動作 |
 |---|---|
 | 既存ノードの recall (mass/displacement 蓄積) | DB レベルで共有、cache はプロセス毎に独立 |
-| 新規 remember (新ノード追加) | DB には入るが、別プロセスの FAISS index には追加されない |
+| 新規 remember (新ノード追加) | DB に書かれ、書き込みプロセスの FAISS は in-memory 即時反映、disk への永続化は `faiss_save_interval_seconds`（既定 5s）周期。別プロセスは startup 時に load するため、その時点の disk 状態が見える |
 | edges/relations | DB に書かれる、別プロセスの cache は次回リロードまで stale |
 
-### FAISS の罠
+### FAISS の罠（write-behind 導入で軽減）
 
-複数プロセスがそれぞれ FAISS インスタンスを持つため:
-- プロセス A が `remember` した新ノードは、プロセス B の FAISS index には現れない（B の cache reload まで）
-- プロセス A と B が同時に `shutdown` で `.faiss` ファイルを保存すると、後勝ちで一方の追加が失われる可能性
+各プロセスはそれぞれ FAISS インスタンスを持つ。歴史的に「`shutdown()` まで disk に save しない」設計だったため、shutdown しない長期常駐プロセス（MCP サーバー等）の `remember` は他プロセスから永久に invisible だった。
 
-→ 対策: 重要な書き込み後は `engine.compact(rebuild_faiss=True)` で全 active ノードから FAISS を再構築
+これは **FAISS write-behind** で解消（2026-05-10 修正）:
+
+```python
+# core/engine.py
+async def _faiss_save_loop(self) -> None:
+    """Background save: flush in-memory FAISS additions to disk every
+    faiss_save_interval_seconds. Without this, brand-new `remember`
+    lives only in the writing process's RAM until shutdown(),
+    making other processes' recall() blind to it."""
+```
+
+- 周期は `config.faiss_save_interval_seconds`（既定 5s、`0` で無効化）
+- `index_documents` と `_rebuild_faiss_index` で `_faiss_dirty=True` を立てる
+- loop は `_faiss_dirty=False`（claim）→ `to_thread(faiss_index.save, path)`（IO はスレッドへ）→ 失敗時のみ `True` に戻す
+- `shutdown()` で停止前に最終 save を呼ぶ（残った dirty を flush）
+- 残る race: 「save 中の新規 add は次の tick で saved」（実用上影響なし）
+- 残る競合: A と B が**同時に save** すると後勝ち → 重要書き込み後は `engine.compact(rebuild_faiss=True)` で再構築可（保険）
 
 ### 防御的境界チェック
 

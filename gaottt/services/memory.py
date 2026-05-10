@@ -123,11 +123,19 @@ async def recall(
     wave_k: int | None = None,
     force_refresh: bool = False,
 ) -> RecallResponse:
+    # When source_filter narrows results to a sparse class on a corpus-heavy
+    # DB, the default wave_initial_k=3 seeds from the densest cluster only,
+    # so the requested sources never reach the seed pool. Boost wave_k via
+    # config.wave_k_with_filter so post-filtering has real candidates.
+    # Caller-supplied wave_k always wins.
+    effective_wave_k = wave_k
+    if source_filter and effective_wave_k is None:
+        effective_wave_k = engine.config.wave_k_with_filter
     raw = await engine.query(
         text=query,
-        top_k=top_k * 2 if source_filter else top_k,
+        top_k=top_k * 10 if source_filter else top_k,
         wave_depth=wave_depth,
-        wave_k=wave_k,
+        wave_k=effective_wave_k,
         use_cache=not force_refresh,
     )
     if source_filter:

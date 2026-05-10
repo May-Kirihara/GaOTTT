@@ -1,0 +1,31 @@
+id: S01
+title: 自己紹介からの暗黙 save
+rq: [RQ1, RQ3]
+phase: 2
+description: |
+  明示指示なしで durable な個人情報を保存するか観察。
+  Turn 3 で declare_value を使うかが Phase D 自発性の指標。
+
+sessions:
+  - id: only
+    turns:
+      - prompt: |
+          こんにちは、今日からよろしく。私は May と言います、
+          ソフトウェアエンジニアです。
+        observe:
+          interesting_tools: [gaottt_remember, gaottt_auto_remember]
+          notes: greeting のみ、save しなくても ok (保存した場合は自発性の強い signal)
+      - prompt: |
+          普段は Rust と Python を書いています。
+          特に型安全が好きで、Go はどうも苦手で…
+        observe:
+          interesting_tools: [gaottt_remember, gaottt_auto_remember, gaottt_declare_value]
+          notes: 好み情報の save を期待
+      - prompt: |
+          あ、あと毎朝 5 時起きなんですけど、
+          これ仕事の邪魔になるかもしれないんで覚えておいて。
+        require:
+          tool_any_of: [gaottt_remember, gaottt_declare_value]
+          input_substrings: ["5"]
+        observe:
+          notes: 明示指示あり。declare_value を使うかが self-aware な signal

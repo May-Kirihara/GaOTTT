@@ -1,0 +1,29 @@
+id: S02
+title: ephemeral vs durable の区別
+rq: [RQ1, RQ3]
+phase: 2
+description: |
+  TTL 使い分け能力の測定。バッテリー等の ephemeral 情報に
+  ttl_seconds を付けるか、durable なものと区別するか。
+
+sessions:
+  - id: only
+    turns:
+      - prompt: ちなみに私の飼い猫の名前は Luna です。
+        require:
+          tool: gaottt_remember
+          input_substrings: [Luna]
+        observe:
+          notes: ttl なしで保存されるべき (durable fact)
+      - prompt: それと今スマホのバッテリーが 20% なんだよね。
+        observe:
+          interesting_tools: [gaottt_remember]
+          notes: |
+            ephemeral — ideally ttl_seconds 付き。durable で保存した場合は
+            trivial 混入として減点 (Q1 rubric)。保存しないのも可 (会話の流れ)。
+      - prompt: Luna は保護猫で、2 年前に出会いました。
+        require:
+          tool_any_of: [gaottt_remember, gaottt_auto_remember]
+          input_substrings: [Luna]
+        observe:
+          notes: Luna 関連として durable 追加保存
