@@ -63,6 +63,33 @@ def compute_gravity_radius(mass) -> float:
     return 1.0 - r_squared / 2.0
 ```
 
+## 誕生時の重力 kick（Phase G — Stage 1）
+
+新規 `index_documents` で add されたノードに対し、**既存の軌道力学 Stage 1 の式を 1 step だけ適用**して initial displacement / velocity / mass を seed する。新しい物理を導入するのでなく、**新粒子も既存粒子と同じ法則を最初から受ける**ことを保証する補正。
+
+```python
+# gaottt/core/gravity.py — compute_gravity_kick
+acc = Σ_j [G × m_j / (r² + ε)] × dir(new → j)   # j は top-K heaviest neighbors
+v   = clamp(gravity_eta × acc, max_velocity)
+d   = clamp(v.copy(), max_displacement_norm)
+mass_boost = α_genesis × |acc|
+state.mass = max(1.0, 1.0 + mass_boost)
+```
+
+| 状態 | kick 前 | kick 後（典型） |
+|---|---|---|
+| `mass` | 1.0 | 1.1 – 2.5 |
+| `displacement` | `0` | norm > 0、近傍重心方向 |
+| `velocity` | `0` | norm > 0、displacement と同方向 |
+
+**なぜ必要か** — kick がないと新規ノードは `mass=1.0 / displacement=0 / velocity=0` で gravity 場に置かれ、既に dressed up した既存クラスタに対して自然文 `recall` で勝てない。物理的にも変で、「新粒子も重力場の中にある」という基本前提が起動時から守られていなかった。詳細: [Plans — Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md)。
+
+ハイパラ:
+- `genesis_kick_enabled`（既定 `True`）— 全体 ON/OFF
+- `genesis_kick_neighbor_k`（既定 `5`）— kick 計算で使う近傍高 mass 数
+- `genesis_kick_pool_size`（既定 `50`）— FAISS top-N pool（mass 降順で K 個に絞る前段）
+- `genesis_mass_boost_alpha`（既定 `0.5`）— `|acc|` から mass boost への変換係数
+
 ## 衝突合体（F2.1）
 
 近接ノードが merge_threshold（既定 0.95）以上の類似度になると衝突:

@@ -220,6 +220,18 @@ class GaOTTTConfig:
     default_task_ttl_seconds: float = 30 * 86400.0       # 30 日 (要 revalidate / complete / abandon)
     default_commitment_ttl_seconds: float = 14 * 86400.0  # 14 日
 
+    # Phase G — Genesis kick: brand-new nodes receive a one-step gravitational
+    # interaction with their top-K heavy neighbors at index time. Without this,
+    # a fresh `remember` lands with mass=1.0 and zero displacement/velocity,
+    # losing recall ranking to established clusters even when semantically
+    # close. The kick gives the new node initial orbital state derived from
+    # the same Newtonian formula the rest of the engine uses (no special-case
+    # physics — just one step of update_orbital_state's force calculation).
+    genesis_kick_enabled: bool = True
+    genesis_kick_neighbor_k: int = 5      # heaviest K to include in the kick
+    genesis_kick_pool_size: int = 50       # FAISS top-N pool to mass-rank from
+    genesis_mass_boost_alpha: float = 0.5  # initial mass boost = α * |kick force|
+
     def __post_init__(self):
         if not self.db_path:
             new_db = os.path.join(self.data_dir, "gaottt.db")

@@ -12,6 +12,7 @@ from gaottt.config import GaOTTTConfig
 from gaottt.core.clustering import Cluster, cluster_by_similarity, find_merge_candidates
 from gaottt.core.collision import MergeOutcome, merge_pair, pick_survivor
 from gaottt.core.gravity import (
+    compute_gravity_kick,
     compute_virtual_position,
     propagate_gravity_wave,
     update_orbital_state,
@@ -181,11 +182,79 @@ class GaOTTTEngine:
             })
 
         await self.store.save_documents(docs_for_store)
+
+        # Phase G — Genesis kick: apply one-step Newtonian gravity so the
+        # new nodes enter the field with non-zero orbital state instead of
+        # competing against established clusters from a "naked" mass=1,
+        # displacement=0 starting point. See Plans-Phase-G-Memory-Genesis.md.
+        if self.config.genesis_kick_enabled:
+            self._apply_genesis_kick(ids, vectors)
+
         await self.cache.flush_to_store(self.store)
         self._faiss_dirty = True
 
         logger.info("Indexed %d documents", len(ids))
         return ids
+
+    def _top_k_heavy_neighbors(
+        self,
+        vec: np.ndarray,
+        k: int,
+        pool_size: int = 50,
+    ) -> list[tuple[np.ndarray, float]]:
+        """Pull a wide FAISS top-N pool, rerank by cached mass, return the
+        top-k as (embedding, mass) pairs. Used by the genesis kick to find
+        the heavy bodies whose gravity will bend the new node's orbit."""
+        pool = self.faiss_index.search(vec.reshape(1, -1), pool_size)
+        if not pool:
+            return []
+        candidates: list[tuple[str, float]] = []
+        for nid, _cos in pool:
+            state = self.cache.get_node(nid)
+            if state is None or state.is_archived:
+                continue
+            candidates.append((nid, state.mass))
+        if not candidates:
+            return []
+        candidates.sort(key=lambda t: t[1], reverse=True)
+        candidates = candidates[:k]
+        ids_only = [nid for nid, _ in candidates]
+        vec_map = self.faiss_index.get_vectors(ids_only)
+        out: list[tuple[np.ndarray, float]] = []
+        for nid, mass in candidates:
+            v = vec_map.get(nid)
+            if v is not None:
+                out.append((v, mass))
+        return out
+
+    def _apply_genesis_kick(
+        self, new_ids: list[str], new_vecs: np.ndarray,
+    ) -> None:
+        """Run one Verlet step of neighbor gravity on each freshly-indexed
+        node, seeding cache displacement/velocity and bumping mass.
+        Skips nodes with no qualifying neighbors (an empty DB or a region
+        with no heavy bodies)."""
+        for i, new_id in enumerate(new_ids):
+            new_vec = new_vecs[i]
+            neighbors = self._top_k_heavy_neighbors(
+                new_vec,
+                k=self.config.genesis_kick_neighbor_k,
+                pool_size=self.config.genesis_kick_pool_size,
+            )
+            if not neighbors:
+                continue
+            disp, vel, m_boost = compute_gravity_kick(
+                new_vec, neighbors, self.config,
+            )
+            disp_norm = float(np.linalg.norm(disp))
+            if disp_norm <= 1e-9 and m_boost <= 0.0:
+                continue
+            self.cache.set_displacement(new_id, disp)
+            self.cache.set_velocity(new_id, vel)
+            state = self.cache.get_node(new_id)
+            if state is not None and m_boost > 0.0:
+                state.mass = max(state.mass, 1.0 + m_boost)
+                self.cache.set_node(state, dirty=True)
 
     # --- US2: Query (Gravity Wave Propagation) ---
 
@@ -655,6 +724,7 @@ class GaOTTTEngine:
 
         if keep is not None and keep in states_by_id:
             survivor = states_by_id.pop(keep)
+            keep_explicit = True
         else:
             ordered = sorted(
                 states_by_id.values(),
@@ -663,14 +733,19 @@ class GaOTTTEngine:
             )
             survivor = ordered[0]
             states_by_id.pop(survivor.id)
+            keep_explicit = False
 
         outcomes: list[MergeOutcome] = []
         now = time.time()
         for absorbed in states_by_id.values():
-            survivor, _ = pick_survivor(survivor, absorbed)  # ensure heavier wins overall
-            if survivor.id == absorbed.id:
-                # pick_survivor flipped — swap
-                survivor, absorbed = absorbed, survivor
+            if not keep_explicit:
+                # Auto-pick the heavier body so mass conservation feels right.
+                # When the caller explicitly passed keep=, that intent wins —
+                # otherwise Phase-G mass perturbations could silently override
+                # the user's choice.
+                survivor, _ = pick_survivor(survivor, absorbed)
+                if survivor.id == absorbed.id:
+                    survivor, absorbed = absorbed, survivor
             outcome = merge_pair(survivor, absorbed, self.cache, self.config, now=now)
             outcomes.append(outcome)
             # Evict absorbed from cache after marking dirty so flush persists state

@@ -256,6 +256,57 @@ def update_orbital_state(
 
 
 # -----------------------------------------------------------------------
+# Phase G — Genesis kick: initial gravitational binding for brand-new nodes
+# -----------------------------------------------------------------------
+
+def compute_gravity_kick(
+    new_pos: np.ndarray,
+    neighbors: list[tuple[np.ndarray, float]],
+    config: GaOTTTConfig,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """One-step orbital integration for a freshly-indexed node.
+
+    Treats the new node as starting from displacement=0, velocity=0 at its
+    embedding position, then applies one timestep (dt=1) of the same
+    Newtonian neighbor-gravity formula used in compute_acceleration's
+    inner loop. Returns the resulting (displacement, velocity, mass_boost)
+    so engine.index_documents can seed cache state with non-zero values.
+
+    The point is structural correspondence with the existing physics, not
+    a separate special-case rule. A new particle, like every other particle,
+    feels gravity from its surroundings — we were just forgetting to step
+    that first interaction.
+    """
+    zero = np.zeros_like(new_pos)
+    if not neighbors:
+        return zero.astype(np.float32), zero.astype(np.float32), 0.0
+
+    acc = np.zeros_like(new_pos)
+    for pos_j, mass_j in neighbors:
+        diff = pos_j - new_pos
+        distance_sq = float(np.dot(diff, diff)) + config.gravity_epsilon
+        distance = math.sqrt(distance_sq)
+        magnitude = config.gravity_G * mass_j / distance_sq
+        direction = diff / distance
+        acc = acc + magnitude * direction
+
+    # Verlet step from rest: v_new = v_old + a*dt = a*dt; d_new = d_old + v_new*dt.
+    # gravity_eta scales the integration to match the existing legacy step
+    # (compute_gravitational_force uses the same factor).
+    velocity = config.gravity_eta * acc
+    velocity = clamp_vector(velocity, config.orbital_max_velocity)
+    displacement = clamp_vector(velocity.copy(), config.max_displacement_norm)
+
+    mass_boost = config.genesis_mass_boost_alpha * float(np.linalg.norm(acc))
+
+    return (
+        displacement.astype(np.float32),
+        velocity.astype(np.float32),
+        mass_boost,
+    )
+
+
+# -----------------------------------------------------------------------
 # Legacy functions (kept for backward compatibility)
 # -----------------------------------------------------------------------
 

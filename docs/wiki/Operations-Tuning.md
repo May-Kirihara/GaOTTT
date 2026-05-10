@@ -54,6 +54,17 @@
 | wave_mass_scale | 1.5 | mass 依存 top-k のスケール |
 | wave_k_with_filter | 200 | `recall(source_filter=...)` 指定時の seed top-k（dense corpus で sparse class を救済） |
 
+## 誕生時の重力 kick（Phase G — Stage 1）
+
+新規 `remember` 時に既存重力場から 1 step の kick を適用、新規ノードを「裸」(mass=1, displacement=0, velocity=0) で gravity 場に置かないための補正。詳細: [Plans — Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md)。
+
+| パラメータ | 既定 | 影響 | 上げると | 下げると |
+|---|---|---|---|---|
+| genesis_kick_enabled | `True` | Phase G G.1 の全体 ON/OFF | — | レガシー挙動（裸投入） |
+| genesis_kick_neighbor_k | 5 | kick 計算で使う高 mass 近傍数 | 多くの近傍からの引力で軌道が安定 | ノイズ少、近傍偏在に弱い |
+| genesis_kick_pool_size | 50 | FAISS top-N pool（mass 降順で K に絞る前段） | 真の重力中心を見つけやすい | 計算速い |
+| genesis_mass_boost_alpha | 0.5 | `|acc|` → mass boost 変換係数 | 新規が surface しやすい | homogenization 抑制 |
+
 ## TTL 短期記憶（F4 + Phase D）
 
 | パラメータ | 既定 | 用途 |
