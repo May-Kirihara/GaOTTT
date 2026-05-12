@@ -87,3 +87,37 @@
 フラッシュされていない dirty 状態は消失するが、ドキュメントと embedding は保全される。動的状態（mass, temperature）はクエリを繰り返すことで自然に再構築される。
 
 → 関連: [Architecture — Concurrency](Architecture-Concurrency.md), [Compact & Backup](Operations-Compact-And-Backup.md)
+
+## `tag_filter` / `persona_context` で注入した node が recall 結果に出ない
+
+**症状**: `recall(query, tag_filter=["foo"])` を呼んだのに、タグ "foo" を持つ node が結果に表示されない。`reflect` で確認すると node 自体は存在する。
+
+**原因（2026-05-12 修正済み）**: Phase J Stage 2 の `injected_ids` が seed pool の `initial_k` 上限（既定 ~3 程度）を超えると、溢れた node が wave propagation の `reached` dict に入らず、Step 3 の `original_emb = faiss_index.get_vectors(reached_ids)` で `None` になり results から除外されていた。FAISS にベクトルが存在していても surface しないという非直感的な挙動。
+
+**修正内容** (`gaottt/core/gravity.py`): wave 終了後に `injected_ids` の欠落 node を `reached[nid] = 1.0`（direct seed と同等の force）で強制追加するパスを追加。これにより injected node 数が `initial_k` を超えても全件が scoring に参加する。
+
+**修正前の回避策**（旧バージョン対応時）:
+- `top_k` を小さくして `injected_ids` が `initial_k` を超えないようにする
+- 注入対象を 1 件に絞って `persona_context=[specific_id]` を使う
+
+## FAISS と SQLite のカウントが合わない
+
+**症状**: `recall` で存在するはずの node が surface しない、または `compact(rebuild_faiss=True)` を実行しても FAISS count が SQLite count より少ないまま。
+
+**診断**: `scripts/verify_faiss_recovery.py` を実行:
+```bash
+.venv/bin/python scripts/verify_faiss_recovery.py [node_id_prefix ...]
+```
+`Gap > 0` ならば SQLite にはあるが FAISS にない node が存在する。特定 ID を引数に渡すと IN FAISS / MISSING を確認できる。
+
+**原因 A — write-behind フラッシュ前のプロセス終了**: MCP サーバーが `faiss_save_interval_seconds`（既定 5s）周期のフラッシュ前に異常終了した場合、その session の `remember` が SQLite には保存されているが FAISS disk には反映されない。次回起動時に FAISS を disk から load するため欠落が続く。
+
+**原因 B — `_rebuild_faiss_index` の旧バグ（2026-05-12 修正済み）**: `compact(rebuild_faiss=True)` が FAISS に既存のベクトルのみ再構築し、SQLite/cache にあるが FAISS に載っていない node を再埋め込みしなかった。
+
+**修正内容** (`gaottt/core/engine.py`): `_rebuild_faiss_index` が `vecs = faiss_index.get_vectors(active_ids)` で返らなかった `missing_ids` を `store.get_document()` で content 取得 → `embedder.encode_documents()` で再埋め込み → FAISS 追加するパスを追加。これにより `compact(rebuild_faiss=True)` が SQLite 全 active node を確実に FAISS に収録する。
+
+**対処手順**:
+1. `scripts/verify_faiss_recovery.py` でギャップを確認
+2. MCP サーバーを再起動（修正済みコードを読み込む）
+3. `compact(rebuild_faiss=True)` を実行
+4. 再度 `verify_faiss_recovery.py` で `Gap: 0` を確認

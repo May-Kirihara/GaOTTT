@@ -663,4 +663,13 @@ def propagate_gravity_wave(
 
         frontier = next_frontier
 
+    # Phase J Stage 2 fix: injected_ids that were cut from seeds due to
+    # the initial_k cap never enter the wave and are absent from `reached`.
+    # Force-include them with force=1.0 (same as a direct seed) so they
+    # participate in scoring via their own embedding, not silently dropped.
+    if injected_ids:
+        for nid in injected_ids:
+            if nid not in reached:
+                reached[nid] = 1.0
+
     return reached

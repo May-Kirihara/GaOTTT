@@ -1118,7 +1118,13 @@ class GaOTTTEngine:
         return report
 
     async def _rebuild_faiss_index(self) -> None:
-        """Drop archived/merged vectors from FAISS by rebuilding the flat index."""
+        """Rebuild FAISS from all active cache nodes.
+
+        Nodes already in FAISS have their vectors extracted directly.
+        Nodes in cache but absent from FAISS (write-behind gap from a previous
+        session that ended before the flush fired) are re-embedded from store
+        so they are no longer invisible to recall.
+        """
         active_ids = [
             state.id for state in self.cache.get_all_nodes() if not state.is_archived
         ]
@@ -1128,11 +1134,38 @@ class GaOTTTEngine:
             return
         vecs = self.faiss_index.get_vectors(active_ids)
         present = [(nid, vecs[nid]) for nid in active_ids if nid in vecs]
-        if not present:
+
+        # Re-embed nodes that exist in cache/store but are absent from FAISS.
+        missing_ids = [nid for nid in active_ids if nid not in vecs]
+        recovered: list[tuple[str, np.ndarray]] = []
+        if missing_ids:
+            logger.info(
+                "_rebuild_faiss_index: re-embedding %d nodes missing from FAISS",
+                len(missing_ids),
+            )
+            contents: list[str] = []
+            valid_ids: list[str] = []
+            for nid in missing_ids:
+                doc = await self.store.get_document(nid)
+                if doc is not None:
+                    contents.append(doc["content"])
+                    valid_ids.append(nid)
+            if contents:
+                re_vecs = self.embedder.encode_documents(contents)
+                for nid, vec in zip(valid_ids, re_vecs):
+                    recovered.append((nid, vec))
+            logger.info(
+                "_rebuild_faiss_index: recovered %d/%d missing nodes",
+                len(recovered),
+                len(missing_ids),
+            )
+
+        all_pairs = present + recovered
+        if not all_pairs:
             return
-        matrix = np.stack([v for _, v in present]).astype(np.float32)
+        matrix = np.stack([v for _, v in all_pairs]).astype(np.float32)
         self.faiss_index.reset()
-        self.faiss_index.add(matrix, [nid for nid, _ in present])
+        self.faiss_index.add(matrix, [nid for nid, _ in all_pairs])
         self._faiss_dirty = True
         if self.virtual_faiss_index is not None:
             await self._rebuild_virtual_faiss_index()
