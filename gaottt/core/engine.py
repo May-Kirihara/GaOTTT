@@ -527,7 +527,16 @@ class GaOTTTEngine:
         # Step 3: Score all reached nodes with virtual coordinates + wave boost
         now = time.time()
         query_vec_flat = query_vec[0] if query_vec.ndim == 2 else query_vec
+        q_norm = float(np.linalg.norm(query_vec_flat)) + 1e-12
         results: list[QueryResultItem] = []
+        # Phase J Stage 3 patch: ``raw_score`` (= gravity_sim) is computed
+        # against the *virtual* position (raw + displacement + temperature
+        # noise), so it carries the same displacement bias that
+        # ``final_score`` does. For the forced-set ordering we want the
+        # **pure** query-vs-raw-embedding cosine, which is what an LLM
+        # caller intuitively expects from "semantic distance to query".
+        # Compute it separately here and carry through to Step 4.
+        pure_raw_cosines: dict[str, float] = {}
 
         for node_id in reached_ids:
             state = self.cache.get_node(node_id)
@@ -549,6 +558,12 @@ class GaOTTTEngine:
             )
 
             gravity_sim = float(np.dot(query_vec_flat, virtual_pos))
+            # Pure raw cosine — no displacement, no temperature noise.
+            emb_norm = float(np.linalg.norm(original_emb)) + 1e-12
+            pure_raw_cosines[node_id] = (
+                float(np.dot(query_vec_flat, original_emb)) / (q_norm * emb_norm)
+            )
+
             mass_boost = compute_mass_boost(state.mass, self.config.alpha)
             decay = compute_decay(state.last_access, now, self.config.delta)
             wave_boost = self.config.wave_boost_weight * reached[node_id]
@@ -605,7 +620,13 @@ class GaOTTTEngine:
         if injected_ids:
             forced = [r for r in results if r.id in injected_ids]
             others = [r for r in results if r.id not in injected_ids]
-            forced.sort(key=lambda r: r.raw_score, reverse=True)
+            # Phase J Stage 3 patch: order forced by **pure** raw cosine
+            # (query vs original_emb, no displacement). ``r.raw_score``
+            # is gravity_sim which already includes displacement, so it
+            # carries the same accumulation bias as final_score.
+            forced.sort(
+                key=lambda r: pure_raw_cosines.get(r.id, 0.0), reverse=True,
+            )
             others.sort(key=lambda r: r.final_score, reverse=True)
             if len(forced) >= k:
                 results = forced[:k]
