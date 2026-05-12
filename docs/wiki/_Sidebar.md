@@ -52,6 +52,7 @@
 - [Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md)
 - [Phase H — Wave Seed Redesign](Plans-Phase-H-Wave-Seed-Redesign.md)
 - [Phase I — Free Star Movement](Plans-Phase-I-Free-Star-Movement.md)
+- [Phase J — Persona-Anchored Retrieval](Plans-Phase-J-Persona-Anchored-Retrieval.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
 
 ### 🔬 Research

@@ -1,4 +1,4 @@
-"""Phase I Stage 2 — Implicit query-aware displacement kick (integration).
+"""Phase I Stage 2 / Stage 3 — Implicit query-aware displacement kick (integration).
 
 End-to-end through engine.query():
   1. After repeated `recall(q)`, retrieved nodes' displacement drifts toward
@@ -6,6 +6,8 @@ End-to-end through engine.query():
   2. The raw embedding stored in FAISS never changes — Stage 2 is *transient
      force*, not anchor migration.
   3. With query_kick_strength=0 the legacy behaviour is preserved (control).
+  4. Stage 3 — mass_anchor_threshold > 0 dampens drift on low-mass (new) nodes
+     compared to Stage 2 (threshold=0), end-to-end through the engine path.
 """
 from __future__ import annotations
 
@@ -39,7 +41,12 @@ class StubEmbedder:
         return v
 
 
-def _make_engine(tmp_path, *, kick_strength: float):
+def _make_engine(
+    tmp_path,
+    *,
+    kick_strength: float,
+    mass_anchor_threshold: float = 0.0,
+):
     config = GaOTTTConfig(
         data_dir=str(tmp_path),
         db_path=str(tmp_path / "test.db"),
@@ -47,6 +54,9 @@ def _make_engine(tmp_path, *, kick_strength: float):
         # Phase I Stage 2 knobs
         query_kick_strength=kick_strength,
         query_kick_enabled=True,
+        # Phase I Stage 3 — default to 0 here so existing Stage 2 tests
+        # keep their pure F=ma semantics. New Stage 3 tests pass θ=3.0.
+        mass_anchor_threshold=mass_anchor_threshold,
         # Suppress unrelated noise so the kick is the dominant signal
         genesis_kick_enabled=False,
         dream_enabled=False,
@@ -166,3 +176,69 @@ async def test_query_kick_does_not_migrate_raw_anchor(tmp_path):
         assert np.array_equal(initial, final)
     finally:
         await engine.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Phase I Stage 3 — Mass-gated query attraction (integration)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stage3_gate_dampens_drift_for_new_nodes(tmp_path):
+    """Stage 3 (mass-gated kick) dampens displacement drift on freshly-added
+    nodes compared to Stage 2 (no gate), verifying the gate is actually
+    applied through the full engine.query() pipeline — not just present in
+    compute_acceleration.
+
+    Setup: identical docs and probes, only mass_anchor_threshold differs.
+      θ=0  → Stage 2 (gate=1.0): full F=ma kick toward q, larger projection
+      θ=3  → Stage 3 (gate≈0.32 at mass=1): damped kick, smaller projection
+
+    We measure the *projection* of displacement onto (q - raw) rather than
+    total displacement norm because neighbor gravity (4 other docs) is the
+    dominant force on total norm — only the q-direction component isolates
+    the query attraction term that Stage 3 gates.
+
+    This is the engine-level acceptance test for the single-attractor
+    pathology fix: Stage 3 prevents new nodes from being one-shot drifted
+    into the "near every query" position by anchor (Hooke) protection.
+    """
+    async def measure_q_projection(subdir: str, threshold: float) -> float:
+        path = tmp_path / subdir
+        path.mkdir()
+        # Bump kick strength so the gate's effect is measurable above
+        # neighbor-gravity noise within 20 recall steps.
+        engine = _make_engine(
+            path, kick_strength=0.5, mass_anchor_threshold=threshold,
+        )
+        await engine.startup()
+        try:
+            await engine.index_documents([
+                {"content": f"drift-doc-{i}", "metadata": {"source": "agent"}}
+                for i in range(5)
+            ])
+            target_id = (await engine.query(text="drift-doc-0", top_k=1))[0].id
+            raw_emb = engine.faiss_index.get_vectors([target_id])[target_id].copy()
+            q_emb = engine.embedder.encode_query("drift-probe-distinct")[0]
+            kick_dir = q_emb - raw_emb
+            kick_dir = kick_dir / (float(np.linalg.norm(kick_dir)) + 1e-9)
+            for _ in range(20):
+                await engine.query(text="drift-probe-distinct", top_k=5)
+            disp = engine.cache.get_displacement(target_id)
+            if disp is None:
+                return 0.0
+            return float(np.dot(disp, kick_dir))
+        finally:
+            await engine.shutdown()
+
+    proj_stage2 = await measure_q_projection("s2", 0.0)
+    proj_stage3 = await measure_q_projection("s3", 3.0)
+
+    # Both modes must produce positive drift toward q (kick is active)
+    assert proj_stage2 > 0, f"Stage 2 should drift toward q, got proj={proj_stage2}"
+    assert proj_stage3 > 0, f"Stage 3 should drift toward q, got proj={proj_stage3}"
+    # Stage 3 gate must dampen the q-direction drift on a low-mass node
+    assert proj_stage3 < proj_stage2, (
+        f"Stage 3 gate should reduce q-direction drift on low-mass node — "
+        f"proj_stage2={proj_stage2:.4f}, proj_stage3={proj_stage3:.4f}, "
+        f"expected ratio ≈ tanh(1/3) ≈ 0.32 modulo mass-accretion over 20 steps"
+    )

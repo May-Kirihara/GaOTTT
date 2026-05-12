@@ -151,6 +151,35 @@ class GaOTTTConfig:
     query_kick_strength: float = 0.01  # α — start small. Per-step accel is bounded by orbital_max_velocity (0.05), so α larger than ~0.05 saturates immediately. d=0.01 means ~10 recalls of the same query → ~0.1 drift toward query (Hooke equilibrium ~0.8).
     query_kick_enabled: bool = True    # Global off-switch; if False, skip the 4th term entirely.
 
+    # Phase I Stage 3 — Mass-gated query attraction:
+    # Adds a gate to the Stage 2 query-attraction term so that brand-new
+    # (low-mass) nodes are protected by anchor (Hooke) until co-occurrence
+    # structure forms. Without this gate, m_i ≈ 1.0 lets a single recall
+    # trigger a near-full-α drift, producing the single-attractor pathology
+    # (one node becoming top1 for many queries via positive feedback).
+    #   gate = tanh(m_i / mass_anchor_threshold)
+    #     mass=1, θ=3   → 0.32  (newly-added: heavily damped)
+    #     mass=3, θ=3   → 0.76  (gate's characteristic point)
+    #     mass=10, θ=3  → 0.997 (mature: nearly full)
+    # Set θ=0.0 for clean rollback to Stage 2 behaviour (gate forced to 1.0).
+    mass_anchor_threshold: float = 3.0
+
+    # Phase J Stage 1 — Persona-anchored retrieval (graph traversal seed boost).
+    # Boosts seed-pool ranking for nodes within N hops of an actively-declared
+    # value / intention / commitment, via fulfills / derived_from edges.
+    # Translates the Five-Layer persona layer into retrieval geometry — what
+    # the user has declared as identity bends the gravity field at recall time.
+    #   boosted_seed_score = raw_cosine + α_mass × log(1+mass)
+    #                                   + α_persona × proximity
+    #   proximity(node) = persona_hop_decay ** min_hop_distance(node, persona)
+    #                     0.0 beyond persona_max_hop
+    # Set persona_boost_enabled=False for clean rollback (boost path skipped).
+    persona_boost_enabled: bool = True
+    persona_boost_alpha: float = 0.5           # weight of proximity in seed rerank (5× wave_seed_mass_alpha — "context dominates mass" prior)
+    persona_max_hop: int = 2                    # graph traversal limit (1=fulfills only, 2=+derived_from chain, 3+=indirect mixing risk)
+    persona_hop_decay: float = 0.5              # per-hop decay (0.5: 1 hop=0.5, 2 hop=0.25)
+    persona_active_ttl_seconds: float = 14 * 86400.0  # commitment TTL synchronized; intention/value are always active unless archived
+
     # Gravity wave propagation
     wave_initial_k: int = 3            # Initial FAISS top-k for seed nodes
     wave_max_depth: int = 2            # Maximum recursion depth

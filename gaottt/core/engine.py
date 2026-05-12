@@ -17,6 +17,10 @@ from gaottt.core.gravity import (
     propagate_gravity_wave,
     update_orbital_state,
 )
+from gaottt.core.persona_gravity import (
+    collect_active_persona_ids,
+    compute_persona_proximities,
+)
 from gaottt.core.prefetch import PrefetchCache, PrefetchPool
 from gaottt.core.scorer import (
     compute_certainty_boost,
@@ -410,12 +414,26 @@ class GaOTTTEngine:
         k = top_k
         query_vec = self.embedder.encode_query(text)
 
+        # Phase J Stage 1: compute persona proximities once per recall and
+        # pass into the wave so the seed step can boost nodes near declared
+        # value / intention / commitment. Stage 1 auto-detects "active
+        # persona" from cache.source_by_id; Stage 2 will accept an explicit
+        # persona_context argument from the recall API.
+        persona_proximities: dict[str, float] | None = None
+        if self.config.persona_boost_enabled and self.config.persona_boost_alpha > 0.0:
+            persona_ids = collect_active_persona_ids(self.cache, self.config, time.time())
+            if persona_ids:
+                persona_proximities = compute_persona_proximities(
+                    persona_ids, self.cache, self.config,
+                )
+
         # Step 1: Gravity wave propagation — recursive neighbor expansion
         reached = propagate_gravity_wave(
             query_vec, self.faiss_index, self.cache, self.config,
             wave_k=wave_k, wave_depth=wave_depth,
             source_filter=source_filter,
             virtual_faiss_index=self.virtual_faiss_index,
+            persona_proximities=persona_proximities,
         )
 
         if not reached:
@@ -743,12 +761,19 @@ class GaOTTTEngine:
             weight=weight, created_at=time.time(), metadata=metadata,
         )
         await self.store.upsert_directed_edge(edge)
+        # Phase J Stage 1: mirror into the in-memory cache so persona
+        # traversal in the next recall sees the new edge without waiting
+        # for a cache reload.
+        self.cache.set_directed_edge(src_id, dst_id, edge_type)
         return edge
 
     async def unrelate(
         self, src_id: str, dst_id: str, edge_type: str | None = None,
     ) -> int:
-        return await self.store.delete_directed_edge(src_id, dst_id, edge_type)
+        deleted = await self.store.delete_directed_edge(src_id, dst_id, edge_type)
+        if deleted > 0:
+            self.cache.remove_directed_edge(src_id, dst_id, edge_type)
+        return deleted
 
     async def get_relations(
         self,

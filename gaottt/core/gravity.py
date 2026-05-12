@@ -134,14 +134,18 @@ def compute_acceleration(
     1. Neighbor gravity: a = Σ_j [ G * m_j / (r² + ε) * direction(i→j) ]
     2. Anchor restoring force: a = -k * displacement (Hooke's law)
     3. Co-occurrence BH gravity: attraction toward cluster centroid
-    4. Query attraction (Phase I Stage 2): a = (α · score / m) · (q - pos)
+    4. Query attraction (Phase I Stage 2 + Stage 3 mass-gating):
+       a = (α · score · gate / m_i) · (q - pos), gate = tanh(m_i / θ)
        Transient mass-damped force toward the query embedding. Acts as the
        Hebbian gradient term in the TTT reading — repeated retrievals for a
-       given query gradually pull the node toward that direction. Hooke
-       (component 2) continues to pull back to the raw anchor, so query
-       attraction is a force, not an anchor migration. Active iff
-       config.query_kick_enabled, config.query_kick_strength > 0, and the
-       caller passes mass_i + query_anchor + query_score.
+       given query gradually pull the node toward that direction. The
+       Stage 3 gate protects brand-new (low-mass) nodes from being
+       one-shot pulled into the "near every query" position by anchor
+       (Hooke component 2); mature nodes (mass ≫ θ) receive ~full kick.
+       Active iff config.query_kick_enabled, config.query_kick_strength > 0,
+       and the caller passes mass_i + query_anchor + query_score.
+       θ = config.mass_anchor_threshold; θ=0 forces gate=1.0 (Stage 2
+       legacy behaviour).
     """
     acc = np.zeros_like(pos_i)
 
@@ -163,7 +167,7 @@ def compute_acceleration(
         temp_i = node_state.temperature if node_state else 0.0
         acc = acc + compute_bh_acceleration(pos_i, node_id, temp_i, cache, all_positions, config)
 
-    # 4. Query attraction (Phase I Stage 2)
+    # 4. Query attraction (Phase I Stage 2 + Stage 3 mass-gating)
     if (
         config.query_kick_enabled
         and config.query_kick_strength > 0.0
@@ -173,7 +177,15 @@ def compute_acceleration(
         and mass_i > 0.0
     ):
         diff_q = query_anchor - pos_i
-        kick = (config.query_kick_strength * float(query_score) / float(mass_i)) * diff_q
+        # Stage 3 — Mass-gated query attraction:
+        # gate = tanh(m_i / θ). Brand-new nodes (mass≈1) are protected by
+        # anchor (Hooke) — kick is damped to ~32% at θ=3. Mature nodes
+        # (mass≫θ) receive full kick. θ=0 forces gate=1.0 (Stage 2 legacy).
+        if config.mass_anchor_threshold > 0.0:
+            gate = math.tanh(float(mass_i) / config.mass_anchor_threshold)
+        else:
+            gate = 1.0
+        kick = (config.query_kick_strength * float(query_score) * gate / float(mass_i)) * diff_q
         acc = acc + kick
 
     return acc.astype(np.float32)
@@ -400,6 +412,29 @@ def _union_pool(
     return merged
 
 
+def _seed_boost(
+    nid: str,
+    raw: float,
+    cache: "CacheLayer",
+    config: GaOTTTConfig,
+    persona_proximities: dict[str, float] | None,
+) -> float:
+    """Combine raw cosine with mass-aware (Phase H Stage 1) and persona-aware
+    (Phase J Stage 1) boosts. Each component is gated by its own config knob
+    so any subset can be disabled independently.
+    """
+    score = raw
+    if config.wave_seed_mass_alpha > 0.0:
+        state = cache.get_node(nid)
+        mass = state.mass if state is not None else 1.0
+        score += config.wave_seed_mass_alpha * math.log(1.0 + mass)
+    if persona_proximities is not None and config.persona_boost_alpha > 0.0:
+        proximity = persona_proximities.get(nid, 0.0)
+        if proximity > 0.0:
+            score += config.persona_boost_alpha * proximity
+    return score
+
+
 def propagate_gravity_wave(
     query_vector: np.ndarray,
     faiss_index: "FaissIndex",
@@ -409,6 +444,7 @@ def propagate_gravity_wave(
     wave_depth: int | None = None,
     source_filter: list[str] | None = None,
     virtual_faiss_index: "FaissIndex | None" = None,
+    persona_proximities: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Propagate gravity wave recursively through embedding space.
 
@@ -431,13 +467,30 @@ def propagate_gravity_wave(
     active node, which raw FAISS does not see; virtual FAISS does, so
     primed nodes can still enter the seed pool through it.
 
-    Set ``config.wave_seed_mass_alpha=0`` and pass no ``source_filter`` /
-    ``virtual_faiss_index`` to recover legacy raw-cosine top-K seeding.
+    Phase J Stage 1 — Persona-anchored seed boosting: when
+    ``persona_proximities`` is provided (typically from
+    ``persona_gravity.compute_persona_proximities``) and
+    ``persona_boost_alpha > 0``, the seed score adds
+    ``α_persona × proximity(nid)``. Nodes within N hops of a declared
+    value / intention / commitment via fulfills / derived_from edges
+    are preferentially admitted to the seed pool — the persona layer
+    bends retrieval geometry. Caller is responsible for computing
+    proximities (engine.query does this once per recall).
+
+    Set ``config.wave_seed_mass_alpha=0``, ``config.persona_boost_alpha=0``
+    and pass no ``source_filter`` / ``virtual_faiss_index`` /
+    ``persona_proximities`` to recover legacy raw-cosine top-K seeding.
     """
     initial_k = wave_k if wave_k is not None else config.wave_initial_k
     max_depth = wave_depth if wave_depth is not None else config.wave_max_depth
 
     qv = query_vector[0] if query_vector.ndim == 2 else query_vector
+
+    # Any boost path is active if at least one of (mass α, persona α) is on.
+    has_seed_boost = (
+        config.wave_seed_mass_alpha > 0.0
+        or (persona_proximities is not None and config.persona_boost_alpha > 0.0)
+    )
 
     if source_filter:
         sf_set = set(source_filter)
@@ -450,16 +503,11 @@ def propagate_gravity_wave(
             src = cache.get_source(nid)
             if src not in sf_set:
                 continue
-            state = cache.get_node(nid)
-            mass = state.mass if state is not None else 1.0
-            if config.wave_seed_mass_alpha > 0.0:
-                boosted = raw + config.wave_seed_mass_alpha * math.log(1.0 + mass)
-            else:
-                boosted = raw
+            boosted = _seed_boost(nid, raw, cache, config, persona_proximities)
             candidates.append((nid, boosted, raw))
         candidates.sort(key=lambda t: t[1], reverse=True)
         seeds = [(nid, raw) for nid, _, raw in candidates[:initial_k]]
-    elif config.wave_seed_mass_alpha > 0.0:
+    elif has_seed_boost:
         pool_size = max(initial_k, config.wave_seed_pool_size)
         pool = _union_pool(qv, faiss_index, virtual_faiss_index, pool_size)
         if not pool:
@@ -483,9 +531,7 @@ def propagate_gravity_wave(
 
         rescored: list[tuple[str, float, float]] = []
         for nid, raw in pool:
-            state = cache.get_node(nid)
-            mass = state.mass if state is not None else 1.0
-            boosted = raw + config.wave_seed_mass_alpha * math.log(1.0 + mass)
+            boosted = _seed_boost(nid, raw, cache, config, persona_proximities)
             rescored.append((nid, boosted, raw))
         rescored.sort(key=lambda t: t[1], reverse=True)
         seeds = [(nid, raw) for nid, _, raw in rescored[:effective_k]]

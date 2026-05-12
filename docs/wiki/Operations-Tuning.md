@@ -35,16 +35,17 @@
 | orbital_max_velocity | 0.05 | 速度の上限ノルム |
 | orbital_anchor_strength | 0.02 | アンカー復元力（Hooke's k） |
 
-## Query 引力（Phase I — Stage 2）
+## Query 引力（Phase I — Stage 2 + Stage 3）
 
-`compute_acceleration` の 4 番目の項。recall 時に retrieved nodes へ query 方向の小さな引力を加える。`F = α · score · (q - pos)`, `a = F / m_i` で **mass damping** が自動で効く (BH 化 node はほぼ動かない)。**transient force** — Hooke が raw embedding を anchor として引き続き保持するので anchor migration ではない。詳細: [Plans — Phase I](Plans-Phase-I-Free-Star-Movement.md) §Stage 2。
+`compute_acceleration` の 4 番目の項。recall 時に retrieved nodes へ query 方向の小さな引力を加える。`F = α · score · gate · (q - pos)`, `a = F / m_i` で **mass damping** が自動で効く (BH 化 node はほぼ動かない)。**Stage 3** では `gate = tanh(m_i / θ)` で新規 (低 mass) ノードが anchor (Hooke) に守られる — 単一アトラクタ pathology の防止策。**transient force** — Hooke が raw embedding を anchor として引き続き保持するので anchor migration ではない。詳細: [Plans — Phase I](Plans-Phase-I-Free-Star-Movement.md) §Stage 2-3。
 
 | パラメータ | 既定 | 影響 | 上げると | 下げると |
 |---|---|---|---|---|
 | query_kick_strength | 0.01 | 結合定数 α (G に類似) | recall ごとの drift ↑（短期で query 方向に集まる） | drift が緩慢、長期累積でしか効かない。`0` で完全 no-op (roll-back) |
 | query_kick_enabled | `True` | グローバル off スイッチ | n/a | `False` で 4 項目を完全 skip (config 即時 off) |
+| mass_anchor_threshold (θ) | 3.0 | Stage 3 gate の特徴点 (`tanh(1)≈0.76` が ここ) | 攻撃的 (`θ=1` → 新規 m=1 で gate=0.76、ほぼ満額)。新規ノードの drift 即時化 | 保守的 (`θ=10` → 新規 m=1 で gate=0.10、ほぼ動かない)。`0` で Stage 2 へ rollback (gate=1.0 強制) |
 
-> **チューニング助言**: per-step acceleration は `orbital_max_velocity=0.05` で cap されるので、`α / m × score × \|q-pos\|` が ~0.05 を超えると効きが頭打ち。質量 1 の新規 node + score=1 + |q-pos|=1.4 (unit-norm 直交) で α=0.035 が cap 境界。`α=0.01` (既定) は安全側、上げるなら `0.02-0.03` まで観察しつつ。`α=0` で legacy 挙動完全復元。
+> **チューニング助言**: per-step acceleration は `orbital_max_velocity=0.05` で cap されるので、`α / m × score × gate × \|q-pos\|` が ~0.05 を超えると効きが頭打ち。質量 1 の新規 node + score=1 + |q-pos|=1.4 (unit-norm 直交) + θ=3 で gate=0.32 → α=0.11 が cap 境界 (Stage 2 単体の 0.035 から余裕拡大)。`α=0.01` (既定) は安全側、`mass_anchor_threshold=3.0` で **新規ノードは ~32%、mature ノード (mass≥10) はほぼ満額** という世代論的挙動。pathology が再発したら θ を上げる、新規ノードの surface が遅すぎたら θ を下げる。
 
 ## 馴化・温度脱出
 
@@ -70,6 +71,20 @@
 | wave_density_window | 10 | density 評価で見る top-N の N |
 | wave_density_threshold | 0.95 | tail/top 比率の閾値。これ未満で「sparse」と判定して seed 拡大 |
 | wave_initial_k_max | 50 | sparse 判定時の effective_k 上限（Phase H Stage 3） |
+
+## Persona-anchored seed boost (Phase J Stage 1)
+
+`propagate_gravity_wave` の seed step で `α_persona × proximity` を加算。declared value / intention / commitment から `fulfills`/`derived_from`/`completed` で graph 連結するノードを優先入場させる。詳細: [Plans — Phase J](Plans-Phase-J-Persona-Anchored-Retrieval.md)。
+
+| パラメータ | 既定 | 影響 | 上げると | 下げると |
+|---|---|---|---|---|
+| persona_boost_enabled | `True` | グローバル off スイッチ | n/a | `False` で完全 skip、collect/proximity 計算も走らない |
+| persona_boost_alpha (α_persona) | 0.5 | 結合定数 (`wave_seed_mass_alpha=0.1` の 5×) | persona-tied ノードが seed pool で勝ちやすい (intention 直下の task/agent が surface しやすい) | 弱まる、`0.0` で計算は走るが boost なし |
+| persona_max_hop | 2 | graph traversal の hop 上限 | 3 hop で間接的関連も拾える (false positive ↑) | 1 hop で fulfills 直下のみ (狭い) |
+| persona_hop_decay | 0.5 | hop あたり減衰率 | 0.7 で 2 hop=0.49 (遠隔まで強い) | 0.3 で 2 hop=0.09 (急減衰) |
+| persona_active_ttl_seconds | 14 日 | active 判定の TTL (Stage 2 で commitment に適用) | n/a | n/a — Stage 1 では未使用 |
+
+> **チューニング助言**: `persona_boost_alpha=0.5` は acceptance test (本番 23k DB) で「persona-tied ノードが seed pool に届く」を目的に置いた初期値。届かなければ `1.0` まで上げる、効きすぎ (persona ノードが全 query で top1 を独占) なら `0.2` まで下げる。`persona_max_hop=2` は Phase D の典型チェーン (intention → task → outcome) を拾える深さ、3 以上にすると間接的な関連 (誰かが derive した知識の派生) も混入。`persona_boost_enabled=False` で Stage 0 (Phase J 前) 挙動に完全 rollback。
 | virtual_faiss_enabled | `True` | virtual_pos でビルドした第二 FAISS を並走（Phase H Stage 4）。priming 後の displacement を seed step に反映する |
 
 ## 誕生時の重力 kick（Phase G — Stage 1）

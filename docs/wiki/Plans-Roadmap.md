@@ -14,7 +14,8 @@ GaOTTT の Phase 進捗と未実装機能の俯瞰。
 | **Phase S** | REST × MCP 共有サービス層に集約、REST を MCP parity まで引き上げ | ✅ 完了（2026-04-22） |
 | **Phase G** | 新規 memory への重力法則の起動時適用（軌道捕獲 + 夢 + 全件 priming） | ✅ 完了（2026-05-10） — Stage 1 (G.1 軌道捕獲) + Stage 2 (G.2 夢) + Stage 0 (priming) を実装。Stage 3 (G.3 重心アンカー) は homogenization リスクで永久保留。新規 doc の surface 改善は構造的に Phase H の領域と判明 |
 | **Phase H** | Wave seed redesign — 新規 / sparse class が wave 入口で排除される問題の修正 | ✅ 完了（2026-05-10〜11）— Stage 1 (H.3 mass-aware boost) + Stage 2 (H.4 source-aware seed filtering) + Stage 3 (H.1 dynamic wave_k) + Stage 4 (H.2 virtual FAISS) 全段完了。本番 DB の filter=none top1 score が 5.6x 改善、一部クエリで初の agent surface 達成。残った agent surface 課題は displacement の方向問題で、Phase G の構造的限界 |
-| **Phase I** | Free Star Movement — displacement boundary 解除 + query-aware displacement | ✅ 完了（2026-05-11）— Stage 1 (boundary removal: `max_displacement_norm` 0.3 → 1e6) で Hooke + decay + velocity cap の物理的均衡を実観測。Stage 2 (implicit query-aware kick: `compute_acceleration` に 4 項目追加、`α=0.01`) で TTT 解釈の「retrieval = gradient step」が実装として literal に成立。`F=ma` で mass damping、Hooke で raw anchor 不動の transient force 設計 |
+| **Phase I** | Free Star Movement — displacement boundary 解除 + query-aware displacement | ✅ 完了（2026-05-11〜13）— Stage 1 (boundary removal: `max_displacement_norm` 0.3 → 1e6) で Hooke + decay + velocity cap の物理的均衡を実観測。Stage 2 (implicit query-aware kick: `compute_acceleration` に 4 項目追加、`α=0.01`) で TTT 解釈の「retrieval = gradient step」が実装として literal に成立。Stage 3 (mass-gated kick: `gate = tanh(m/θ)`, `θ=3.0`) で新規ノードを anchor が保護、単一アトラクタ pathology を物理的矯正。本番 acceptance で「dense mature agent cluster vs sparse new agent cluster」は別軸と判明し Phase J へ |
+| **Phase J** | Persona-Anchored Retrieval — declared identity が retrieval geometry を曲げる | 🚧 Stage 1 設計完了（2026-05-13）、実装未着手 — Phase I Stage 3 acceptance での「自己言及的攻撃」観察 (前 session の自己知識 memory が新規 harakiriworks 記録を押し退ける) から設計。Five-Layer の人格層 → 関係層 → 物理層への翻訳。declared value/intention/commitment から `fulfills`/`derived_from` を N hop traverse、seed step で `raw + α × proximity` boost。`persona_boost_enabled=False` で rollback |
 
 ## 累積 MCP ツール数
 
@@ -28,7 +29,8 @@ GaOTTT の Phase 進捗と未実装機能の俯瞰。
 - [Phase D — Persona & Tasks](Plans-Phase-D-Persona-Tasks.md) — 人格層追加の設計
 - [Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md) — 軌道捕獲 + 夢 + 全件 priming で新規 memory を gravity 場に sink させる（完了）
 - [Phase H — Wave Seed Redesign](Plans-Phase-H-Wave-Seed-Redesign.md) — wave seed が raw cosine 固定で sparse class を排除する問題の修正（完了）
-- [Phase I — Free Star Movement](Plans-Phase-I-Free-Star-Movement.md) — displacement boundary 解除と query-aware displacement（Stage 1 + Stage 2 完了）
+- [Phase I — Free Star Movement](Plans-Phase-I-Free-Star-Movement.md) — displacement boundary 解除と query-aware displacement（Stage 1-3 完了）
+- [Phase J — Persona-Anchored Retrieval](Plans-Phase-J-Persona-Anchored-Retrieval.md) — declared identity から `fulfills`/`derived_from` で繋がるノードを seed step で gravity boost（Stage 1 設計完了、実装未着手）
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md) — 二層語彙、パターンカタログ
 - [REST × MCP Unification Plan (Phase S)](https://github.com/May-Kirihara/GaOTTT/blob/main/docs/maintainers/rest-mcp-unification-plan.md) — 保守者向け、Phase S0–S6 の作業計画
 

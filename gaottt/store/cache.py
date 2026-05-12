@@ -22,6 +22,13 @@ class CacheLayer:
         # and on index_documents. Lets propagate_gravity_wave apply
         # source_filter at the seed step without per-node store fetches.
         self.source_by_id: dict[str, str] = {}
+        # Phase J Stage 1: in-memory mirror of directed_edges so that
+        # persona-anchored gravity boost can perform graph traversal in the
+        # sync propagate_gravity_wave path without per-recall DB hits.
+        # Each entry holds (other_id, edge_type). Loaded on startup, kept
+        # in sync by engine.relate / unrelate / forget(hard) / compact paths.
+        self.directed_out: dict[str, list[tuple[str, str]]] = {}
+        self.directed_in: dict[str, list[tuple[str, str]]] = {}
         self.dirty_nodes: set[str] = set()
         self.dirty_edges: set[tuple[str, str]] = set()
         self.dirty_displacements: set[str] = set()
@@ -102,6 +109,53 @@ class CacheLayer:
                     )
         return edges
 
+    # --- Directed edges (Phase J Stage 1) ---
+
+    def set_directed_edge(self, src: str, dst: str, edge_type: str) -> None:
+        """Mirror an upserted directed edge into the in-memory cache.
+
+        SQLite is the SoT (upsert / delete go through SqliteStore). This cache
+        is read-only authoritative for the sync recall path — engine.relate /
+        unrelate / forget(hard) call this after writing to the store so the
+        next recall sees the change without waiting for a cache reload.
+        """
+        pair = (dst, edge_type)
+        out_list = self.directed_out.setdefault(src, [])
+        if pair not in out_list:
+            out_list.append(pair)
+        in_list = self.directed_in.setdefault(dst, [])
+        rev = (src, edge_type)
+        if rev not in in_list:
+            in_list.append(rev)
+
+    def remove_directed_edge(self, src: str, dst: str, edge_type: str | None = None) -> None:
+        """Drop an edge from the cache. ``edge_type=None`` removes all
+        edges between the pair."""
+        if src in self.directed_out:
+            self.directed_out[src] = [
+                (d, et)
+                for (d, et) in self.directed_out[src]
+                if d != dst or (edge_type is not None and et != edge_type)
+            ]
+            if not self.directed_out[src]:
+                self.directed_out.pop(src, None)
+        if dst in self.directed_in:
+            self.directed_in[dst] = [
+                (s, et)
+                for (s, et) in self.directed_in[dst]
+                if s != src or (edge_type is not None and et != edge_type)
+            ]
+            if not self.directed_in[dst]:
+                self.directed_in.pop(dst, None)
+
+    def get_outgoing(self, node_id: str) -> list[tuple[str, str]]:
+        """Return [(dst_id, edge_type), ...] for edges going out of node_id."""
+        return self.directed_out.get(node_id, [])
+
+    def get_incoming(self, node_id: str) -> list[tuple[str, str]]:
+        """Return [(src_id, edge_type), ...] for edges coming into node_id."""
+        return self.directed_in.get(node_id, [])
+
     # --- Load from store ---
 
     async def load_from_store(self, store: StoreBase) -> None:
@@ -126,10 +180,25 @@ class CacheLayer:
         self.velocity_cache = await store.load_velocities()
         self.source_by_id = await store.get_all_sources()
 
+        # Phase J Stage 1: mirror directed edges into the in-memory cache.
+        # Skip edges that touch archived nodes so the sync recall path never
+        # traverses zombie connections.
+        self.directed_out.clear()
+        self.directed_in.clear()
+        loaded_directed = 0
+        directed = await store.get_directed_edges()
+        for e in directed:
+            if e.src in archived_ids or e.dst in archived_ids:
+                continue
+            self.directed_out.setdefault(e.src, []).append((e.dst, e.edge_type))
+            self.directed_in.setdefault(e.dst, []).append((e.src, e.edge_type))
+            loaded_directed += 1
+
         logger.info(
             "Cache loaded: %d active nodes (%d archived skipped), %d edges, "
-            "%d displacements, %d velocities, %d sources",
+            "%d directed_edges, %d displacements, %d velocities, %d sources",
             len(self.node_cache), len(archived_ids), loaded_edges,
+            loaded_directed,
             len(self.displacement_cache), len(self.velocity_cache),
             len(self.source_by_id),
         )
@@ -152,6 +221,24 @@ class CacheLayer:
         neighbors = self.graph_cache.pop(node_id, {})
         for other in neighbors:
             self.graph_cache.get(other, {}).pop(node_id, None)
+        # Phase J Stage 1: prune directed edges touching this node so the
+        # cache stays consistent with what the persona traversal expects.
+        outgoing = self.directed_out.pop(node_id, [])
+        for dst, _et in outgoing:
+            if dst in self.directed_in:
+                self.directed_in[dst] = [
+                    (s, et) for (s, et) in self.directed_in[dst] if s != node_id
+                ]
+                if not self.directed_in[dst]:
+                    self.directed_in.pop(dst, None)
+        incoming = self.directed_in.pop(node_id, [])
+        for src, _et in incoming:
+            if src in self.directed_out:
+                self.directed_out[src] = [
+                    (d, et) for (d, et) in self.directed_out[src] if d != node_id
+                ]
+                if not self.directed_out[src]:
+                    self.directed_out.pop(src, None)
 
     # --- Flush to store ---
 
