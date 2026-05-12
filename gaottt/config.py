@@ -180,6 +180,26 @@ class GaOTTTConfig:
     persona_hop_decay: float = 0.5              # per-hop decay (0.5: 1 hop=0.5, 2 hop=0.25)
     persona_active_ttl_seconds: float = 14 * 86400.0  # commitment TTL synchronized; intention/value are always active unless archived
 
+    # Phase K Stage 1 — Stellar supernova cohort.
+    # When `index_documents` receives a batch of size ≥ supernova_min_cohort_size,
+    # the new nodes are treated as a single supernova event:
+    #   (1) all pairs in the batch get a co-occurrence edge of weight
+    #       supernova_initial_weight (event-driven, independent of Phase B's
+    #       recall-based edge_threshold accumulation)
+    #   (2) each node receives an outward initial velocity = α × (embedding - centroid),
+    #       clamped to orbital_max_velocity
+    # Applied AFTER Phase G genesis_kick (Phase G: existing-system binding;
+    # Phase K: cohort-internal binding + explosion energy). Velocities are
+    # added, not replaced — both physics co-exist.
+    # Rationale: Phase J Stage 1 acceptance revealed that newly-remembered
+    # cohorts have no mutual gravity, so they can't compete with mature
+    # past-session clusters for FAISS top-K entry. Phase K fixes the physics
+    # of memory creation rather than reranking after the fact.
+    supernova_enabled: bool = True
+    supernova_min_cohort_size: int = 2          # 1 件だけの remember は単独彗星 (Phase G で足りる)、2 件以上で発火
+    supernova_initial_weight: float = 1.0       # 相互 edge の初期 weight (wave_seed_mass_alpha × log(1+w) で boost が効く)
+    supernova_velocity_alpha: float = 0.03      # 爆発の運動量 α (orbital_max_velocity=0.05 以下に収まる)
+
     # Gravity wave propagation
     wave_initial_k: int = 3            # Initial FAISS top-k for seed nodes
     wave_max_depth: int = 2            # Maximum recursion depth

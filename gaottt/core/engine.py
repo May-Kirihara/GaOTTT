@@ -297,6 +297,14 @@ class GaOTTTEngine:
         if self.config.genesis_kick_enabled:
             self._apply_genesis_kick(ids, vectors)
 
+        # Phase K — Stellar supernova cohort: when the batch is large enough,
+        # form mutual co-occurrence edges + outward initial velocity so the
+        # newly-born cohort has internal gravity from birth. See
+        # Plans-Phase-K-Stellar-Supernova-Cohort.md. Applied after Phase G so
+        # cohort-internal coupling stacks on top of existing-system binding.
+        if self.config.supernova_enabled:
+            self._apply_supernova_cohort(ids, vectors)
+
         await self.cache.flush_to_store(self.store)
         self._faiss_dirty = True
 
@@ -362,6 +370,41 @@ class GaOTTTEngine:
             if state is not None and m_boost > 0.0:
                 state.mass = max(state.mass, 1.0 + m_boost)
                 self.cache.set_node(state, dirty=True)
+
+    def _apply_supernova_cohort(
+        self, new_ids: list[str], new_vecs: np.ndarray,
+    ) -> None:
+        """Form mutual co-occurrence edges + outward initial velocity for
+        the supernova cohort.
+
+        Velocity is *added* to whatever Phase G genesis kick already put
+        in cache (typically Phase G writes a velocity toward existing
+        heavy bodies; Phase K adds an outward push from the batch
+        centroid; the two compose). Edges are written via
+        ``cache.set_edge`` which mirrors both directions of the
+        undirected graph and marks them dirty for write-behind flush.
+        """
+        from gaottt.core.supernova import (
+            compute_supernova_velocities,
+            form_supernova_edges,
+        )
+
+        # Mutual co-occurrence edges
+        edges = form_supernova_edges(new_ids, self.config)
+        for src, dst, weight in edges:
+            self.cache.set_edge(src, dst, weight, dirty=True)
+
+        # Outward initial velocity (added to any Phase G velocity)
+        velocities = compute_supernova_velocities(new_ids, new_vecs, self.config)
+        for nid, v_supernova in velocities.items():
+            existing = self.cache.get_velocity(nid)
+            if existing is not None:
+                combined = existing + v_supernova
+            else:
+                combined = v_supernova
+            from gaottt.core.gravity import clamp_vector
+            combined = clamp_vector(combined, self.config.orbital_max_velocity)
+            self.cache.set_velocity(nid, combined.astype(np.float32))
 
     # --- US2: Query (Gravity Wave Propagation) ---
 

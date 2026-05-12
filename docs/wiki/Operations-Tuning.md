@@ -85,6 +85,19 @@
 | persona_active_ttl_seconds | 14 日 | active 判定の TTL (Stage 2 で commitment に適用) | n/a | n/a — Stage 1 では未使用 |
 
 > **チューニング助言**: `persona_boost_alpha=0.5` は acceptance test (本番 23k DB) で「persona-tied ノードが seed pool に届く」を目的に置いた初期値。届かなければ `1.0` まで上げる、効きすぎ (persona ノードが全 query で top1 を独占) なら `0.2` まで下げる。`persona_max_hop=2` は Phase D の典型チェーン (intention → task → outcome) を拾える深さ、3 以上にすると間接的な関連 (誰かが derive した知識の派生) も混入。`persona_boost_enabled=False` で Stage 0 (Phase J 前) 挙動に完全 rollback。
+
+## Stellar supernova cohort (Phase K Stage 1)
+
+`index_documents` の batch を 1 超新星イベントとして扱い、batch 内 N 件 (N≥`supernova_min_cohort_size`) に **相互 co-occurrence edge** + **centroid からの outward velocity** を付与。新規 cohort が「互いに重力を持たない散発的塵」状態から「同イベント残骸群」になる。Phase G genesis kick (個別重力) の隣で適用。詳細: [Plans — Phase K](Plans-Phase-K-Stellar-Supernova-Cohort.md)。
+
+| パラメータ | 既定 | 影響 | 上げると | 下げると |
+|---|---|---|---|---|
+| supernova_enabled | `True` | グローバル off スイッチ | n/a | `False` で完全 skip、Phase G 単独に rollback |
+| supernova_min_cohort_size | 2 | 発火する最小 batch サイズ | 3+ で小規模 batch が cohort 化しない | 1 にすると単独 remember で edge を張ろうとする (相手いない) |
+| supernova_initial_weight | 1.0 | 相互 edge の初期 weight | 2.0+ で強い cohort (seed pool の mass-aware boost が `log(1+w)` で強く効く) | 0.5 で弱い cohort、0.0 で edge 形成 skip |
+| supernova_velocity_alpha | 0.03 | 爆発の運動量 α | 0.05 で `orbital_max_velocity` cap に到達 (爆発が一気に膨張) | 0.01 で穏やかな爆発、0.0 で velocity 形成 skip |
+
+> **チューニング助言**: Phase K は **将来 session の新規 cohort** に効くが、**既存 orphan ノードは遡及できない** (cohort 形成は index 時のみ)。既存 harakiriworks-self-knowledge 112 件のような遡及対象には別途 ritual script で edge + velocity を後付けする必要。`supernova_initial_weight=1.0` は Phase B `edge_threshold=5` と独立 (Phase K は event-driven、Phase B は recall 累積 driven)。一括投入では cohort が大きくなりすぎる場合は `index_documents` の batch を分割するのが運用上の手段 (例: 100 件投入を 4×25 件に分けて 4 つの cohort にする)。
 | virtual_faiss_enabled | `True` | virtual_pos でビルドした第二 FAISS を並走（Phase H Stage 4）。priming 後の displacement を seed step に反映する |
 
 ## 誕生時の重力 kick（Phase G — Stage 1）

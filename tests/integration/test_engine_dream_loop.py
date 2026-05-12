@@ -61,6 +61,12 @@ def _make_engine(
         dream_min_idle_seconds=dream_min_idle_seconds,
         dream_top_k=5,
         genesis_kick_enabled=genesis_kick_enabled,
+        # Phase K (supernova cohort) writes mutual edges at index time,
+        # which would confound the dream-loop baseline ("no pre-existing
+        # edges"). Dream loop's job is orthogonal — synthetic recalls
+        # build edges via Phase B accumulation — so we disable Phase K
+        # here to keep the test focused.
+        supernova_enabled=False,
         faiss_save_interval_seconds=0.0,
         flush_interval_seconds=0.05,
         edge_threshold=1,  # let edges form quickly in fast tests
