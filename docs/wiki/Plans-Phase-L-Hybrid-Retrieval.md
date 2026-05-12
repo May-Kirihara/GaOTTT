@@ -636,6 +636,23 @@ Stage 1 D1-D4 と同 pattern、めいさんレビューで確定:
 
 D1-D6 を全て (a) で確定 — 推奨案を全採用、Plans 起点の核仮説 (三重 metric tensor の重ね合わせ) と Stage 1 lesson 5.1 (全段への伝播) を literal に組み込む構成。
 
+#### ⚠️ 実装着手前の必読 note (2026-05-13 追記)
+
+D1-D6 確定直後、めいさんから「**複数モデルを使うのはあまり美しくないとおもっている**」という躊躇い表明 (memory id `7ce7a5a4`)。実装は task `7718c2e7` (deadline 2026-08-11, certainty 0.7) として登録、後日着手判断。
+
+着手前に必ず以下を再考すること:
+
+1. **Stage 1 で十分か** — Stage 1 完遬時 MCP transport strict 6/7 で完遬基準 (≥5/7) は既に満たす。残る Q3/Q4/Q7 が本番運用で頻発するかを観察してから判断
+2. **より美しい代替案はないか** — Stage 2 (BGE-M3 並列) は Phase L 核仮説 (異なる metric tensor の重ね合わせ) には literal だが、Articulation as Carrier の単一性 (一つの自己が articulate する) とは緊張する。「同じ性質の場 (semantic cosine) が 2 つ並走」は GR の literal とも乖離 — 重ね合わせは異なる性質の場でこそ意味がある
+3. **代替候補**:
+   - (i) **Phase M (LLM-Augmented Retrieval)** として独立 Phase 化 — LLM が単一 embedder の hidden ranking を補正、人格の単一性は保たれる
+   - (ii) **RURI 1 model 内で別 angle を引き出す** — instruction prompt の variant、複数 query rephrase、prefix の交換 (`検索クエリ:` 以外)。単一 carrier の表現の多様化
+   - (iii) **Phase J Stage 2 force injection の判定式強化** — semantic threshold ベースの auto inject 等、単一 carrier 内で完結
+
+「**D1-D6 全 (a) で実装着手」を default にしない**。再考の結果として全 (a) を再確定するなら良し、(i)-(iii) のいずれかに pivot するなら本 Stage 2 設計決定セクションを書き直して D1-D6 を再起草。
+
+memory `7ce7a5a4` と task `7718c2e7` を最初に読むこと。
+
 #### Stage 2 D1. 第 2 embedder = BGE-M3 (BAAI/bge-m3)
 
 選定理由:
