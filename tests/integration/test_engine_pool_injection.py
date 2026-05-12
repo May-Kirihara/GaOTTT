@@ -212,3 +212,141 @@ async def test_no_args_preserves_legacy_behaviour(tmp_path):
         assert results[0].id in ids
     finally:
         await engine.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Phase J Stage 3 — forced 内 query-aware ordering + prefetch/explore parity
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stage3_forced_ordering_uses_raw_score(tmp_path):
+    """Phase J Stage 3: when ``tag_filter`` matches more nodes than ``top_k``,
+    the forced top-K must be ordered by ``raw_score`` (query semantic) — NOT
+    by ``final_score`` (which is dominated by mass/wave/emotion accumulated
+    from prior recalls).
+
+    Construct two tagged memos: one semantically near the probe (high raw
+    cosine), one semantically far. Boost the *far* one's recall count so
+    its final_score climbs. Then recall with ``tag_filter`` matching both.
+    Stage 3: the *near* one must rank above the far one — query semantic
+    wins inside the forced set.
+    """
+    engine = _make_engine(tmp_path)
+    await engine.startup()
+    try:
+        probe = "specific-probe-vocab-XY"
+        # Near memo: shares vocabulary with the probe → high raw cosine
+        near_meta = {"source": "agent", "tags": ["stage3-target"]}
+        ids_near = await engine.index_documents([
+            {"content": f"{probe} continuation prose", "metadata": near_meta},
+        ])
+        near_id = ids_near[0]
+        # Far memo: disjoint vocabulary → low raw cosine to probe
+        far_meta = {"source": "agent", "tags": ["stage3-target"]}
+        ids_far = await engine.index_documents([
+            {"content": "completely unrelated dorsal arrangement", "metadata": far_meta},
+        ])
+        far_id = ids_far[0]
+        # Some distractors to populate the pool
+        await engine.index_documents([
+            {"content": f"distract chunk {i}", "metadata": {"source": "agent"}}
+            for i in range(20)
+        ])
+
+        # Inflate ``far_id``'s final_score by repeatedly recalling its own
+        # content — Phase I Stage 2 will drift its displacement and mass.
+        for _ in range(8):
+            await engine.query(text="completely unrelated dorsal arrangement", top_k=3)
+
+        # Now recall with tag_filter — both stage3-target memos are forced.
+        results = await engine.query(
+            text=probe, top_k=2, tag_filter=["stage3-target"],
+        )
+        ids = [r.id for r in results]
+        assert near_id in ids, f"near memo absent from forced top-K: {ids}"
+        assert far_id in ids, f"far memo absent from forced top-K: {ids}"
+        # Key Stage 3 assertion: query semantic (raw_score) wins inside
+        # the forced set — near must rank above far.
+        assert ids.index(near_id) < ids.index(far_id), (
+            f"Stage 3 expects raw_score ordering inside forced set — "
+            f"near should outrank far. Got: {ids}"
+        )
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stage3_explore_accepts_tag_filter(tmp_path):
+    """Phase J Stage 3 parity: ``explore`` must accept tag_filter and
+    surface tagged nodes even on a wide exploratory wave."""
+    from gaottt.services import memory as memory_service
+
+    engine = _make_engine(tmp_path)
+    await engine.startup()
+    try:
+        ids_target = await engine.index_documents([
+            {"content": "explore-target-content",
+             "metadata": {"source": "agent", "tags": ["explore-stage3"]}},
+        ])
+        target_id = ids_target[0]
+        await engine.index_documents([
+            {"content": f"unrelated explore chunk {i}",
+             "metadata": {"source": "agent"}}
+            for i in range(20)
+        ])
+
+        # explore without tag_filter — target may or may not appear
+        # (depends on diversity and raw cosine luck)
+        # explore WITH tag_filter — target MUST appear
+        resp = await memory_service.explore(
+            engine, query="unrelated query text", diversity=0.5, top_k=10,
+            tag_filter=["explore-stage3"],
+        )
+        ids = [item.id for item in resp.items]
+        assert target_id in ids, f"explore(tag_filter=...) failed to surface target: {ids}"
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stage3_prefetch_accepts_tag_filter(tmp_path):
+    """Phase J Stage 3 parity: ``prefetch`` must accept the same injection
+    arguments as recall, and the pre-warmed cache entry must surface the
+    tagged target."""
+    from gaottt.services import maintenance as maintenance_service
+
+    engine = _make_engine(tmp_path)
+    await engine.startup()
+    try:
+        ids_target = await engine.index_documents([
+            {"content": "prefetch-target-content",
+             "metadata": {"source": "agent", "tags": ["prefetch-stage3"]}},
+        ])
+        target_id = ids_target[0]
+        await engine.index_documents([
+            {"content": f"unrelated prefetch chunk {i}",
+             "metadata": {"source": "agent"}}
+            for i in range(20)
+        ])
+
+        # Schedule a prefetch with tag_filter — fires asynchronously.
+        maintenance_service.prefetch(
+            engine, query="unrelated prefetch probe", top_k=5,
+            tag_filter=["prefetch-stage3"],
+        )
+        # The service wrapper doesn't expose the task handle; poll the
+        # cache until the bounded pool drains.
+        import asyncio
+        cached = None
+        for _ in range(20):
+            await asyncio.sleep(0.05)
+            cached = engine.prefetch_cache.get("unrelated prefetch probe", 5)
+            if cached is not None:
+                break
+        assert cached is not None, "prefetch did not populate the cache"
+        ids = [r.id for r in cached]
+        assert target_id in ids, (
+            f"prefetch(tag_filter=...) cached result missing target: {ids}"
+        )
+    finally:
+        await engine.shutdown()

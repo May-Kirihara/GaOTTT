@@ -148,6 +148,9 @@ class ExploreRequest(BaseModel):
     query: str = Field(..., min_length=1)
     diversity: float = Field(default=0.5, ge=0.0, le=1.0)
     top_k: int = Field(default=10, ge=1, le=100)
+    # Phase J Stage 3: parity with recall — explicit pool injection for explore.
+    persona_context: list[str] | None = None
+    tag_filter: list[str] | None = None
 
 
 class ForgetRequest(BaseModel):
@@ -289,6 +292,9 @@ class PrefetchRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=100)
     wave_depth: int | None = Field(default=None, ge=0, le=5)
     wave_k: int | None = Field(default=None, ge=1, le=20)
+    # Phase J Stage 3: parity with recall.
+    persona_context: list[str] | None = None
+    tag_filter: list[str] | None = None
 
 
 class PrefetchResponse(BaseModel):

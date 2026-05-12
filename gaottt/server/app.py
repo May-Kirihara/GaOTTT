@@ -197,6 +197,8 @@ async def explore_memory(request: ExploreRequest):
         query=request.query,
         diversity=request.diversity,
         top_k=request.top_k,
+        persona_context=request.persona_context,
+        tag_filter=request.tag_filter,
     )
 
 
@@ -346,6 +348,8 @@ async def schedule_prefetch(request: PrefetchRequest):
         top_k=request.top_k,
         wave_depth=request.wave_depth,
         wave_k=request.wave_k,
+        persona_context=request.persona_context,
+        tag_filter=request.tag_filter,
     )
 
 

@@ -595,17 +595,24 @@ class GaOTTTEngine:
         # Critical: when ``len(injected_ids) > k`` (e.g. ``tag_filter``
         # matching 112 nodes with ``top_k=5``), we still respect the
         # caller's ``top_k`` budget — pick the top-K *of the injected
-        # set itself* by final_score. Otherwise the API would silently
-        # blow past the requested page size.
-        results.sort(key=lambda r: r.final_score, reverse=True)
+        # set itself* — but rank the forced set by ``raw_score`` rather
+        # than ``final_score`` (Phase J Stage 3). Final score is dominated
+        # by mass / wave / emotion / certainty, which makes "frequently
+        # touched memos win" regardless of query semantic. Inside a
+        # caller-injected set, the right ordering is "which of these
+        # tagged memos is closest to the query" — i.e. raw cosine.
+        # Non-injected results still rank by final_score.
         if injected_ids:
             forced = [r for r in results if r.id in injected_ids]
             others = [r for r in results if r.id not in injected_ids]
+            forced.sort(key=lambda r: r.raw_score, reverse=True)
+            others.sort(key=lambda r: r.final_score, reverse=True)
             if len(forced) >= k:
                 results = forced[:k]
             else:
                 results = forced + others[: k - len(forced)]
         else:
+            results.sort(key=lambda r: r.final_score, reverse=True)
             results = results[:k]
 
         # Step 5: Update return_count for presented nodes + habituation recovery for all.
@@ -814,6 +821,8 @@ class GaOTTTEngine:
         top_k: int | None = None,
         wave_depth: int | None = None,
         wave_k: int | None = None,
+        persona_context: list[str] | None = None,
+        tag_filter: list[str] | None = None,
     ) -> object:
         """Schedule a background recall and cache its result.
 
@@ -821,12 +830,20 @@ class GaOTTTEngine:
         ``await`` it for determinism). The next ``query(text, top_k,
         use_cache=True)`` within ``prefetch_ttl_seconds`` will be served from
         the cache without re-running the simulation.
+
+        Phase J Stage 3: `persona_context` / `tag_filter` are forwarded so
+        the prefetched result matches what an explicit `recall(...)` with
+        the same arguments would return. Cache key is still `(text, top_k)`
+        — callers re-running the same prefetch with different injection
+        args will overwrite the cache entry, which is the correct semantic
+        ("the latest call wins" for predictive pre-firing).
         """
         k = top_k or self.config.top_k
 
         async def _run() -> list[QueryResultItem]:
             results = await self._query_internal(
                 text=text, top_k=k, wave_depth=wave_depth, wave_k=wave_k,
+                persona_context=persona_context, tag_filter=tag_filter,
             )
             self.prefetch_cache.put(text, k, results)
             return results

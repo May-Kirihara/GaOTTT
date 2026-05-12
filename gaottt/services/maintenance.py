@@ -60,8 +60,13 @@ def prefetch(
     top_k: int = 5,
     wave_depth: int | None = None,
     wave_k: int | None = None,
+    persona_context: list[str] | None = None,
+    tag_filter: list[str] | None = None,
 ) -> PrefetchResponse:
-    engine.prefetch(text=query, top_k=top_k, wave_depth=wave_depth, wave_k=wave_k)
+    engine.prefetch(
+        text=query, top_k=top_k, wave_depth=wave_depth, wave_k=wave_k,
+        persona_context=persona_context, tag_filter=tag_filter,
+    )
     return PrefetchResponse(
         scheduled=True,
         query=query,

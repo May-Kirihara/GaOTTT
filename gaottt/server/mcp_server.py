@@ -255,20 +255,30 @@ async def explore(
     query: str,
     diversity: float = 0.5,
     top_k: int = 10,
+    persona_context: list[str] | None = None,
+    tag_filter: list[str] | None = None,
 ) -> str:
     """Explore memories serendipitously with increased randomness.
 
     Higher diversity increases wave depth and temperature noise,
     bringing unexpected cross-domain connections through deeper gravitational propagation.
 
+    Phase J Stage 3: parity with ``recall`` — explicit pool injection works
+    here too. ``tag_filter`` forces the matched tagged memos into the result
+    set even on a wide exploratory wave, useful for "explore within this
+    intention's neighbourhood".
+
     Args:
         query: Starting point for exploration
         diversity: 0.0 = normal search, 1.0 = maximum exploration
         top_k: Number of results
+        persona_context: Explicit persona ids (Phase J Stage 2 semantics)
+        tag_filter: Tag substring list (OR match) for additive injection
     """
     engine = await get_engine()
     result = await memory_service.explore(
         engine, query=query, diversity=diversity, top_k=top_k,
+        persona_context=persona_context, tag_filter=tag_filter,
     )
     return formatters.format_explore(result)
 
@@ -359,6 +369,8 @@ async def prefetch(
     top_k: int = 5,
     wave_depth: int | None = None,
     wave_k: int | None = None,
+    persona_context: list[str] | None = None,
+    tag_filter: list[str] | None = None,
 ) -> str:
     """Schedule a background recall to pre-load related memories.
 
@@ -371,15 +383,23 @@ async def prefetch(
     Subsequent `recall(query, top_k)` calls within the cache TTL (default 90s)
     are served from the cache without re-running the wave simulation.
 
+    Phase J Stage 3: ``persona_context`` / ``tag_filter`` are forwarded so
+    the pre-warmed result matches what a subsequent ``recall`` with the
+    same injection arguments would compute. Pre-fire the precise context
+    you expect to recall.
+
     Args:
         query: search text to pre-warm
         top_k: number of results to cache (must match the eventual recall)
         wave_depth: optional override
         wave_k: optional override
+        persona_context: Explicit persona ids (Phase J Stage 2 semantics)
+        tag_filter: Tag substring list (OR match) for additive injection
     """
     engine = await get_engine()
     result = maintenance_service.prefetch(
         engine, query=query, top_k=top_k, wave_depth=wave_depth, wave_k=wave_k,
+        persona_context=persona_context, tag_filter=tag_filter,
     )
     return formatters.format_prefetch(result)
 

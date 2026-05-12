@@ -167,6 +167,8 @@ async def explore(
     query: str,
     diversity: float = 0.5,
     top_k: int = 10,
+    persona_context: list[str] | None = None,
+    tag_filter: list[str] | None = None,
 ) -> ExploreResponse:
     config = engine.config
     original_gamma = config.gamma
@@ -178,6 +180,8 @@ async def explore(
         raw = await engine.query(
             text=query, top_k=top_k,
             wave_depth=explore_depth, wave_k=explore_k,
+            persona_context=persona_context,
+            tag_filter=tag_filter,
         )
     finally:
         config.gamma = original_gamma
