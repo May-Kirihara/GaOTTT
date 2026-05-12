@@ -350,3 +350,83 @@ async def test_stage3_prefetch_accepts_tag_filter(tmp_path):
         )
     finally:
         await engine.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — bug fixes from 2026-05-12 session (commit 5886630)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_injected_ids_all_surface_despite_small_wave_k(tmp_path):
+    """Regression: injected_ids exceeding initial_k must not be silently dropped.
+
+    Pre-fix behaviour: ``forced = injected_ids[:initial_k]`` — nodes beyond
+    the cap were lost. Fix: wave loop end force-adds remaining injected_ids to
+    ``reached`` dict.
+
+    Setup: wave_k=2 (initial_k=2) + 6 tagged nodes via tag_filter.
+    Expected: all 6 appear in top_k=10 results.
+    """
+    engine = _make_engine(tmp_path)
+    await engine.startup()
+    try:
+        tagged_meta = {"source": "agent", "tags": ["boundary-regression"]}
+        ids_tagged = await engine.index_documents([
+            {"content": f"boundary-target-{i}", "metadata": tagged_meta}
+            for i in range(6)
+        ])
+        await engine.index_documents([
+            {"content": f"distractor-{i}", "metadata": {"source": "agent"}}
+            for i in range(20)
+        ])
+
+        results = await engine.query(
+            text="something entirely unrelated",
+            top_k=10,
+            wave_k=2,  # initial_k=2 < 6 injected — pre-fix: only 2 survived
+            tag_filter=["boundary-regression"],
+        )
+        result_ids = {r.id for r in results}
+        missing = [nid for nid in ids_tagged if nid not in result_ids]
+        assert not missing, (
+            f"Regression (injected_ids cap): {len(missing)}/6 nodes dropped. "
+            f"Missing: {missing}"
+        )
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_compact_rebuild_recovers_faiss_gap(tmp_path):
+    """Regression: compact(rebuild_faiss=True) must recover nodes that are in
+    SQLite but absent from the in-memory FAISS index.
+
+    Pre-fix behaviour: _rebuild_faiss_index called get_vectors() which returned
+    only vectors already in FAISS — nodes absent from FAISS stayed absent.
+    Fix: missing nodes are re-embedded from store.get_document().
+
+    Simulate gap by resetting in-memory FAISS after indexing, then compact.
+    """
+    engine = _make_engine(tmp_path)
+    await engine.startup()
+    try:
+        ids = await engine.index_documents([
+            {"content": f"recovery-target-{i}", "metadata": {"source": "agent"}}
+            for i in range(3)
+        ])
+
+        # Simulate FAISS gap: vectors in SQLite + cache but FAISS cleared
+        engine.faiss_index.reset()
+        assert engine.faiss_index.size == 0
+
+        await engine.compact(rebuild_faiss=True, expire_ttl=False, auto_merge=False)
+
+        results = await engine.query(text="recovery-target-0", top_k=5)
+        result_ids = {r.id for r in results}
+        missing = [nid for nid in ids if nid not in result_ids]
+        assert not missing, (
+            f"Regression (FAISS rebuild gap): {len(missing)}/3 nodes not "
+            f"recovered after compact(rebuild_faiss=True): {missing}"
+        )
+    finally:
+        await engine.shutdown()

@@ -10,6 +10,8 @@ End-to-end through engine.index_documents():
 """
 from __future__ import annotations
 
+import hashlib
+
 import numpy as np
 import pytest
 
@@ -21,6 +23,10 @@ from gaottt.store.sqlite_store import SqliteStore
 
 
 class StubEmbedder:
+    """SHA256-based deterministic embedder. Using sha256 (not hash()) avoids
+    PYTHONHASHSEED randomisation introduced in Python 3.3, which would make
+    test_cohort_members_get_outward_velocity flaky across runs."""
+
     def __init__(self, dim: int = 768):
         self.dim = dim
 
@@ -31,7 +37,8 @@ class StubEmbedder:
         return self._embed(text).reshape(1, -1).astype(np.float32)
 
     def _embed(self, text: str) -> np.ndarray:
-        seed = abs(hash(text)) & 0xFFFFFFFF
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        seed = int.from_bytes(digest[:8], "big") & 0xFFFFFFFF
         rng = np.random.default_rng(seed)
         v = rng.standard_normal(self.dim).astype(np.float32)
         v /= np.linalg.norm(v) + 1e-9
