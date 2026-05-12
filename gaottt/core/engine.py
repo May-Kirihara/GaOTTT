@@ -282,6 +282,11 @@ class GaOTTTEngine:
             src = meta.get("source")
             if src:
                 self.cache.set_source(doc_id, src)
+            # Phase J Stage 2: mirror tags so tag_filter injection sees
+            # them without waiting for a cache reload.
+            tags = meta.get("tags")
+            if isinstance(tags, list):
+                self.cache.set_tags(doc_id, [t for t in tags if isinstance(t, str)])
             docs_for_store.append({
                 "id": doc_id,
                 "content": contents[i],
@@ -416,6 +421,8 @@ class GaOTTTEngine:
         wave_k: int | None = None,
         use_cache: bool = False,
         source_filter: list[str] | None = None,
+        persona_context: list[str] | None = None,
+        tag_filter: list[str] | None = None,
     ) -> list[QueryResultItem]:
         """Run a recall query.
 
@@ -429,9 +436,19 @@ class GaOTTTEngine:
         FAISS pool to nodes whose ``metadata.source`` matches. Source
         filtering is not part of the prefetch cache key, so any call with
         ``source_filter`` set bypasses the cache.
+
+        ``persona_context`` (Phase J Stage 2) — explicit list of declared
+        value/intention/commitment IDs overriding the Stage 1 auto-detect,
+        plus additive seed injection of those IDs.
+
+        ``tag_filter`` (Phase J Stage 2) — substring list (OR match) for
+        additive seed injection of every node whose ``metadata.tags`` list
+        contains any substring. Bypasses ``source_filter``.
+
+        Either explicit argument bypasses the prefetch cache.
         """
         k = top_k or self.config.top_k
-        if source_filter:
+        if source_filter or persona_context or tag_filter:
             use_cache = False
         if use_cache:
             cached = self.prefetch_cache.get(text, k)
@@ -440,6 +457,8 @@ class GaOTTTEngine:
         results = await self._query_internal(
             text=text, top_k=k, wave_depth=wave_depth, wave_k=wave_k,
             source_filter=source_filter,
+            persona_context=persona_context,
+            tag_filter=tag_filter,
         )
         if use_cache:
             self.prefetch_cache.put(text, k, results)
@@ -453,22 +472,40 @@ class GaOTTTEngine:
         wave_k: int | None,
         _is_synthetic: bool = False,
         source_filter: list[str] | None = None,
+        persona_context: list[str] | None = None,
+        tag_filter: list[str] | None = None,
     ) -> list[QueryResultItem]:
         k = top_k
         query_vec = self.embedder.encode_query(text)
 
-        # Phase J Stage 1: compute persona proximities once per recall and
-        # pass into the wave so the seed step can boost nodes near declared
-        # value / intention / commitment. Stage 1 auto-detects "active
-        # persona" from cache.source_by_id; Stage 2 will accept an explicit
-        # persona_context argument from the recall API.
+        # Phase J Stage 1 / Stage 2: compute persona proximities once per
+        # recall. Stage 2 explicit `persona_context` takes precedence over
+        # the Stage 1 auto-detected active set.
         persona_proximities: dict[str, float] | None = None
         if self.config.persona_boost_enabled and self.config.persona_boost_alpha > 0.0:
-            persona_ids = collect_active_persona_ids(self.cache, self.config, time.time())
+            if persona_context:
+                persona_ids: set[str] = set(persona_context)
+            else:
+                persona_ids = collect_active_persona_ids(
+                    self.cache, self.config, time.time(),
+                )
             if persona_ids:
                 persona_proximities = compute_persona_proximities(
                     persona_ids, self.cache, self.config,
                 )
+
+        # Phase J Stage 2: build the additive injection set — explicit
+        # persona_context ids plus every node matching the tag_filter
+        # substring(s).
+        injected_ids: set[str] | None = None
+        if persona_context or tag_filter:
+            injected_ids = set()
+            if persona_context:
+                injected_ids |= set(persona_context)
+            if tag_filter:
+                injected_ids |= self.cache.find_ids_by_tag_filter(tag_filter)
+            if not injected_ids:
+                injected_ids = None
 
         # Step 1: Gravity wave propagation — recursive neighbor expansion
         reached = propagate_gravity_wave(
@@ -477,6 +514,7 @@ class GaOTTTEngine:
             source_filter=source_filter,
             virtual_faiss_index=self.virtual_faiss_index,
             persona_proximities=persona_proximities,
+            injected_ids=injected_ids,
         )
 
         if not reached:
@@ -547,9 +585,20 @@ class GaOTTTEngine:
                 )
             )
 
-        # Step 4: Sort and take top-K for presentation to LLM
+        # Step 4: Sort and take top-K for presentation to LLM.
+        # Phase J Stage 2: when explicit injection is requested, force the
+        # injected ids into the top-K result. Seed-pool injection alone
+        # isn't enough — once the target is a seed, its own wave neighbours
+        # can outrank it by sheer cluster mass. The caller's explicit ask
+        # has to survive the final cut, not just the entry gate.
         results.sort(key=lambda r: r.final_score, reverse=True)
-        results = results[:k]
+        if injected_ids:
+            forced = [r for r in results if r.id in injected_ids]
+            others = [r for r in results if r.id not in injected_ids]
+            remaining = max(0, k - len(forced))
+            results = forced + others[:remaining]
+        else:
+            results = results[:k]
 
         # Step 5: Update return_count for presented nodes + habituation recovery for all.
         # Synthetic recalls (Phase G dream loop) skip return_count so that

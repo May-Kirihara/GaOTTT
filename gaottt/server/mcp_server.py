@@ -203,6 +203,8 @@ async def recall(
     wave_depth: int | None = None,
     wave_k: int | None = None,
     force_refresh: bool = False,
+    persona_context: list[str] | None = None,
+    tag_filter: list[str] | None = None,
 ) -> str:
     """Search long-term memory with gravitational wave propagation.
 
@@ -214,18 +216,36 @@ async def recall(
     instantly. Pass `force_refresh=True` to bypass the prefetch cache and
     re-run the full wave simulation.
 
+    **Phase J Stage 2 — explicit pool injection** (`persona_context` /
+    `tag_filter`): the seed step pulls FAISS top-K *and* unions in every
+    node matching the caller's explicit filters, bypassing
+    `source_filter` restrictions. Use this when you need to surface a
+    memo whose embedding is far from the query — e.g., a tag-tied cohort
+    in a different language or vocabulary from the query.
+
     Args:
         query: Search query
         top_k: Number of results (default 5)
-        source_filter: Filter by source, e.g. ["agent", "compaction"]
+        source_filter: Restrictive — only ``metadata.source`` matches survive
+                       the seed pool (Phase H Stage 2). Use for sparse class
+                       carve-out like ``["agent"]``.
         wave_depth: Override recursion depth (default from config)
         wave_k: Override initial seed count (default from config)
         force_refresh: Bypass prefetch cache (default False)
+        persona_context: Explicit list of declared value/intention/commitment
+                         IDs. Overrides Stage 1 auto-detect for proximity
+                         calculation *and* additively injects these IDs into
+                         the seed pool (Phase J Stage 2).
+        tag_filter: Substring list (OR match) of ``metadata.tags`` entries.
+                    Every matching node is additively injected into the seed
+                    pool, even if it is distant in embedding space. Bypasses
+                    ``source_filter`` (caller's explicit ask wins).
     """
     engine = await get_engine()
     result = await memory_service.recall(
         engine, query=query, top_k=top_k, source_filter=source_filter,
         wave_depth=wave_depth, wave_k=wave_k, force_refresh=force_refresh,
+        persona_context=persona_context, tag_filter=tag_filter,
     )
     return formatters.format_recall(result)
 

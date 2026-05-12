@@ -122,13 +122,16 @@ async def recall(
     wave_depth: int | None = None,
     wave_k: int | None = None,
     force_refresh: bool = False,
+    persona_context: list[str] | None = None,
+    tag_filter: list[str] | None = None,
 ) -> RecallResponse:
-    # Phase H Stage 2: source_filter is now applied at the wave seed step
-    # inside propagate_gravity_wave (engine.query → _query_internal). The
-    # post-filter below remains as a defensive belt-and-suspenders pass —
-    # cache.source_by_id can lag for nodes whose source was set via
-    # auto-migration paths, and we'd rather drop a stray hit than show
-    # the wrong source.
+    # Phase H Stage 2: source_filter is applied at the wave seed step inside
+    # propagate_gravity_wave (engine.query → _query_internal). The post-filter
+    # below remains as a defensive belt-and-suspenders pass.
+    # Phase J Stage 2: persona_context / tag_filter are forwarded through
+    # engine.query and applied as additive seed injection in the wave (they
+    # bypass source_filter's restrictive semantic — the caller explicitly
+    # asked for these tags or persona ids).
     raw = await engine.query(
         text=query,
         top_k=top_k * 10 if source_filter else top_k,
@@ -136,13 +139,23 @@ async def recall(
         wave_k=wave_k,
         use_cache=not force_refresh,
         source_filter=source_filter,
+        persona_context=persona_context,
+        tag_filter=tag_filter,
     )
     if source_filter:
         sf = set(source_filter)
+        injected_set = set()
+        if tag_filter or persona_context:
+            # Re-derive what the wave would have injected, so we can
+            # protect those from the defensive post-filter below.
+            if tag_filter:
+                injected_set |= engine.cache.find_ids_by_tag_filter(tag_filter)
+            if persona_context:
+                injected_set |= set(persona_context)
         filtered = []
         for r in raw:
             meta = r.metadata or {}
-            if meta.get("source") in sf:
+            if meta.get("source") in sf or r.id in injected_set:
                 filtered.append(r)
         raw = filtered[:top_k]
     items = [_to_memory_item(engine, r) for r in raw]

@@ -29,6 +29,13 @@ class CacheLayer:
         # in sync by engine.relate / unrelate / forget(hard) / compact paths.
         self.directed_out: dict[str, list[tuple[str, str]]] = {}
         self.directed_in: dict[str, list[tuple[str, str]]] = {}
+        # Phase J Stage 2: tag reverse index for the tag_filter additive
+        # seed injection. ``tag_to_ids[tag_substring]`` does NOT live here
+        # — instead we keep the per-node tag list so callers can do
+        # substring matching at recall time (substring patterns vary by
+        # query). ``tags_by_id[node_id]`` = list of tag strings as written
+        # in documents.metadata.tags.
+        self.tags_by_id: dict[str, list[str]] = {}
         self.dirty_nodes: set[str] = set()
         self.dirty_edges: set[tuple[str, str]] = set()
         self.dirty_displacements: set[str] = set()
@@ -156,6 +163,37 @@ class CacheLayer:
         """Return [(src_id, edge_type), ...] for edges coming into node_id."""
         return self.directed_in.get(node_id, [])
 
+    # --- Tag index (Phase J Stage 2) ---
+
+    def set_tags(self, node_id: str, tags: list[str]) -> None:
+        """Mirror the tags of a (just-indexed) document into the cache. Empty
+        ``tags`` list is dropped (no need to keep an entry that never matches)."""
+        clean = [t for t in tags if isinstance(t, str) and t]
+        if clean:
+            self.tags_by_id[node_id] = clean
+        else:
+            self.tags_by_id.pop(node_id, None)
+
+    def get_tags(self, node_id: str) -> list[str]:
+        return self.tags_by_id.get(node_id, [])
+
+    def find_ids_by_tag_filter(self, tag_substrings: list[str]) -> set[str]:
+        """OR-match: return ids whose tag list contains any string that
+        contains any of the requested substrings (substring match per
+        Phase J Stage 2 §「設計判断 2」). Returns an empty set on no
+        filters / no hits."""
+        if not tag_substrings:
+            return set()
+        # Pre-lowercase substrings? Phase H Stage 2 source_filter is case-
+        # sensitive; mirror that for consistency.
+        hits: set[str] = set()
+        for nid, tags in self.tags_by_id.items():
+            for tag in tags:
+                if any(sub in tag for sub in tag_substrings):
+                    hits.add(nid)
+                    break
+        return hits
+
     # --- Load from store ---
 
     async def load_from_store(self, store: StoreBase) -> None:
@@ -179,6 +217,13 @@ class CacheLayer:
         self.displacement_cache = await store.load_displacements()
         self.velocity_cache = await store.load_velocities()
         self.source_by_id = await store.get_all_sources()
+
+        # Phase J Stage 2: tag reverse index for tag_filter additive injection.
+        tags_map = await store.get_all_tags()
+        # Drop archived ids so tag_filter does not surface zombie nodes.
+        self.tags_by_id = {
+            nid: tags for nid, tags in tags_map.items() if nid not in archived_ids
+        }
 
         # Phase J Stage 1: mirror directed edges into the in-memory cache.
         # Skip edges that touch archived nodes so the sync recall path never
@@ -215,6 +260,7 @@ class CacheLayer:
         self.displacement_cache.pop(node_id, None)
         self.velocity_cache.pop(node_id, None)
         self.source_by_id.pop(node_id, None)
+        self.tags_by_id.pop(node_id, None)
         self.dirty_nodes.discard(node_id)
         self.dirty_displacements.discard(node_id)
         self.dirty_velocities.discard(node_id)

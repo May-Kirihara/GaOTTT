@@ -1,8 +1,8 @@
 # Plans — Phase J — Persona-Anchored Retrieval
 
-> 状態: **Stage 1 設計完了 (2026-05-13)**, 実装未着手
-> 関連: [Roadmap](Plans-Roadmap.md), [Phase D — Persona & Tasks](Plans-Phase-D-Persona-Tasks.md), [Phase H — Wave Seed Redesign](Plans-Phase-H-Wave-Seed-Redesign.md), [Phase I — Free Star Movement](Plans-Phase-I-Free-Star-Movement.md)
-> 発端: 2026-05-13 セッション中、Phase I Stage 3 本番 acceptance test での回帰観察
+> 状態: **Stage 1 ✅ 完了 (2026-05-13)**, **Stage 2 設計完了 + 実装中 (2026-05-13)**
+> 関連: [Roadmap](Plans-Roadmap.md), [Phase D — Persona & Tasks](Plans-Phase-D-Persona-Tasks.md), [Phase H — Wave Seed Redesign](Plans-Phase-H-Wave-Seed-Redesign.md), [Phase I — Free Star Movement](Plans-Phase-I-Free-Star-Movement.md), [Phase K — Stellar Supernova Cohort](Plans-Phase-K-Stellar-Supernova-Cohort.md)
+> 発端: 2026-05-13 セッション中、Phase I Stage 3 本番 acceptance test での回帰観察。Stage 2 は同日の Stage 1 acceptance (0/7) + Phase K acceptance (0/7) で「pool 入場権」が seed boost の事前条件として欠落していたことが判明したことが発端。
 
 ## 背景 — Phase I Stage 3 acceptance が明らかにしたこと
 
@@ -263,6 +263,130 @@ echo '{"persona_boost_enabled": false}' > ~/.config/gaottt/config.json
 ```
 
 DB 状態は触らないので migration 不要。
+
+## Stage 2 — Explicit pool injection (2026-05-13 設計完了 + 実装中)
+
+### 設計動機
+
+Stage 1 acceptance (2026-05-13 本番) で発覚した穴: persona boost は **pool 内 rerank** のみで、FAISS top-K に persona-tied node が入らない query では機能しない。Phase K Stage 1 で「同 batch ノード群に相互 co-occurrence edge」を張る retrospective ritual を実行しても (6216 edge + 112 velocity)、本番 7 query test は **0/7** に悪化 — embedding 距離が dominant、Phase J/K の boost は seed pool に入った候補にしか効かない。
+
+Stage 2 は **LLM が「今の文脈」を明示的に伝えて seed pool に強制注入する** path を提供する。Stage 1 の auto-detect は維持しつつ、新引数で explicit control を加える。「pool injection は美しくない」と思った代わりに、API として正面に位置づけ、LLM の判断による文脈制御として整理する。
+
+### 設計判断 5 軸 (全 recommended で確定)
+
+#### 1. injection の semantic — **additive**
+
+- restrictive (`source_filter` pattern): tag に一致するもの **のみ** 返す → 出力極端に偏る、explore に向かない
+- **additive (Stage 2 採用): tag に一致するノードを FAISS top-K に union 注入** → embedding 距離が遠くても確実に届く、かつ semantically relevant な候補も並ぶ
+- `source_filter` の restrictive 機構と並立 (両者は独立)
+
+#### 2. tag match — **substring (Phase H Stage 2 source_filter と同様)**
+
+- complete: tag list 要素の完全一致
+- prefix: "harakiriworks*"
+- **substring (採用): tag list 内のどれかが指定文字列を含めば match** — 柔軟、Phase H Stage 2 と pattern 整合
+
+#### 3. 複数 tag — **OR (どれか 1 つでもマッチで集合化)**
+
+- AND: 全 tag を持つノードのみ — restrictive すぎる
+- **OR (採用): 「どれか」が自然 — LLM の意図表現と整合**
+
+#### 4. persona_context と auto-detect — **explicit が auto-detect を上書き**
+
+- 引数省略時: Stage 1 auto-detect (active value/intention/commitment 全部)
+- 明示指定時: 指定された id のみ persona として扱う (auto-detect 無効化) — 「この session は intention X だけに focus」と明示できる
+
+#### 5. wave_k_with_filter の扱い — **tag_filter 使用時も同じく pool 拡大**
+
+- tag_filter 使用 → seed pool size を `max(wave_initial_k, wave_k_with_filter)` に拡大
+- Phase H Stage 2 `source_filter` と同じ理由 (sparse target が seed に届くため)
+
+### API 仕様
+
+```
+recall(
+    query: str,
+    top_k: int = 5,
+    source_filter: list[str] | None = None,        # Phase H Stage 2 (restrictive)
+    wave_depth: int | None = None,
+    wave_k: int | None = None,
+    force_refresh: bool = False,
+    persona_context: list[str] | None = None,      # Stage 2 NEW (explicit persona ids)
+    tag_filter: list[str] | None = None,           # Stage 2 NEW (additive injection)
+) -> list[QueryResultItem]
+```
+
+- `persona_context`: intention/commitment/value の id 列。省略時は Stage 1 auto-detect
+- `tag_filter`: tag substring 列 (OR match)。マッチするノードを seed pool に additive 注入
+
+### Pattern 例
+
+```python
+# 「文脈付き recall」 — 今 declared な intention を意識的に retrieve
+recall(query="Eleventy Pipeline",
+       tag_filter=["harakiriworks-self-knowledge"])
+# → harakiriworks 内の Phase 4 R1 (.eleventy.js 責務) が top に届く
+
+# 「クロス文脈 recall」 — 別 intention に紐付くノードを意図的に持ち込む
+recall(query="重力場の設計判断",
+       tag_filter=["niceboat", "gaottt-self-knowledge"])
+# → 両 corpus から material を引き出す
+
+# 「明示 persona」 — auto-detect でなく特定の intention に絞る
+recall(query="今日のテスト戦略",
+       persona_context=["eb31f843-..."])  # harakiriworks commitment id
+# → harakiriworks intention 配下の知識のみが persona graph として作用
+```
+
+### 実装範囲
+
+| ファイル | 変更 |
+|---|---|
+| `gaottt/core/types.py` | RecallRequest (MCP) + RecallBody (REST) に `persona_context` + `tag_filter` を optional 追加 |
+| `gaottt/store/cache.py` | `tag_to_ids: dict[str, set[str]]` reverse index を追加 (Phase H Stage 2 `source_by_id` と同 pattern)。`load_from_store` で documents.metadata から抽出、`index_documents` で同期、`evict_node` で clean up |
+| `gaottt/core/gravity.py` | `propagate_gravity_wave` に `persona_context_ids` + `tag_filter_ids` 引数追加、seed step で additive injection (FAISS top-K + injection の union) |
+| `gaottt/core/engine.py` | `query` に `persona_context` + `tag_filter` 引数追加、`propagate_gravity_wave` に渡す。auto-detect path は省略時のみ走る |
+| `gaottt/services/memory.py` | `recall` 関数に新引数追加、engine.query に渡す |
+| `gaottt/server/app.py` | RecallBody に新 field、endpoint で受け取り services.recall に渡す |
+| `gaottt/server/mcp_server.py` | recall tool の引数に追加、`instructions` 文字列も更新 |
+| `tests/integration/test_rest_parity.py` | tag_filter / persona_context の REST roundtrip |
+| `tests/integration/test_mcp_*.py` | MCP 経由の挙動 |
+| `tests/unit/test_persona_gravity.py` | additive injection の unit test |
+
+**MCP/REST parity 鉄則対応**: 同じターン/コミットで両方公開。docs (`MCP-Reference-*` + `REST-API-Reference.md`) も同時更新。
+
+### テスト戦略
+
+**Unit**:
+- `test_tag_filter_injection_unions_with_topk`: tag_filter で得た id が FAISS top-K に加わる
+- `test_tag_filter_substring_or_match`: substring OR semantic
+- `test_persona_context_overrides_autodetect`: 明示指定で auto-detect が無効化
+
+**Integration**:
+- `test_recall_tag_filter_surfaces_orphan_via_engine`: engine.query 経由で embedding 距離が遠い orphan ノードが tag_filter で surface する
+- `test_recall_legacy_when_no_args`: 引数省略時は Stage 1 / source_filter なしの挙動と完全互換
+
+**REST parity**:
+- POST /recall に tag_filter / persona_context を含めた roundtrip 確認、MCP の formatter 出力と同じ id 順を expect
+
+### Acceptance 判定基準 (本番 23k DB)
+
+1. MCP `recall(query="Eleventy Pipeline", tag_filter=["harakiriworks-self-knowledge"])` で harakiriworks 系が top5 に **確実に** 出る (FAISS embedding 距離関係なく)
+2. 7 query で tag_filter=["harakiriworks-self-knowledge"] 使用 → 正解 phase memory が top1 に来る率 ≥ 5/7
+3. tag_filter 未使用時は Stage 1 までの挙動 (current 0/7) を維持 — backward compatibility
+
+### Roll-back
+
+Stage 2 は **API 引数追加のみ** で既存挙動を変えない。引数省略時は完全 Stage 1 互換。緊急時は LLM 側で tag_filter / persona_context を渡さなければ rollback 不要。
+
+config レベルでの kill switch (`persona_explicit_enabled`) は **設けない** — Stage 1 と違って boost ではなく API field なので、引数を渡さなければ無効化される。
+
+### Stage 2 で扱わないもの (Stage 3 候補)
+
+- prefetch / explore への引数展開
+- persona_context の TTL 検証 (active commitment の last_access ベース)
+- tag の階層 / namespace (e.g., `harakiriworks/phase-4`)
+- search-friendly filter (`tag_exclude`, `tag_filter_mode="and"`)
 
 ## ハイパーパラメータ表
 

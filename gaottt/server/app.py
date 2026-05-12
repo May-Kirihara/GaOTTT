@@ -182,6 +182,8 @@ async def recall_memory(request: RecallRequest):
         wave_depth=request.wave_depth,
         wave_k=request.wave_k,
         force_refresh=request.force_refresh,
+        persona_context=request.persona_context,
+        tag_filter=request.tag_filter,
     )
 
 

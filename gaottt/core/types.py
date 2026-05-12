@@ -139,6 +139,9 @@ class RecallRequest(BaseModel):
     wave_depth: int | None = Field(default=None, ge=0, le=5)
     wave_k: int | None = Field(default=None, ge=1, le=20)
     force_refresh: bool = False
+    # Phase J Stage 2: explicit pool injection.
+    persona_context: list[str] | None = None  # node ids of declared value/intention/commitment; None → auto-detect (Stage 1)
+    tag_filter: list[str] | None = None       # additive injection — substrings (OR match) of metadata.tags entries
 
 
 class ExploreRequest(BaseModel):

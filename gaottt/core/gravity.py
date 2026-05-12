@@ -435,6 +435,37 @@ def _seed_boost(
     return score
 
 
+def _inject_into_pool(
+    pool: list[tuple[str, float]],
+    injected_ids: set[str],
+    qv: np.ndarray,
+    faiss_index: "FaissIndex",
+) -> list[tuple[str, float]]:
+    """Phase J Stage 2 — add ``injected_ids`` to ``pool`` (additive injection),
+    computing each id's raw cosine against ``qv`` from FAISS embeddings.
+
+    De-duplicates by id (keeping the existing pool entry when overlapping).
+    Returns a re-sorted (desc by raw cosine) pool. Ids whose embedding is
+    missing from FAISS are silently skipped.
+    """
+    if not injected_ids:
+        return pool
+    pool_ids = {nid for nid, _ in pool}
+    missing = [nid for nid in injected_ids if nid not in pool_ids]
+    if not missing:
+        return pool
+    vec_map = faiss_index.get_vectors(missing)
+    if not vec_map:
+        return pool
+    qv_norm = float(np.linalg.norm(qv)) + 1e-12
+    for nid, emb in vec_map.items():
+        emb_norm = float(np.linalg.norm(emb)) + 1e-12
+        raw = float(np.dot(qv, emb)) / (qv_norm * emb_norm)
+        pool.append((nid, raw))
+    pool.sort(key=lambda t: t[1], reverse=True)
+    return pool
+
+
 def propagate_gravity_wave(
     query_vector: np.ndarray,
     faiss_index: "FaissIndex",
@@ -445,6 +476,7 @@ def propagate_gravity_wave(
     source_filter: list[str] | None = None,
     virtual_faiss_index: "FaissIndex | None" = None,
     persona_proximities: dict[str, float] | None = None,
+    injected_ids: set[str] | None = None,
 ) -> dict[str, float]:
     """Propagate gravity wave recursively through embedding space.
 
@@ -477,39 +509,68 @@ def propagate_gravity_wave(
     bends retrieval geometry. Caller is responsible for computing
     proximities (engine.query does this once per recall).
 
+    Phase J Stage 2 — Additive pool injection: when ``injected_ids`` is
+    provided (typically the union of nodes matching the caller's
+    ``tag_filter`` and ``persona_context`` arguments), those ids are
+    union-merged into the FAISS top-K pool with their true raw cosine,
+    *bypassing* ``source_filter`` restrictions. This solves the Stage 1
+    pool-entry pathology: when query embedding is far from a sparse
+    cohort, neither mass nor persona reranking can rescue it because
+    the cohort never enters the pool. Explicit injection guarantees
+    entry; subsequent rerank still applies the usual boosts.
+
     Set ``config.wave_seed_mass_alpha=0``, ``config.persona_boost_alpha=0``
     and pass no ``source_filter`` / ``virtual_faiss_index`` /
-    ``persona_proximities`` to recover legacy raw-cosine top-K seeding.
+    ``persona_proximities`` / ``injected_ids`` to recover legacy
+    raw-cosine top-K seeding.
     """
     initial_k = wave_k if wave_k is not None else config.wave_initial_k
     max_depth = wave_depth if wave_depth is not None else config.wave_max_depth
 
     qv = query_vector[0] if query_vector.ndim == 2 else query_vector
 
-    # Any boost path is active if at least one of (mass α, persona α) is on.
+    # Any boost path is active if at least one of (mass α, persona α) is on,
+    # OR if explicit injection is requested.
     has_seed_boost = (
         config.wave_seed_mass_alpha > 0.0
         or (persona_proximities is not None and config.persona_boost_alpha > 0.0)
     )
+    has_injection = bool(injected_ids)
 
     if source_filter:
         sf_set = set(source_filter)
         pool_size = max(initial_k, config.wave_k_with_filter)
         pool = _union_pool(qv, faiss_index, virtual_faiss_index, pool_size)
+        if has_injection:
+            pool = _inject_into_pool(pool, injected_ids, qv, faiss_index)
         if not pool:
             return {}
         candidates: list[tuple[str, float, float]] = []
         for nid, raw in pool:
-            src = cache.get_source(nid)
-            if src not in sf_set:
-                continue
+            # Phase J Stage 2: injected ids bypass source_filter restrictions.
+            # Caller explicitly asked for them; respect that signal.
+            if nid not in (injected_ids or set()):
+                src = cache.get_source(nid)
+                if src not in sf_set:
+                    continue
             boosted = _seed_boost(nid, raw, cache, config, persona_proximities)
             candidates.append((nid, boosted, raw))
         candidates.sort(key=lambda t: t[1], reverse=True)
-        seeds = [(nid, raw) for nid, _, raw in candidates[:initial_k]]
-    elif has_seed_boost:
+        # Phase J Stage 2: also force-include injected ids in the seed set
+        # on this restrictive path (same reasoning as the boost path below).
+        if has_injection:
+            inject_set = set(injected_ids)
+            forced = [(nid, raw) for nid, _, raw in candidates if nid in inject_set]
+            others = [(nid, raw) for nid, _, raw in candidates if nid not in inject_set]
+            remaining = max(0, initial_k - len(forced))
+            seeds = forced + others[:remaining]
+        else:
+            seeds = [(nid, raw) for nid, _, raw in candidates[:initial_k]]
+    elif has_seed_boost or has_injection:
         pool_size = max(initial_k, config.wave_seed_pool_size)
         pool = _union_pool(qv, faiss_index, virtual_faiss_index, pool_size)
+        if has_injection:
+            pool = _inject_into_pool(pool, injected_ids, qv, faiss_index)
         if not pool:
             return {}
 
@@ -534,7 +595,19 @@ def propagate_gravity_wave(
             boosted = _seed_boost(nid, raw, cache, config, persona_proximities)
             rescored.append((nid, boosted, raw))
         rescored.sort(key=lambda t: t[1], reverse=True)
-        seeds = [(nid, raw) for nid, _, raw in rescored[:effective_k]]
+
+        # Phase J Stage 2: injected ids are *forced* into the seed set
+        # regardless of rerank position. The caller explicitly asked for
+        # them, so rerank order shouldn't be able to evict them. Remaining
+        # slots go to the highest-ranked non-injected candidates.
+        if has_injection:
+            inject_set = set(injected_ids)
+            forced = [(nid, raw) for nid, _, raw in rescored if nid in inject_set]
+            others = [(nid, raw) for nid, _, raw in rescored if nid not in inject_set]
+            remaining = max(0, effective_k - len(forced))
+            seeds = forced + others[:remaining]
+        else:
+            seeds = [(nid, raw) for nid, _, raw in rescored[:effective_k]]
     else:
         seeds = _union_pool(
             qv, faiss_index, virtual_faiss_index, initial_k,
