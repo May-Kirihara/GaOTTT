@@ -17,6 +17,14 @@ dependencies = [
 
 [project.optional-dependencies]
 gpu = ["faiss-gpu>=1.8.0"]
+# Phase L Stage 1 — optional Sudachi tokenizer for BM25 (decision D3).
+# Default is char 3-gram (no extra deps). Install with:
+#   uv pip install -e ".[bm25-sudachi]"
+# to switch by setting GaOTTTConfig.bm25_tokenizer="sudachi".
+bm25-sudachi = [
+    "sudachipy>=0.6.0",
+    "sudachidict_core>=20240409",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",

@@ -36,11 +36,33 @@ from gaottt.core.types import (
 )
 from gaottt.embedding.ruri import RuriEmbedder
 from gaottt.graph.cooccurrence import CooccurrenceGraph
+from gaottt.index.bm25_index import BM25Index
 from gaottt.index.faiss_index import FaissIndex
 from gaottt.store.cache import CacheLayer
 from gaottt.store.sqlite_store import SqliteStore
 
 logger = logging.getLogger(__name__)
+
+
+def _rrf_forced_key(
+    nid: str,
+    cosine_rank: dict[str, int],
+    bm25_rank: dict[str, int],
+    rrf_k: int,
+) -> float:
+    """RRF-combined rank score for forced ordering (Phase L Stage 1).
+
+    ``cosine_rank`` / ``bm25_rank`` map node id → 1-based rank (precomputed).
+    Absent ids contribute 0 for that metric.
+    """
+    score = 0.0
+    cr = cosine_rank.get(nid)
+    if cr is not None:
+        score += 1.0 / (rrf_k + cr)
+    br = bm25_rank.get(nid)
+    if br is not None:
+        score += 1.0 / (rrf_k + br)
+    return score
 
 
 class GaOTTTEngine:
@@ -52,11 +74,17 @@ class GaOTTTEngine:
         cache: CacheLayer,
         store: SqliteStore,
         virtual_faiss_index: FaissIndex | None = None,
+        bm25_index: BM25Index | None = None,
     ):
         self.config = config
         self.embedder = embedder
         self.faiss_index = faiss_index
         self.virtual_faiss_index = virtual_faiss_index
+        # Phase L Stage 1: optional BM25 lexical index. When ``None``, the
+        # engine behaves exactly as before Phase L (raw + virtual FAISS only).
+        # Production should wire this up in build_engine; tests get the
+        # legacy behaviour for free.
+        self.bm25_index = bm25_index
         self.cache = cache
         self.store = store
         self.graph = CooccurrenceGraph(config, cache)
@@ -105,6 +133,11 @@ class GaOTTTEngine:
                     "Virtual FAISS missing; building from raw + displacement"
                 )
                 await self._rebuild_virtual_faiss_index()
+        # Phase L Stage 1: build BM25 index from active document content.
+        # D2: in-memory only — no disk persistence in Stage 1, so we always
+        # rebuild from SQLite content at startup.
+        if self.bm25_index is not None:
+            await self._build_bm25_from_store()
         self.cache.start_write_behind(self.store)
         if self.config.faiss_save_interval_seconds > 0:
             self._faiss_save_stop = asyncio.Event()
@@ -326,6 +359,11 @@ class GaOTTTEngine:
             # next kick step) will pull virtual_pos away from raw if
             # needed.
             self.virtual_faiss_index.add(vectors, ids)
+        # Phase L Stage 1: feed BM25 with the document text so lexical
+        # matches on the new docs are findable immediately, without waiting
+        # for the next compact/startup rebuild.
+        if self.bm25_index is not None:
+            self.bm25_index.add(ids, contents)
 
         now = time.time()
         docs_for_store = []
@@ -577,6 +615,8 @@ class GaOTTTEngine:
             virtual_faiss_index=self.virtual_faiss_index,
             persona_proximities=persona_proximities,
             injected_ids=injected_ids,
+            query_text=text,
+            bm25_index=self.bm25_index,
         )
 
         if not reached:
@@ -682,16 +722,60 @@ class GaOTTTEngine:
         # caller-injected set, the right ordering is "which of these
         # tagged memos is closest to the query" — i.e. raw cosine.
         # Non-injected results still rank by final_score.
+        #
+        # Phase L Stage 1 supplement: when BM25 is active, compute a
+        # per-node lexical score and combine it with pure raw cosine
+        # via RRF so that surface-form matches ("Eleventy Pipeline" →
+        # .eleventy.js) can outrank pure-embedding similarity.
+        bm25_forced_scores: dict[str, float] = {}
+        if (
+            injected_ids
+            and self.bm25_index is not None
+            and self.bm25_index.size > 0
+            and text
+        ):
+            bm25_pool = self.bm25_index.search(
+                text, max(len(injected_ids), 50),
+            )
+            bm25_forced_scores = {nid: sc for nid, sc in bm25_pool}
+
         if injected_ids:
             forced = [r for r in results if r.id in injected_ids]
             others = [r for r in results if r.id not in injected_ids]
-            # Phase J Stage 3 patch: order forced by **pure** raw cosine
-            # (query vs original_emb, no displacement). ``r.raw_score``
-            # is gravity_sim which already includes displacement, so it
-            # carries the same accumulation bias as final_score.
-            forced.sort(
-                key=lambda r: pure_raw_cosines.get(r.id, 0.0), reverse=True,
-            )
+
+            if bm25_forced_scores:
+                forced_cosine_rank: dict[str, int] = {
+                    r.id: rank
+                    for rank, r in enumerate(
+                        sorted(
+                            forced,
+                            key=lambda r: pure_raw_cosines.get(r.id, 0.0),
+                            reverse=True,
+                        ),
+                        start=1,
+                    )
+                }
+                forced_bm25_rank: dict[str, int] = {}
+                bm25_sorted = sorted(
+                    bm25_forced_scores.items(),
+                    key=lambda t: t[1],
+                    reverse=True,
+                )
+                for rank, (nid, _) in enumerate(bm25_sorted, start=1):
+                    if nid in injected_ids:
+                        forced_bm25_rank[nid] = rank
+                forced.sort(
+                    key=lambda r: _rrf_forced_key(
+                        r.id, forced_cosine_rank, forced_bm25_rank,
+                        self.config.rrf_k,
+                    ),
+                    reverse=True,
+                )
+            else:
+                forced.sort(
+                    key=lambda r: pure_raw_cosines.get(r.id, 0.0),
+                    reverse=True,
+                )
             others.sort(key=lambda r: r.final_score, reverse=True)
             if len(forced) >= k:
                 results = forced[:k]
@@ -855,6 +939,10 @@ class GaOTTTEngine:
         affected = await self.store.set_archived(node_ids, archived=True)
         for nid in node_ids:
             self.cache.evict_node(nid)
+        # Phase L Stage 1: drop archived ids from BM25 so search excludes
+        # them immediately (the postings remain until compact/rebuild).
+        if self.bm25_index is not None and affected:
+            self.bm25_index.remove(node_ids)
         if affected:
             self.prefetch_cache.invalidate()
         logger.info("Archived %d nodes", affected)
@@ -881,6 +969,12 @@ class GaOTTTEngine:
             # FAISS refresh so they reappear in seed pools.
             if affected:
                 self.cache.virtual_faiss_dirty = True
+            # Phase L Stage 1: BM25 also surfaces the restored docs again.
+            # Calling restore is cheap (just flips the soft-remove flag);
+            # if the postings were already compacted away, this is a no-op
+            # and the next startup rebuild picks them up.
+            if self.bm25_index is not None and affected:
+                self.bm25_index.restore(node_ids)
             self.prefetch_cache.invalidate()
         logger.info("Restored %d nodes", affected)
         return affected
@@ -899,6 +993,11 @@ class GaOTTTEngine:
         for nid in node_ids:
             self.cache.evict_node(nid)
         deleted = await self.store.hard_delete_nodes(node_ids)
+        # Phase L Stage 1: BM25 postings are reclaimed on the next compact;
+        # for now just drop them from active statistics so search excludes
+        # them.
+        if self.bm25_index is not None and deleted:
+            self.bm25_index.remove(node_ids)
         if deleted:
             self.prefetch_cache.invalidate()
         logger.info("Hard-deleted %d nodes", deleted)
@@ -1112,6 +1211,10 @@ class GaOTTTEngine:
             # Evict absorbed from cache after marking dirty so flush persists state
             await self.cache.flush_to_store(self.store)
             self.cache.evict_node(absorbed.id)
+            # Phase L Stage 1: drop absorbed from BM25 so the survivor wins
+            # all lexical searches (the absorbed content is now redundant).
+            if self.bm25_index is not None:
+                self.bm25_index.remove([absorbed.id])
         if outcomes:
             self.prefetch_cache.invalidate()
         return outcomes
@@ -1147,9 +1250,14 @@ class GaOTTTEngine:
         if expire_ttl:
             now = time.time()
             n = await self.store.expire_due_nodes(now)
+            expired_ids: list[str] = []
             for state in list(self.cache.get_all_nodes()):
                 if state.expires_at is not None and state.expires_at <= now:
+                    expired_ids.append(state.id)
                     self.cache.evict_node(state.id)
+            # Phase L Stage 1: drop expired ids from BM25 active stats.
+            if self.bm25_index is not None and expired_ids:
+                self.bm25_index.remove(expired_ids)
             report["expired"] = n
 
         if auto_merge:
@@ -1170,6 +1278,12 @@ class GaOTTTEngine:
         if rebuild_faiss:
             await self._rebuild_faiss_index()
             report["faiss_rebuilt"] = True
+            # Phase L Stage 1: rebuild BM25 together with FAISS so the
+            # lexical index also reclaims postings from forget/merge/expire
+            # and re-syncs with the SQLite content (covers any drift from
+            # other processes that wrote to the DB while this one was idle).
+            if self.bm25_index is not None:
+                await self._rebuild_bm25_from_store()
         report["vectors_after"] = self.faiss_index.size
 
         # Drop orphan directed edges (endpoints hard-deleted by the user)
@@ -1280,6 +1394,45 @@ class GaOTTTEngine:
         logger.info(
             "Virtual FAISS rebuilt: %d active vectors", len(virtual_ids),
         )
+
+    async def _build_bm25_from_store(self) -> None:
+        """Phase L Stage 1: Initial BM25 build at startup.
+
+        Loads every document content from SQLite and adds the active ones
+        (those present in ``cache.node_cache`` — archived/expired ids are
+        skipped) to the in-memory BM25 index. Decision D2 dictates that
+        Stage 1 has no disk persistence, so this rebuild happens on every
+        startup. The cost is proportional to total content length; at 24k
+        documents it completes in a few seconds.
+        """
+        if self.bm25_index is None:
+            return
+        contents = await self.store.get_all_contents()
+        active_ids: list[str] = []
+        active_texts: list[str] = []
+        for nid, text in contents.items():
+            if nid in self.cache.node_cache and text:
+                active_ids.append(nid)
+                active_texts.append(text)
+        if not active_ids:
+            return
+        self.bm25_index.add(active_ids, active_texts)
+        logger.info(
+            "BM25 index built: %d active docs (skipped %d archived/missing)",
+            len(active_ids), len(contents) - len(active_ids),
+        )
+
+    async def _rebuild_bm25_from_store(self) -> None:
+        """Phase L Stage 1: Full BM25 rebuild during compact.
+
+        Drops in-memory state and rebuilds from SQLite — reclaims postings
+        from forget/merge/expire and re-syncs with content written by other
+        processes (the multi-process visibility caveat in CLAUDE.md).
+        """
+        if self.bm25_index is None:
+            return
+        self.bm25_index.reset()
+        await self._build_bm25_from_store()
 
     # --- US5: State Reset ---
 

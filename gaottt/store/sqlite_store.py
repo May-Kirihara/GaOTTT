@@ -170,6 +170,18 @@ class SqliteStore(StoreBase):
             "metadata": json.loads(row[2]) if row[2] else None,
         }
 
+    async def get_all_contents(self) -> dict[str, str]:
+        """Bulk fetch {id: content} for all documents. Phase L Stage 1 uses
+        this at engine startup to build the BM25 lexical index in-memory.
+        Archived/expired filtering is applied by the engine layer via
+        cache.node_cache, not here."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT id, content FROM documents WHERE content IS NOT NULL"
+        )
+        rows = await cursor.fetchall()
+        return {row[0]: row[1] for row in rows if row[1]}
+
     async def get_all_sources(self) -> dict[str, str]:
         """Bulk fetch {id: metadata.source} via SQLite's JSON1 extension.
 

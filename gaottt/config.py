@@ -200,6 +200,30 @@ class GaOTTTConfig:
     supernova_initial_weight: float = 1.0       # 相互 edge の初期 weight (wave_seed_mass_alpha × log(1+w) で boost が効く)
     supernova_velocity_alpha: float = 0.03      # 爆発の運動量 α (orbital_max_velocity=0.05 以下に収まる)
 
+    # Phase L Stage 1 — Hybrid retrieval (BM25 union seed).
+    # Adds a third metric (BM25 lexical) alongside raw FAISS (semantic) and
+    # virtual FAISS (semantic+history) to the seed pool. Lexical and semantic
+    # are independent metric tensors — surface-form matches BM25 catches that
+    # embedder cosine misses ("Eleventy Pipeline" → exact .eleventy.js match).
+    # RRF fusion combines ranks scale-invariantly across the 3 indexes.
+    #
+    # Decision log (めいさん 2026-05-14):
+    #   D1. bm25_score_mode default = "rrf" (Reciprocal Rank Fusion, k=60)
+    #   D2. in-memory only in Stage 1 — startup rebuild from SQLite content;
+    #       disk persistence is a future stage
+    #   D3. tokenizer default = "trigram"; "sudachi" available as optional
+    #       extra (uv pip install -e ".[bm25-sudachi]")
+    #   D4. wave_neighbor 中の BM25 拡張なし — Stage 1 は seed pool 入場権のみ
+    # Set hybrid_bm25_enabled=False for clean rollback (BM25 skipped entirely).
+    hybrid_bm25_enabled: bool = True
+    bm25_seed_k: int = 50                       # BM25 top-N drawn into the union pool
+    bm25_k1: float = 1.5                        # Robertson-Sparck-Jones k1 (term-saturation)
+    bm25_b: float = 0.75                        # length-normalization b
+    bm25_score_mode: str = "rrf"                # "rrf" (default) | "weighted_sum"
+    bm25_score_alpha: float = 0.5               # weighted_sum: BM25 normalized share; ignored for "rrf"
+    rrf_k: int = 60                             # RRF rank-fusion constant (Cormack 2009 standard)
+    bm25_tokenizer: str = "trigram"             # "trigram" (default) | "sudachi" (optional extra)
+
     # Gravity wave propagation
     wave_initial_k: int = 3            # Initial FAISS top-k for seed nodes
     wave_max_depth: int = 2            # Maximum recursion depth

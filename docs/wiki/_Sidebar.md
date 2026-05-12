@@ -54,6 +54,7 @@
 - [Phase I — Free Star Movement](Plans-Phase-I-Free-Star-Movement.md)
 - [Phase J — Persona-Anchored Retrieval](Plans-Phase-J-Persona-Anchored-Retrieval.md)
 - [Phase K — Stellar Supernova Cohort](Plans-Phase-K-Stellar-Supernova-Cohort.md)
+- [Phase L — Hybrid Retrieval](Plans-Phase-L-Hybrid-Retrieval.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
 
 ### 🔬 Research

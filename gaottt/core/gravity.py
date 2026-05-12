@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
+    from gaottt.index.bm25_index import BM25Index
     from gaottt.index.faiss_index import FaissIndex
     from gaottt.store.cache import CacheLayer
 
@@ -384,32 +385,128 @@ def apply_displacement_decay(
 # Gravity Wave Propagation (unchanged)
 # -----------------------------------------------------------------------
 
+def _rrf_fusion(
+    pools: list[list[tuple[str, float]]],
+    rrf_k: int,
+) -> list[tuple[str, float]]:
+    """Reciprocal Rank Fusion across multiple ranked lists.
+
+    Each doc's fused score is ``Σ over pools containing it: 1 / (rrf_k + rank_1based)``.
+    Documents absent from a pool contribute 0 for that pool. The original
+    per-pool scores are dropped — RRF is rank-only by design (scale-invariant).
+    Returns the fused list sorted descending by fused score; scores are RRF
+    sums (typically in the [0, n_pools/(rrf_k+1)] range).
+
+    Cormack et al. 2009 (SIGIR) introduces RRF as a robust scale-invariant
+    fusion suited for combining heterogeneous-metric retrievers (e.g.,
+    cosine + BM25).
+    """
+    scores: dict[str, float] = {}
+    for pool in pools:
+        for rank, (nid, _raw) in enumerate(pool, start=1):
+            scores[nid] = scores.get(nid, 0.0) + 1.0 / (rrf_k + rank)
+    fused = sorted(scores.items(), key=lambda t: t[1], reverse=True)
+    return fused
+
+
+def _weighted_sum_fusion(
+    pool_cosine: list[tuple[str, float]],
+    pool_bm25: list[tuple[str, float]],
+    bm25_alpha: float,
+) -> list[tuple[str, float]]:
+    """Fallback fusion: min-max normalize BM25 then linear combine with cosine.
+
+    ``fused = cosine_score * (1 - α) + bm25_norm * α``. A doc present in
+    only one pool contributes 0 from the missing side. Used when
+    ``bm25_score_mode == "weighted_sum"`` (D1 decision: default is "rrf",
+    this stays as an opt-in flag).
+    """
+    bm25_dict = dict(pool_bm25)
+    if bm25_dict:
+        vals = list(bm25_dict.values())
+        b_min, b_max = min(vals), max(vals)
+        b_range = (b_max - b_min) if b_max > b_min else 1.0
+        bm25_norm = {nid: (s - b_min) / b_range for nid, s in bm25_dict.items()}
+    else:
+        bm25_norm = {}
+    cosine_dict = dict(pool_cosine)
+    all_ids = set(cosine_dict.keys()) | set(bm25_norm.keys())
+    fused: list[tuple[str, float]] = []
+    for nid in all_ids:
+        c = cosine_dict.get(nid, 0.0)
+        b = bm25_norm.get(nid, 0.0)
+        score = c * (1.0 - bm25_alpha) + b * bm25_alpha
+        fused.append((nid, score))
+    fused.sort(key=lambda t: t[1], reverse=True)
+    return fused
+
+
 def _union_pool(
     qv: np.ndarray,
     raw_index: "FaissIndex",
     virtual_index: "FaissIndex | None",
     pool_size: int,
+    query_text: str | None = None,
+    bm25_index: "BM25Index | None" = None,
+    bm25_score_mode: str = "rrf",
+    bm25_score_alpha: float = 0.5,
+    rrf_k: int = 60,
 ) -> list[tuple[str, float]]:
-    """Take top-N from raw FAISS, optionally union with virtual FAISS,
-    deduplicate by id keeping the best score. Phase H Stage 4 enables
-    seeds to come from the virtual position index, which sees Phase G
-    priming displacement updates that raw FAISS cannot."""
+    """Take top-N from raw FAISS, optionally union with virtual FAISS (Phase H
+    Stage 4) and BM25 (Phase L Stage 1), deduplicate by id.
+
+    The semantic stack (raw + virtual cosine) and the lexical stack (BM25)
+    are independent metric tensors — surface-form matches BM25 catches
+    that embedder cosine misses. RRF fusion combines ranks scale-invariantly
+    across whichever indexes are available; ``weighted_sum`` mode is
+    available as a flag and falls back to the Phase H Stage 4 max-merge
+    when BM25 is absent.
+
+    When neither virtual nor BM25 is supplied (legacy callers), this
+    returns the raw FAISS top-N unchanged.
+    """
     pool_raw = raw_index.search(qv.reshape(1, -1), pool_size)
-    if virtual_index is None or virtual_index.size == 0:
+    pool_virtual: list[tuple[str, float]] = []
+    if virtual_index is not None and virtual_index.size > 0:
+        pool_virtual = virtual_index.search(qv.reshape(1, -1), pool_size)
+    pool_bm25: list[tuple[str, float]] = []
+    if (
+        bm25_index is not None
+        and bm25_index.size > 0
+        and query_text
+    ):
+        pool_bm25 = bm25_index.search(query_text, pool_size)
+
+    if not pool_virtual and not pool_bm25:
         return pool_raw
-    pool_virtual = virtual_index.search(qv.reshape(1, -1), pool_size)
-    best: dict[str, float] = {}
+
+    # Phase L Stage 1: RRF fires only when BM25 is actually contributing.
+    # Without BM25, the two semantic pools (raw + virtual) share a scale
+    # (cosine [-1, 1]) so we keep the Phase H Stage 4 max-merge — switching
+    # to RRF there would erase the score continuity Phase H tests rely on.
+    if pool_bm25 and bm25_score_mode == "rrf":
+        pools: list[list[tuple[str, float]]] = [pool_raw]
+        if pool_virtual:
+            pools.append(pool_virtual)
+        pools.append(pool_bm25)
+        return _rrf_fusion(pools, rrf_k=rrf_k)
+
+    # Phase H Stage 4 max-merge of raw + virtual (cosine same scale).
+    semantic: dict[str, float] = {}
     for nid, score in pool_raw:
-        prev = best.get(nid)
+        prev = semantic.get(nid)
         if prev is None or score > prev:
-            best[nid] = score
+            semantic[nid] = score
     for nid, score in pool_virtual:
-        prev = best.get(nid)
+        prev = semantic.get(nid)
         if prev is None or score > prev:
-            best[nid] = score
-    merged = list(best.items())
-    merged.sort(key=lambda t: t[1], reverse=True)
-    return merged
+            semantic[nid] = score
+    semantic_list = sorted(semantic.items(), key=lambda t: t[1], reverse=True)
+
+    # Phase L Stage 1 weighted_sum mode: blend BM25 into the semantic merge.
+    if pool_bm25 and bm25_score_mode == "weighted_sum":
+        return _weighted_sum_fusion(semantic_list, pool_bm25, bm25_alpha=bm25_score_alpha)
+    return semantic_list
 
 
 def _seed_boost(
@@ -477,6 +574,8 @@ def propagate_gravity_wave(
     virtual_faiss_index: "FaissIndex | None" = None,
     persona_proximities: dict[str, float] | None = None,
     injected_ids: set[str] | None = None,
+    query_text: str | None = None,
+    bm25_index: "BM25Index | None" = None,
 ) -> dict[str, float]:
     """Propagate gravity wave recursively through embedding space.
 
@@ -545,10 +644,22 @@ def propagate_gravity_wave(
     )
     has_injection = bool(injected_ids)
 
+    # Phase L Stage 1: globally disable BM25 contribution when the config
+    # flag is off. The flag is the single rollback knob (decision in Plans
+    # — set hybrid_bm25_enabled=False to fully revert to Phase H Stage 4).
+    bm25_effective = bm25_index if config.hybrid_bm25_enabled else None
+
     if source_filter:
         sf_set = set(source_filter)
         pool_size = max(initial_k, config.wave_k_with_filter)
-        pool = _union_pool(qv, faiss_index, virtual_faiss_index, pool_size)
+        pool = _union_pool(
+            qv, faiss_index, virtual_faiss_index, pool_size,
+            query_text=query_text,
+            bm25_index=bm25_effective,
+            bm25_score_mode=config.bm25_score_mode,
+            bm25_score_alpha=config.bm25_score_alpha,
+            rrf_k=config.rrf_k,
+        )
         if has_injection:
             pool = _inject_into_pool(pool, injected_ids, qv, faiss_index)
         if not pool:
@@ -581,7 +692,14 @@ def propagate_gravity_wave(
             seeds = [(nid, raw) for nid, _, raw in candidates[:initial_k]]
     elif has_seed_boost or has_injection:
         pool_size = max(initial_k, config.wave_seed_pool_size)
-        pool = _union_pool(qv, faiss_index, virtual_faiss_index, pool_size)
+        pool = _union_pool(
+            qv, faiss_index, virtual_faiss_index, pool_size,
+            query_text=query_text,
+            bm25_index=bm25_effective,
+            bm25_score_mode=config.bm25_score_mode,
+            bm25_score_alpha=config.bm25_score_alpha,
+            rrf_k=config.rrf_k,
+        )
         if has_injection:
             pool = _inject_into_pool(pool, injected_ids, qv, faiss_index)
         if not pool:
@@ -629,6 +747,11 @@ def propagate_gravity_wave(
     else:
         seeds = _union_pool(
             qv, faiss_index, virtual_faiss_index, initial_k,
+            query_text=query_text,
+            bm25_index=bm25_effective,
+            bm25_score_mode=config.bm25_score_mode,
+            bm25_score_alpha=config.bm25_score_alpha,
+            rrf_k=config.rrf_k,
         )
     if not seeds:
         return {}

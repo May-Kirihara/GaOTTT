@@ -16,6 +16,7 @@ from __future__ import annotations
 from gaottt.config import GaOTTTConfig
 from gaottt.core.engine import GaOTTTEngine
 from gaottt.embedding.ruri import RuriEmbedder
+from gaottt.index.bm25_index import BM25Index
 from gaottt.index.faiss_index import FaissIndex
 from gaottt.store.cache import CacheLayer
 from gaottt.store.sqlite_store import SqliteStore
@@ -33,6 +34,17 @@ def build_engine(config: GaOTTTConfig) -> GaOTTTEngine:
         FaissIndex(dimension=config.embedding_dim)
         if config.virtual_faiss_enabled else None
     )
+    # Phase L Stage 1: wire the BM25 lexical index when enabled. The flag
+    # default is True; set ``hybrid_bm25_enabled=False`` to fall back to
+    # the Phase H Stage 4 raw+virtual-only seed pool.
+    bm25_index = (
+        BM25Index(
+            k1=config.bm25_k1,
+            b=config.bm25_b,
+            tokenizer=config.bm25_tokenizer,
+        )
+        if config.hybrid_bm25_enabled else None
+    )
     store = SqliteStore(db_path=config.db_path)
     cache = CacheLayer(
         flush_interval=config.flush_interval_seconds,
@@ -45,4 +57,5 @@ def build_engine(config: GaOTTTConfig) -> GaOTTTEngine:
         cache=cache,
         store=store,
         virtual_faiss_index=virtual_faiss_index,
+        bm25_index=bm25_index,
     )

@@ -86,6 +86,23 @@
 
 > **チューニング助言**: `persona_boost_alpha=0.5` は acceptance test (本番 23k DB) で「persona-tied ノードが seed pool に届く」を目的に置いた初期値。届かなければ `1.0` まで上げる、効きすぎ (persona ノードが全 query で top1 を独占) なら `0.2` まで下げる。`persona_max_hop=2` は Phase D の典型チェーン (intention → task → outcome) を拾える深さ、3 以上にすると間接的な関連 (誰かが derive した知識の派生) も混入。`persona_boost_enabled=False` で Stage 0 (Phase J 前) 挙動に完全 rollback。
 
+## Hybrid retrieval — BM25 union seed (Phase L Stage 1)
+
+Seed pool は raw FAISS (semantic) ∪ virtual FAISS (semantic+history) ∪ BM25 (lexical) の 3-way union。異なる metric tensor の重ね合わせで、embedder の hidden ranking が拾えない surface-form 一致 (例: 「Eleventy Pipeline」 → `.eleventy.js`) を BM25 が直接 catch する。RRF fusion (Reciprocal Rank Fusion) が default で scale 不変・query 間安定。詳細: [Plans — Phase L](Plans-Phase-L-Hybrid-Retrieval.md)。
+
+| パラメータ | 既定 | 役割 |
+|---|---|---|
+| hybrid_bm25_enabled | `True` | Phase L Stage 1 全体の on/off。`False` で Phase H Stage 4 (raw+virtual) と同等挙動に rollback |
+| bm25_seed_k | `50` | BM25 が seed pool に提供する top-N 数。raw/virtual の `wave_seed_pool_size` / `wave_k_with_filter` と同オーダー |
+| bm25_k1 | `1.5` | Robertson-Sparck-Jones の term-saturation 制御。文献標準 1.2-2.0 の中央付近 |
+| bm25_b | `0.75` | length-normalization。文献標準 0.75 が標準 corpus 向き、固定長 doc 多めなら 0.5、長文ばかりなら 0.9 |
+| bm25_score_mode | `"rrf"` | `"rrf"` で Reciprocal Rank Fusion (Cormack 2009 標準、scale 不変)、`"weighted_sum"` で legacy 2-way max-merge + BM25 normalize blend |
+| rrf_k | `60` | RRF の rank-fusion 定数。Cormack 2009 標準 |
+| bm25_score_alpha | `0.5` | `"weighted_sum"` mode 専用、BM25 normalized share。`"rrf"` mode では無視 |
+| bm25_tokenizer | `"trigram"` | char 3-gram (依存ゼロ、日英混在に頑健)。`"sudachi"` は `uv pip install -e ".[bm25-sudachi]"` 後に選択可 |
+
+> **チューニング助言**: 本番 acceptance で「Surface ✅ / Semantic 整合 ⚠️」が分離した query (Eleventy Pipeline 等) を起点に、BM25 寄与を確認。RRF default で大半は十分だが、lexical match が overshoot して semantic 整合が落ちる場合は `"weighted_sum"` + `bm25_score_alpha=0.3` で BM25 影響を弱める。tokenizer は trigram で「重力」「Eleventy」両方扱えるが、固有名詞の同形異義語が頻出する corpus なら Sudachi extra に切り替えて形態素解析する。Stage 1 では disk persistence なし — `compact()` か再起動で SQLite content から rebuild される (24k docs で数秒)。複数 MCP プロセス共存環境は raw FAISS と同じ可視性問題があり、片方プロセスでの `remember` が他方プロセスの BM25 index に届くのは次回 startup or compact 後。
+
 ## Stellar supernova cohort (Phase K Stage 1)
 
 `index_documents` の batch を 1 超新星イベントとして扱い、batch 内 N 件 (N≥`supernova_min_cohort_size`) に **相互 co-occurrence edge** + **centroid からの outward velocity** を付与。新規 cohort が「互いに重力を持たない散発的塵」状態から「同イベント残骸群」になる。Phase G genesis kick (個別重力) の隣で適用。詳細: [Plans — Phase K](Plans-Phase-K-Stellar-Supernova-Cohort.md)。
