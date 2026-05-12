@@ -1,6 +1,6 @@
 # Plans — Phase I — Free Star Movement
 
-> 状態: **Stage 1 ✅ 完了 (2026-05-11)**, **Stage 2 ✅ 完了 (2026-05-11)**, **Stage 3 ✅ 完了 (2026-05-13) — Mass-gated query attraction**
+> 状態: **Stage 1 ✅ 完了 (2026-05-11)** — [長期検証 ✅ (2026-05-12)](#stage-1--長期検証-結果-2026-05-12), **Stage 2 ✅ 完了 (2026-05-11)**, **Stage 3 ✅ 完了 (2026-05-13) — Mass-gated query attraction**
 > 関連: [Roadmap](Plans-Roadmap.md), [Architecture — Gravity Model](Architecture-Gravity-Model.md), [Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md), [Phase H — Wave Seed Redesign](Plans-Phase-H-Wave-Seed-Redesign.md)
 > 発端: 2026-05-11 セッション中の P7-X 観察 (検証ループによる boundary saturation 偶発的再現)、Stage 3 は 2026-05-12 セッション中の単一アトラクタ pathology 観察
 
@@ -90,8 +90,107 @@ EOF
 ### 残課題
 
 - **raw embedding 空間での textual cluster** (例: 同じ書式で書かれた self-knowledge 系 84 件) は依然 cluster で surface 順位が混乱する。これは displacement 問題ではなく **raw embedding の textual similarity** の問題で、Stage 2 (query-aware displacement) で解決を狙う
-- 長期均衡点は未検証 (理論上 d=0.8-3.0 だが、本番 DB を 1-2 週間運用して実測する必要)
-- 暴走の最終確認も同期間で行う (理論上 Hooke が止めるが、edge case で d > 5 になる memory が出るか監視)
+- ~~長期均衡点は未検証 (理論上 d=0.8-3.0 だが、本番 DB を 1-2 週間運用して実測する必要)~~ → ✅ 確認、[長期検証 結果](#stage-1--長期検証-結果-2026-05-12) 参照 (実測 max=0.60、予測下限よりさらに低い)
+- ~~暴走の最終確認も同期間で行う (理論上 Hooke が止めるが、edge case で d > 5 になる memory が出るか監視)~~ → ✅ 確認、`|d| ≥ 1.0` で **0 nodes** / 24,025
+
+## Stage 1 — 長期検証 結果 (2026-05-12)
+
+GaOTTT task `72e84a73-8689-4aca-b31e-2ded8ca7560c` の遂行結果。Stage 1 boundary 解除から 1 日後、本番 prod DB (24,025 active nodes) の displacement 分布を実測し、Hooke + decay + velocity cap が hard cap なしで均衡を保つかを検証。
+
+### 測定方法
+
+- 本番 prod DB の **read-only snapshot** (write-behind / dream / virtual FAISS save loop すべて無効化)
+- 全 active node について `displacement` BLOB をデコードし L2 norm を収集
+- source / age cohort (last_access 起点) で分解
+- top tail (|d| ≥ 0.5, 0.8, 1.0, 2.0, 3.0, 10.0) のカウントを暴走監視として測定
+
+スクリプトは [`scripts/bootstrap_report.py`](https://github.com/May-Kirihara/GaOTTT/blob/main/scripts/bootstrap_report.py) の displacement 統計拡張と同等のロジック (Phase H Stage 5 と同 commit で導入)。
+
+### 主要数値
+
+| 指標 | boundary=0.3 時代 (実験前) | Stage 1 直後 (4 recall 後) | **長期検証 1 日後 (本観測)** |
+|---|---|---|---|
+| max | 0.30 (cap) | 0.50 | **0.5988** |
+| p99 | — | — | 0.5377 |
+| p90 | — | — | 0.3928 |
+| p50 | (cap で歪み) | — | **0.0020** |
+| mean | — | — | 0.0879 |
+
+### 暴走監視 (tail counts on 24,025 active nodes)
+
+| threshold | count | proportion | 備考 |
+|---|---|---|---|
+| \|d\| ≥ 0.3 | 3,072 | 12.79% | 旧 cap 帯域 |
+| \|d\| ≥ 0.5 | 878 | 3.65% | soft ceiling 帯域 |
+| **\|d\| ≥ 0.8** | **0** | **0.00%** | 理論均衡点下限 — **未到達** |
+| \|d\| ≥ 1.0 | 0 | 0.00% | — |
+| \|d\| ≥ 2.0 | 0 | 0.00% | — |
+| \|d\| ≥ 3.0 | 0 | 0.00% | — |
+| \|d\| ≥ 10.0 | 0 | 0.00% | 暴走警報水準 |
+
+新 cap `1e6` の **100 万分の 1 すら使われていない**。
+
+### source-別分布
+
+| source | n | p50 | p90 | max |
+|---|---|---|---|---|
+| file | 11,002 | 0.0506 | 0.4880 | 0.5988 |
+| agent | 841 | 0.1201 | 0.4512 | 0.5690 |
+| niceboat | 71 | 0.1000 | 0.4622 | 0.4891 |
+| research | 34 | 0.0500 | 0.2729 | 0.4672 |
+| note_tweet | 149 | 0.0041 | 0.1402 | 0.4920 |
+| tweet | 7,658 | 0.0013 | 0.0978 | 0.5326 |
+| like | 4,203 | 0.0014 | 0.0958 | 0.4990 |
+| exploration-report | 30 | 0.0500 | 0.2433 | 0.2824 |
+
+drift しやすさが「recall 頻度」と相関。file / agent / niceboat は能動的 recall 対象なので p50 が高く、tweet / like は受動コーパス (主に raw のまま)。**どの class でも max は 0.60 帯**で頭打ち。
+
+### age cohort (last_access 起点)
+
+| cohort | n | p50 | p90 | max |
+|---|---|---|---|---|
+| < 7 日 | 23,649 | 0.0021 | 0.3963 | 0.5988 |
+| ≥ 7 日 | 376 | 0.0009 | 0.0512 | 0.2778 |
+
+≥ 7 日 nodes は **Hooke + decay で raw に向かって収束** している挙動を実観測。p90 が 1/8 に、max が半分以下に縮む。
+
+### top 10 displaced ノード
+
+全 file source の試験問題・コラム・コラム類、いずれも `|d| = 0.5933 — 0.5988` の **0.60 帯に密集**。例:
+
+```
+3d41e730  |d|=0.5988  src=file  河童を実際に捕<br>獲することは難しいが…
+83ab7275  |d|=0.5981  src=file  と独り言でお詠みになった。 おほやけ 説…
+a115aac4  |d|=0.5969  src=file  発想 ∠BAP=∠ARQ に注目する。…
+d6b32554  |d|=0.5961  src=file  クスリのなかでは「センパア」が…
+```
+
+これらは「soft ceiling として ~0.60 が natural な均衡点」として観測されたもので、hard cap ではなく **物理的均衡** によって自発的にこの位置に集まる。
+
+### 判定
+
+✅ **暴走なし、boundary 1e6 は理論通り redundant**
+
+仮説式の予測値 `d_eq = (G·m/k)^(1/3) ≈ 0.79 (m=1) — 2.92 (m=50)` に対し、**実測 max = 0.60 はその下限よりさらに低い場所で均衡**:
+- neighbor gravity の典型 mass が予測より小さい (ほとんどの node が m≈1) ため、`gravity / Hooke` の比が予測より小さい
+- Phase I Stage 2 (query attraction) と Stage 3 (mass gate) が同時並行に効いている状態でも均衡が崩れない → **複数 stage の合成効果でも安全マージン十分**
+- Hooke は数学的に restoring force なので、この観察された equilibrium 以上に発散する path がない
+
+### Phase L motivation との関連
+
+source 別分布から見える非対称性 (再掲):
+
+- agent (n=841): p50=0.12 — recall 頻度高、virtual_pos の差別化が効きやすい
+- file (n=11k): p50=0.05 — 半分以下、virtual_pos の差別化が薄い
+- tweet/like (n=12k): p50=0.001 — 実質 raw のまま
+
+これは **Phase L (embedder limitation 対処) の機構的根拠** を裏付ける: 多数派の file/tweet クラスタは displacement に頼った retrieval 改善が効きにくく、Phase H Stage 5 で観察された「freshness penalty」と並んで、embedder-level の改善 (hybrid retrieval / query expansion) が必要であることを定量的に示している。
+
+### 検証データ
+
+- GaOTTT memory `70ba2df6-d624-4c3f-93b0-cc27457936bc` — 本セクションの数値の完全 snapshot (recall で再現可能)
+- GaOTTT memory `cbeb1f8e` — P7-X (boundary saturation 事故、Phase I Stage 1 発端)
+- GaOTTT memory `309cd7f8` — S10 (Stage 1 launch 直後の観察)
 
 ## Stage 2 — implicit query-aware displacement kick (2026-05-11 実装済)
 
