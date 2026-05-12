@@ -145,6 +145,7 @@ GaOTTT の主要な設計選択とその根拠:
 | **inherit_persona の儀式化** | 散文出力で過去の自分を着る | 柱 X「観測者を創ること即存在」のセッション継承版 |
 | **共有サービス層 (Phase S, 2026-04-22)** | `gaottt/services/` が engine を叩き Pydantic を返す。MCP は formatter で文字列化、REST は JSON で直返却 | 同じロジックが二重実装にならず、REST が MCP parity に引き上がる。代替案（文字列 JSON ラップ / MCP 廃止 / 直 import）は [`docs/maintainers/rest-mcp-unification-plan.md`](https://github.com/May-Kirihara/GaOTTT/blob/main/docs/maintainers/rest-mcp-unification-plan.md) §6 で却下理由記録済み |
 | **`/reset` は REST 専用** | MCP には露出しない | LLM エージェントに破壊的 reset を出さない現状判断を継承 |
+| **`output_mode` は MCP 専用** | `recall` MCP ツールのみ `output_mode` パラメータを持つ。REST は Pydantic JSON を返すためクライアント側で自由に制御可能 | REST は構造化データを返しフィールド選択はクライアントの責務。MCP は文字列を返すため LLM のトークン消費を抑える整形オプションが必要。`"compact"` (300 chars) / `"ids"` (ヘッダのみ) / `"full"` (default, 後方互換) の 3 モード |
 | **FAISS write-behind (2026-05-10)** | `faiss_save_interval_seconds`（既定 5s）周期で disk に save | `shutdown()` でしか save しない設計だと長期常駐 MCP プロセスの新規 `remember` が他プロセスから永久 invisible になる歴史的バグの修正。逆方向上書き罠も発見・記載 |
 | **Phase G — 重力法則の起動時適用 (2026-05-10)** | genesis kick (新規) + dream loop (idle 時) + Stage 0 priming (一回だけ全 active node に適用) | 物理アナロジー: 軌道捕獲 + tidal capture + primordial gravity activation。新規粒子も既存粒子と同じ重力法則を最初から受ける。bootstrap curator (LLM bridge) は不採用継承 |
 | **Phase G — mass boost cap** | `genesis_mass_boost_cap=1.0` で 1 step 加算上限 | dense cluster 中心では raw `|acc|` が 70+ になる outlier が観測されたため。1 step で m_max 近くまで飛ばないよう「gradual accretion」を保証 |

@@ -205,6 +205,7 @@ async def recall(
     force_refresh: bool = False,
     persona_context: list[str] | None = None,
     tag_filter: list[str] | None = None,
+    output_mode: str = "full",
 ) -> str:
     """Search long-term memory with gravitational wave propagation.
 
@@ -240,6 +241,13 @@ async def recall(
                     Every matching node is additively injected into the seed
                     pool, even if it is distant in embedding space. Bypasses
                     ``source_filter`` (caller's explicit ask wins).
+        output_mode: Controls how much content is returned per result.
+                     "full" (default) — complete content, backward-compatible.
+                     "compact" — content truncated at 300 chars; use when you
+                     only need to scan/triage results before deciding which to
+                     read in full. Saves significant tokens on large recalls.
+                     "ids" — header line only (id, scores, tags), no content;
+                     use when you only need to know which memories exist.
     """
     engine = await get_engine()
     result = await memory_service.recall(
@@ -247,7 +255,7 @@ async def recall(
         wave_depth=wave_depth, wave_k=wave_k, force_refresh=force_refresh,
         persona_context=persona_context, tag_filter=tag_filter,
     )
-    return formatters.format_recall(result)
+    return formatters.format_recall(result, output_mode=output_mode)
 
 
 @mcp.tool()

@@ -80,19 +80,37 @@ def format_revalidate(result: RevalidateResponse) -> str:
     )
 
 
-def format_recall(result: RecallResponse) -> str:
+_COMPACT_LIMIT = 300
+
+
+def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
+    """Format recall results for MCP output.
+
+    output_mode:
+      "full"    — full content (default, backward-compatible)
+      "compact" — content truncated at 300 chars with length indicator
+      "ids"     — header line only, no content
+    """
     if not result.items:
         return "No memories found."
     lines = []
     for i, item in enumerate(result.items):
         tag_str = f" [{', '.join(item.tags)}]" if item.tags else ""
-        lines.append(
+        header = (
             f"[{i+1}] id={item.id} "
             f"(score={item.final_score:.4f}, raw={item.raw_score:.4f}, "
             f"source={item.source}{tag_str}, "
-            f"displacement={item.displacement_norm:.4f})\n"
-            f"{item.content}"
+            f"displacement={item.displacement_norm:.4f})"
         )
+        if output_mode == "ids":
+            lines.append(header)
+        elif output_mode == "compact":
+            content = item.content
+            if len(content) > _COMPACT_LIMIT:
+                content = content[:_COMPACT_LIMIT] + f"…({len(item.content)} chars)"
+            lines.append(f"{header}\n{content}")
+        else:
+            lines.append(f"{header}\n{item.content}")
     return "\n\n---\n\n".join(lines)
 
 

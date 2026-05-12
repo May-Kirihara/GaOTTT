@@ -154,6 +154,17 @@ recall(query="last session's design decisions", source_filter=["agent", "compact
 recall(query="...", force_refresh=True)   # bypass prefetch cache (rare)
 ```
 
+**`output_mode` — token budget control** (default `"full"`):
+- `"compact"` — content truncated at 300 chars. **Use this by default** unless you need the full text; saves significant tokens on large recalls and lets you triage before reading in full.
+- `"ids"` — header line only (id, scores, tags), no content. Use when you only need to know which memories exist before deciding which to fetch.
+- `"full"` — complete content, backward-compatible default.
+
+```
+recall(query="design decisions", top_k=5, output_mode="compact")   # triage first
+recall(query="design decisions", top_k=1, output_mode="full")      # read one in full
+recall(query="any past notes on X", top_k=10, output_mode="ids")   # just check existence
+```
+
 By default `recall` transparently consumes any matching `prefetch` result that is still within the cache TTL (default 90s). Pass `force_refresh=True` to skip the cache and re-run the wave simulation. Destructive operations (`forget`, `restore`, `merge`, `compact`) automatically invalidate the cache.
 
 ### explore
