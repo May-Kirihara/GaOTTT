@@ -533,6 +533,240 @@ Stage 1 受け入れ基準は「strict ≥ 5/7」だったが、実測 4/7 stric
 
 完遬基準は単一閾値ではなく「機構として動いている証拠 + 段階的改善の確認」で判断する、という運用は Phase G/H/I/J の流れで一貫している。
 
+## Stage 2 — 別 embedder ensemble (起草中、レビュー前 2026-05-13)
+
+> 状態: **起草中** — D1-D6 のめいさんレビュー待ち
+> 関連: [Stage 1 完遬宣言](#stage-1-完遬宣言--acceptance-結果-2026-05-14)、[Stage 1 handover §7.2 着手判断](../maintainers/handover-2026-05-14-phase-l-stage-1.md#72-phase-l-stage-2-着手判断)、本文書 line 149-157 の Stage 2 candidate 初出 ([Stage 2 — 別 embedder の ensemble (候補)](#stage-2--別-embedder-の-ensemble-候補))
+
+### 起点 — Stage 1 完遬後に残った領域
+
+Stage 1 完遬時 (MCP transport 経由) は strict 6/7 まで到達 ([handover §7.1](../maintainers/handover-2026-05-14-phase-l-stage-1.md#71-本番-mcp-server-再起動--mcp-経由-acceptance--実施済-2026-05-14-後続セッション))。Plans 完遬基準 ≥5/7 は満たすが、なお top1 を取り損ねる query が残った。中身を分解すると 2 種に分かれる:
+
+| パターン | 例 (推定) | 原因 |
+|---|---|---|
+| **A. lexical 一致あり、cosine top1 が別 doc** | Q3 sidebar SidebarManager、Q7 dominance pairwise | BM25 trigram は target を catch しているが、Ruri cosine が「より近い」と判定する別 doc が forced RRF で勝つ |
+| **B. lexical match も cosine top1 も target 以外** | Q4 霧原めい (tag_filter 推定が外れ top5 外) | Ruri の hidden ranking 自体が wrong-but-confident、BM25 でも救えない |
+
+A は Stage 1 RRF が「Ruri rank + BM25 rank」の 2-way で、Ruri rank が高く出続ければ依然押し負ける。B はそもそも Ruri/BM25 のどちらの metric でも target が catch されない領域。
+
+両者とも単一 embedder の hidden ranking が依然 dominant という Phase L 起点の境界 (line 25-26) の **残響**。Stage 1 BM25 が完全に直交した lexical metric として機能した一方、**意味空間そのものの代替視点が欠けていた**。Stage 2 はこの代替視点を「Ruri と直交する model family の embedder」として導入する。
+
+### 核仮説 — 三重 metric tensor の重ね合わせ
+
+Phase L 元仮説 (line 27-33) は「retrieval pool 入場の起点を異なる metric の重ね合わせに広げる」。Stage 1 で BM25 (lexical) を加え 2-tensor (semantic_ruri + lexical_bm25) になった。Stage 2 はこれを更に拡張:
+
+```
+semantic_ruri    (raw + virtual_ruri)
+ ⊕  semantic_secondary  (raw + virtual_secondary)    ← Stage 2 で追加
+ ⊕  lexical_bm25
+```
+
+GR の比喩でいえば、2 つの異なる重力定数 G を持つ場 (Ruri 場 / secondary 場) + 量子化された格子場 (BM25 lexical 場) の superposition。3 つの metric tensor が同じ点で測られて pool 入場権を分配する。
+
+これは Phase H Stage 4 で「raw FAISS と virtual FAISS の union」を入れた時、Phase L Stage 1 で「semantic + lexical の union」を入れた時と同じ構造的拡張の連続 — `_union_pool` の引数が 1 つ増え、`_rrf_fusion` の `pools` list が 1 段長くなるだけ。「物理として書いたものが同じ形で実装としても読める」原則の literal 適用。
+
+### 設計判断軸
+
+#### A. 直交性 vs benchmark 順位 — どちらを優先するか
+
+Ruri は JMTEB で multilingual-e5 を上回ると報告されている ([Tsukagoshi & Sasano 2024](https://arxiv.org/abs/2409.07737))。「ベンチマークで最良の model を選ぶ」のは Stage 2 の文脈では **誤った最適化**:
+
+- Ruri と benchmark で近い model = failure pattern が近い = ensemble しても catch する gap が小さい
+- Ruri より JMTEB で低くても、別 model family / training data / architecture で **失敗が直交している** model のほうが Stage 2 の意図 (Ruri の hidden ranking 失敗を別 angle で救う) に literal
+
+優先順位: **直交性 > 単独 benchmark 順位**。Stage 1 で BM25 を選んだ時と同じ「完全直交が勝つ」原則の延長。
+
+#### B. 候補比較表
+
+| Model | Params | Dim | Max tokens | Languages | Memory | Family / Arch | JMTEB (相対) | RURI との直交性 |
+|---|---|---|---|---|---|---|---|---|
+| **RURI v3 310m** (現行) | 310M | 768 | 512 | JA-centric + 多言語 | ~600MB | cl-nagoya / XLM-R | SOTA (base size) | — (baseline) |
+| **(a) BGE-M3** | 560M | 1024 | 8192 | 100+ | ~1.2GB | BAAI / XLM-RoBERTa-large + self-distillation (multi-functional) | E5-Large 並か上 | **★★★ 高** (別 family、別 training corpus、long context、multi-functional architecture) |
+| **(b) multilingual-e5-large-instruct** | 560M | 1024 | 512 | 93 | ~1.1GB | Microsoft (intfloat) / instruction-tuned XLM-R | RURI < e5-instruct < bge-m3 (相対) | ★★ 中 (Microsoft 系、instruction tuning だが base architecture 近い) |
+| **(c) paraphrase-multilingual-MiniLM-L12-v2** | 118M | 384 | 128 | 50 | ~470MB | sentence-transformers / MiniLM | 低 (paraphrase 中心、retrieval 弱) | ★ 低 (古い、軽量過ぎ、512 token 未満の context window) |
+
+**推奨**: **(a) BGE-M3** — RURI と異なる model family (BAAI vs cl-nagoya)、異なる training corpus (BAAI の MTP collection vs Ruri 独自日本語 corpus)、異なる architecture (self-distillation で dense + sparse + multi-vector の multi-functional)、長 context (8192 vs 512)。GaOTTT memory には長文 (saved transcript 等) も含まれるので、Ruri の 512 token cutoff で失われる尾部が bge-m3 で拾える可能性も副次効果として期待。
+
+代替の (b) e5-instruct は base architecture が Ruri と近すぎる、(c) MiniLM は性能差が大きすぎて RRF の rank で常に下に来る。
+
+#### C. 物理機構の literal 拡張 — virtual FAISS を新 embedder にも適用するか
+
+Stage 1 D4 では BM25 に virtual FAISS パターン (displacement-aware) を **適用しなかった** — BM25 は query↔doc lexical match を測る metric で、node 間 neighbor 関係を測らないから (line 426-433)。
+
+しかし新 embedder は cosine ベースの **semantic 空間** で動く → Phase H Stage 4 の virtual FAISS displacement / Phase H Stage 5 の virtual neighbor expansion / Phase I Stage 2 の query attraction が **literal に適用可能**。
+
+これは Phase L 核仮説の **物理機構レベルでの literal 拡張**:
+
+| 重力場 | raw cosine | virtual cosine (displacement-aware) | neighbor expansion |
+|---|---|---|---|
+| Ruri (既存) | ✅ Phase A | ✅ Phase H Stage 4 | ✅ Phase H Stage 5 |
+| **Secondary (Stage 2)** | ✅ 新規 | ❓ **D2** で判断 | ❓ **D2** で判断 |
+| BM25 (Stage 1) | rank-only | N/A (lexical) | N/A (lexical) |
+
+Secondary に virtual FAISS まで持たせれば「異なる重力定数 G を持つ場が、それぞれ独立に displacement / neighbor 機構を持つ」literal な対応。Phase H/I の機構をそのまま再現するだけだが、実装重 (write-behind loop, compact 同期, multi-process 可視性, 倍 memory) も倍化する。
+
+#### D. Stage 1 lesson 5.1 の literal 適用 — 全段への伝播を設計時点から組み込む
+
+Stage 1 で「seed pool 入場のみに BM25 を入れて forced ordering を放置」が pathology だった (lesson 5.1)。Stage 2 では設計時点から **三段構造全段** に新 embedder を伝播させる:
+
+| 段 | Stage 1 (現状) | Stage 2 (追加) |
+|---|---|---|
+| 1. pool 入場 | raw_ruri + virtual_ruri + bm25 の 3-way RRF | **+ raw_secondary (+ virtual_secondary in D2 a) で 4 or 5-way RRF** |
+| 2. pool 内 rerank | mass / persona / cohort (final_score) | 不変 (cosine 自体は使わない、final_score の構成は Phase H/I/J で完成済) |
+| 3. forced 内 ordering | cosine_rank + bm25_rank の 2-way RRF | **+ secondary_cosine_rank で 3-way RRF** |
+
+acceptance harness では各段の挙動を独立に検証する harness を **Plans 段階から指示** (Stage 1 では acceptance 中に opencode が検出した gap だったが、Stage 2 では設計時点から「point-by-point で検証」を要件にする)。
+
+### Open questions (D1-D6)
+
+Stage 1 D1-D4 と同 pattern、めいさんレビューで確定:
+
+| id | 内容 | 候補 |
+|---|---|---|
+| **D1** | 第 2 embedder の選定 | (a) **BGE-M3** (推奨、直交性高、long context), (b) multilingual-e5-large-instruct, (c) paraphrase-multilingual-MiniLM (軽量) |
+| **D2** | 第 2 embedder に virtual FAISS を適用するか | (a) **raw + virtual の両方** (Phase H/I 機構の literal 拡張、推奨、実装重い), (b) raw のみ (機構は更に別 stage、簡素) |
+| **D3** | Secondary FAISS index の disk persistence | (a) **disk persistence + write-behind** (Phase H Stage 5 パターン、推奨、24k encode コスト保護), (b) in-memory only + startup re-encode (Stage 1 BM25 と同じ、初回数十分 cost) |
+| **D4** | Startup / build flow | (a) **既存 raw FAISS と同じ自動 build** (lazy init, startup blocking、推奨), (b) 別 script でオフライン pre-build → MCP server はロードのみ, (c) lazy load (first query で trigger、UX 悪化) |
+| **D5** | RRF fusion scope | (a) **5-way RRF** flat (raw_ruri / virtual_ruri / raw_bge / virtual_bge / bm25、推奨), (b) "semantic bundle" として 3-way (semantic_avg / lexical), (c) weighted_sum mode との切り替え保持 |
+| **D6** | forced ordering で第 2 embedder を扱うか | (a) **3-way RRF** (cosine_ruri + bm25 + cosine_secondary、推奨、lesson 5.1 literal 適用), (b) cosine は Ruri のみ、secondary は seed のみ |
+
+**Open issue (Stage 1 と同じ運用)**: D1-D6 がめいさんと確定するまで実装には入らない。確定後、Stage 2 設計決定セクションを追加して実装フェーズへ。
+
+### Stage 2 設計決定 (めいさんレビュー 2026-05-13)
+
+D1-D6 を全て (a) で確定 — 推奨案を全採用、Plans 起点の核仮説 (三重 metric tensor の重ね合わせ) と Stage 1 lesson 5.1 (全段への伝播) を literal に組み込む構成。
+
+#### Stage 2 D1. 第 2 embedder = BGE-M3 (BAAI/bge-m3)
+
+選定理由:
+- RURI と完全に別 model family / training corpus / architecture
+- 8192 token max context — GaOTTT memory の長文 (saved transcript 等) を Ruri 512 token cutoff の外で拾える副次効果
+- multi-functional architecture (dense + sparse + multi-vector) を持つが Stage 2 では **dense vector のみ** 利用、Stage 3 以降で sparse / multi-vector への拡張余地を残す
+- Stage 1 BM25 と組み合わさると lexical + ruri-semantic + bge-semantic の三層 metric tensor (核仮説 line 28-32 の literal 実装)
+
+実装: `gaottt/embedding/secondary.py` に `SecondaryEmbedder` (generic、`model_name` を `config.secondary_embedder_model` で受け取る) を新設。`sentence_transformers.SentenceTransformer("BAAI/bge-m3")` で load。`encode_documents` / `encode_query` / `dimension` の interface は `RuriEmbedder` と一致 (HuggingFace cache 自動検出も踏襲)。
+
+#### Stage 2 D2. virtual FAISS も第 2 embedder に適用 (raw + virtual 両方)
+
+raw + virtual の両方を持つ。Phase H Stage 4 (virtual FAISS displacement) / Phase H Stage 5 (virtual neighbor expansion) / Phase I Stage 2 (query attraction) の機構が **secondary 重力場でも独立に動く**。
+
+これは「異なる重力定数 G を持つ場が、それぞれ独立に displacement / neighbor 機構を持つ」物理 literal な対応。Phase L 核仮説 (三重 metric tensor の superposition) の **機構レベル literal 拡張**。
+
+実装重 (write-behind loop, compact 同期, multi-process 可視性) は倍化するが、Ruri 側の実装を一字一句なぞるだけで完成する pattern なので、機構リスクは小さい。
+
+#### Stage 2 D3. Disk persistence + write-behind
+
+`gaottt/data/secondary_raw.faiss` / `gaottt/data/secondary_virtual.faiss` に Ruri 側 (`raw.faiss` / `virtual.faiss`) と並ぶ形で保存。`secondary_save_interval_seconds: int = 5` を config に追加 (Phase H Stage 5 の `virtual_faiss_save_interval_seconds` と同値、別 knob で独立 tuning 可)。
+
+理由: 24k docs × 1024 dim × float32 = ~100MB × 2 (raw + virtual) = ~200MB の encoding コストを startup 毎に払うのは現実非対応。Stage 1 BM25 (in-memory only) は tokenize が μs レベルなので許容できたが、secondary embedder は model forward pass が ~1ms/doc × 24k = 数十秒〜数分。
+
+#### Stage 2 D4. 既存 raw FAISS と同じ自動 build flow
+
+startup 時に `secondary_raw.faiss` / `secondary_virtual.faiss` の存在を check:
+- **不在** → SQLite から全 active doc を読み込み、secondary embedder で encode、両 index を build、disk save → in-memory ロード
+- **存在** → ロードのみ
+
+初回 build は 30-60s 想定、以降は instantaneous。`migrate.py` step を新規追加する必要なし — 既存 raw FAISS と同じ自動 lazy build pattern。
+
+#### Stage 2 D5. 5-way flat RRF
+
+`_union_pool` の RRF mode で 5 pool (raw_ruri / virtual_ruri / raw_bge / virtual_bge / bm25) を flat に合流。`_rrf_fusion(pools, rrf_k=60)` の `pools` list に 5 段並べるだけ、コード変更 trivial。
+
+`rrf_k=60` は Cormack 2009 標準 (元 3-pool 想定) だが、5-pool では dilution が起きる可能性 (R5)。Stage 2 は fixed 60 で start、acceptance で頂上 score 分布を観測した上で必要なら `rrf_k` を pool 数依存に動的化 — Stage 2 起草段階では fix、観測後判断。
+
+`bm25_score_mode="weighted_sum"` も Stage 1 のまま flag として保持、A/B 比較に使える。
+
+#### Stage 2 D6. forced ordering を 3-way RRF に拡張
+
+`_rrf_forced_key` を cosine_ruri + bm25 + cosine_secondary の 3-way RRF に拡張:
+
+```python
+def _rrf_forced_key(nid, cosine_rank, bm25_rank, secondary_cosine_rank, rrf_k):
+    score = 0.0
+    if (cr := cosine_rank.get(nid)) is not None:
+        score += 1.0 / (rrf_k + cr)
+    if (br := bm25_rank.get(nid)) is not None:
+        score += 1.0 / (rrf_k + br)
+    if (sr := secondary_cosine_rank.get(nid)) is not None:
+        score += 1.0 / (rrf_k + sr)
+    return score
+```
+
+Stage 1 lesson 5.1 「全段への伝播を point-by-point で検証」を Plans 段階から literal に組み込む — 元 Stage 1 では acceptance 中の opencode 発見だったが、Stage 2 は設計時点で全段カバー、acceptance での gap は減少が期待される (L.2.1 の literal 適用)。
+
+### Stage 2 範囲 (D1-D6 確定後)
+
+#### 新規ファイル
+
+- **`gaottt/embedding/secondary.py`** (~80 行) — 第 2 embedder wrapper、`RuriEmbedder` と同 interface (`encode_documents` / `encode_query` / `dimension`)。D1 で確定した model 名を `__init__` で受け取る。HuggingFace cache 自動検出は `ruri.py` パターン踏襲。
+- **`tests/unit/test_secondary_embedder.py`** — D1 model の load / encode shape / 次元一致を確認
+- **`tests/integration/test_engine_secondary_union.py`** — StubEmbedder + StubSecondaryEmbedder の組み合わせで 4-way RRF が機能することを確認 (Phase H Stage 4 の `test_engine_virtual_faiss` および Stage 1 の `test_engine_bm25_union` と同 pattern)
+
+#### 修正ファイル
+
+- **`gaottt/core/gravity.py:_union_pool`** — `secondary_qv` / `secondary_raw_index` / `secondary_virtual_index` 引数追加、5-way (D5 a) または 3-way (D5 b) の RRF に組み込む
+- **`gaottt/core/gravity.py:propagate_gravity_wave`** — 同上 + secondary neighbor expansion (D2 a の場合)
+- **`gaottt/core/engine.py`**:
+  - 第 2 embedder + 第 2 raw/virtual FAISS index の lifecycle (startup build / index_documents / forget / merge / compact rebuild)
+  - `_query_internal` で query を Ruri と secondary の両方で encode
+  - `_rrf_forced_key` を 2-way (cosine_ruri + bm25) → 3-way (cosine_ruri + bm25 + cosine_secondary) に拡張 (D6 a)
+- **`gaottt/services/runtime.py:build_engine`** — secondary embedder + index factory wire-up、`hybrid_secondary_enabled` フラグで完全 off 可能
+- **`gaottt/config.py`** — Phase L Stage 2 セクション (`hybrid_secondary_enabled`, `secondary_embedder_model`, `secondary_seed_k`, `secondary_virtual_enabled`, `secondary_save_interval_seconds` 等)
+- **`pyproject.toml`** — `[project.optional-dependencies] bge-m3` (D1 確定後): `["FlagEmbedding"]` または `["sentence-transformers"]` のみで足りる場合は extras 不要
+
+#### MCP / REST API 影響
+
+**変更なし** — recall / explore / prefetch の引数は不変。secondary は内部実装変更で、parity 鉄則の影響範囲外。Stage 1 と同じ。
+
+### 受け入れ基準
+
+Stage 1 と同 pattern:
+
+1. **unit + integration test**: 全 pass (現 255 + 新規 5-10 件)
+2. **隔離ベンチ**: p50 < **80ms** (Stage 1 から +20ms 上限、第 2 embedder encode + 第 2 FAISS search 込みで)
+3. **本番 acceptance** (opencode sub-agent):
+   - Stage 1 acceptance の 7 query で **strict ≥ 6/7 を維持** (regression なし、Stage 1 の MCP transport 値を保つ)
+   - **Q4 (霧原めい) で target が top3 以内に到達** (Stage 1 で top5 外だった代表 case)
+   - 新規 3-5 query を追加した拡張 acceptance で **strict ≥ 70%** (例: 7/10)
+4. **rollback 検証**: `hybrid_secondary_enabled=False` で Stage 1 と同等挙動 + ベンチ復帰
+
+### リスク
+
+| id | 内容 | 対策 |
+|---|---|---|
+| **R1** | Model load 起動コスト — bge-m3 ~1.2GB + Ruri ~600MB で resident 1.8GB、startup が 10s → 30-60s | 起動 log で読み込み進捗を出す、CLAUDE.md の「マルチプロセス罠」に "Stage 2 後は startup さらに重い" と追記 |
+| **R2** | Query encoding latency 倍化 — recall ごとに query を 2 度 encode、~3ms → ~6ms (CPU)、~1.5ms → ~3ms (GPU) | 並列 encoding (asyncio.gather) も検討、CPU で >1ms regression なら GPU 推奨を Operations-Server-Setup に追記 |
+| **R3** | Disk index 倍化 — 24k docs × 1024 dim × float32 = ~100MB の追加 (raw + virtual で ~200MB) | `data/` ディレクトリ容量を Operations-Server-Setup に明文化、compact 周期を Stage 1 と同じに |
+| **R4** | 共有 DB 罠の倍化 — Phase H Stage 5 で virtual FAISS write-behind を導入、secondary virtual にも同じ機構が必要 (D2 a) | 既存 `virtual_faiss_save_interval_seconds` を secondary にも適用、kill → rebuild → restart の手順は変更なし |
+| **R5** | RRF dilution — pool 数が増えると同じ doc が複数 pool に出る確率上昇、頂上の差がつきにくい (rrf_k=60 は 3-pool 想定、5-pool で別 tuning?) | acceptance で頂上 score 分布を観測、必要なら `rrf_k` を pool 数依存に (例: `60 / sqrt(n_pools / 3)` 等)、Stage 1 で確立した weighted_sum mode への切り替えも option |
+| **R6** | Stage 1 acceptance harness の retire リスク | Stage 1 7 query をそのまま再走 + 新規 query を追加する extension パターンで Stage 1 の harness を流用 |
+
+### ロールバック
+
+config flag 2 つで段階的に off 可能:
+
+```python
+hybrid_secondary_enabled: bool = True       # ← False で Phase L Stage 2 完全 off (= Stage 1 状態)
+secondary_virtual_enabled: bool = True      # ← False で D2 (b) 状態 (raw のみ、機構簡素化)
+```
+
+`hybrid_secondary_enabled=False` 時の挙動:
+- secondary embedder 自体は build される (engine startup で skip しても safer だが、初期実装では always load、encode 呼び出しのみ skip) — または D4 (a) の流れで lazy load
+- `_union_pool` は `secondary_*_index=None` 相当で動作 = Stage 1 状態
+- 既存 test 全 pass、ベンチ Stage 1 同等
+
+Phase L Stage 1 と同様、`False` 時の挙動は完全 backward compatible。
+
+### 関連 lesson の予告
+
+Stage 2 起草段階で予測される潜在 lesson (Stage 1 完遬で確立されたパターンに基づく):
+
+- **L.2.1 「全段への伝播」を Plans に書く** — Stage 1 lesson 5.1 を Plans 起草時点で literal に組み込む (D6 で forced ordering も明示)、acceptance 中に発見する gap を Plans 段階で潰す
+- **L.2.2 「直交性 > benchmark 順位」** — ensemble は単独最強を集めるのではなく、failure mode が直交する model を集める。D1 比較表に literal に表現
+- **L.2.3 「Stage 2 完遬は Stage 1 acceptance 数値で測る」** — Stage 1 で 6/7 まで届いた以上、Stage 2 でこれを割ったら regression。new query での絶対値より「baseline 7 query で regress しないか」を優先指標に
+
+これらは Stage 2 完遬時に handover に書き戻す。
+
 ## 関連ドキュメント
 
 - [Phase J Stage 3 handover](../maintainers/handover-2026-05-13-phase-j-stage-3.md) — §6.5 で Phase L 動機の本番観察、§7.3 で Phase L 軸候補
