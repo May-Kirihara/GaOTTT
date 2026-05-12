@@ -14,6 +14,8 @@
 
 **修正**: `faiss_save_interval_seconds`（既定 5s）周期の write-behind loop を導入（[Architecture — Concurrency](Architecture-Concurrency.md) 参照）。
 
+**virtual FAISS の同等問題（2026-05-13 修正済み）**: 上記は raw FAISS のみの修正で、virtual FAISS は依然 `compact(rebuild_faiss=True)` または起動時 (disk file 欠落時) のみ rebuild されていた。Phase I/J query attraction で蓄積した displacement が次の compact まで他プロセスの seed pool に反映されない問題があり、`virtual_faiss_save_interval_seconds`（既定 60s）周期の write-behind loop を追加。`cache.virtual_faiss_dirty` が立つと次 tick で full rebuild + disk save。長期常駐 MCP では非ゼロ必須。
+
 **それでも見えない場合の対処**:
 - 自プロセスを再起動（startup() で disk から最新 FAISS を load）
 - 修正前の DB で長期間積もった「FAISS に無く SQLite/cache にのみ存在する」ノードがある場合、`engine.compact(rebuild_faiss=True)` で全 active から再構築すれば解消（diagnostics: `len(faiss._id_map - cache.node_cache.keys())` と逆向きを比較）
@@ -121,3 +123,41 @@
 2. MCP サーバーを再起動（修正済みコードを読み込む）
 3. `compact(rebuild_faiss=True)` を実行
 4. 再度 `verify_faiss_recovery.py` で `Gap: 0` を確認
+
+## 特定の memory が無関係なクエリでも上位に出続ける（重力井戸）
+
+**症状**: Phase I Stage 2/3 の query attraction や Phase J の累積 recall によって特定ノードの `displacement` が蓄積し、embedding 距離の遠いクエリでも wave の引力で浮上し続ける（重力井戸状態）。`recall` 結果の `displacement_norm` 値が 0.5 を超えている場合に疑う。
+
+**診断**: `scripts/reset_displacements.py`（引数なし）で全ノードの displacement 統計を表示:
+```bash
+.venv/bin/python scripts/reset_displacements.py
+# 出力例:
+# displacement 統計 (全 23695 件)
+#   min=0.0006  p50=0.0013  p90=0.3042  max=0.6005
+#   |d| > 1.0: 0 件
+```
+
+p90 > 1.0 や特定 tag に集中した高 displacement が見られたら要対処。
+
+**対処手順** (edges は保持、displacement のみリセット):
+```bash
+# 1. サーバーを停止
+pkill -f gaottt.server.mcp_server
+pkill -f gaottt.server.app
+
+# 2. 対象を確認 (dry-run)
+.venv/bin/python scripts/reset_displacements.py --tag <tag-name> --min-displacement 1.0
+# または特定 ID: --ids <id-prefix>
+# または全件: --all
+
+# 3. 実際にリセット
+.venv/bin/python scripts/reset_displacements.py --tag <tag-name> --min-displacement 1.0 --apply
+
+# 4. priming で Hooke 均衡に再収束 (省略可、効果を加速したい場合)
+.venv/bin/python scripts/prime_gravity.py --apply
+
+# 5. virtual FAISS を再構築してサーバー再起動
+# (MCP サーバー起動時に compact が自動実行される)
+```
+
+**注意**: `--all --apply` は全ノードの累積 recall 履歴をリセットするため不可逆。対象を `--tag` や `--min-displacement` で絞るか、`scripts/migrate.py --apply` で自動バックアップ後に実行することを推奨。

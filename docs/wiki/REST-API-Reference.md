@@ -126,7 +126,7 @@ ReDoc: http://localhost:8000/redoc
 
 ### POST /recall
 
-重力波伝播付き検索。`source_filter` で特定 source のみに絞り込み可。`force_refresh=true` で prefetch キャッシュを bypass。
+重力波伝播付き検索。`source_filter` で特定 source のみに絞り込み可。`force_refresh=true` で prefetch キャッシュを bypass。`tag_filter` / `persona_context` で embedding 距離によらず seed pool に強制注入（Phase J Stage 2）。
 
 ```json
 {
@@ -135,9 +135,13 @@ ReDoc: http://localhost:8000/redoc
   "source_filter": ["agent", "compaction"],
   "wave_depth": null,
   "wave_k": null,
-  "force_refresh": false
+  "force_refresh": false,
+  "persona_context": null,
+  "tag_filter": null
 }
 ```
+
+`tag_filter` は `source_filter` を bypass する（呼び出し側の明示的指定が優先）。`output_mode` は MCP 専用（REST は常に構造化 JSON を返すため不要）。
 
 **レスポンス 200**:
 ```json

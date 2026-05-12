@@ -64,7 +64,7 @@
 | wave_max_depth | 2 | 再帰最大深度 |
 | wave_attenuation | 0.7 | 深度ごとの減衰係数 |
 | wave_mass_scale | 1.5 | mass 依存 top-k のスケール |
-| wave_k_with_filter | 500 | `recall(source_filter=...)` 指定時の seed top-k（dense corpus で sparse class を救済、Phase H Stage 2 で 200→500 引き上げ） |
+| wave_k_with_filter | 1000 | `recall(source_filter=...)` 指定時の seed top-k（dense corpus で sparse class を救済、Phase H Stage 2 で 200→500、2026-05-12 本番 23k DB 検証で 500→1000 引き上げ） |
 | wave_seed_mass_alpha | 0.1 | seed 段階の mass-aware rerank 重み（Phase H Stage 1）。`raw + α*log(1+mass)` で pool を再 rank。`0` で legacy 挙動 |
 | wave_seed_pool_size | 50 | seed 再 rank の pool 大きさ（Phase H Stage 1） |
 | wave_dynamic_k_enabled | `True` | top-N 密度応答型の seed 拡大（Phase H Stage 3）。`False` で固定 initial_k |
@@ -99,6 +99,8 @@
 
 > **チューニング助言**: Phase K は **将来 session の新規 cohort** に効くが、**既存 orphan ノードは遡及できない** (cohort 形成は index 時のみ)。既存 harakiriworks-self-knowledge 112 件のような遡及対象には別途 ritual script で edge + velocity を後付けする必要。`supernova_initial_weight=1.0` は Phase B `edge_threshold=5` と独立 (Phase K は event-driven、Phase B は recall 累積 driven)。一括投入では cohort が大きくなりすぎる場合は `index_documents` の batch を分割するのが運用上の手段 (例: 100 件投入を 4×25 件に分けて 4 つの cohort にする)。
 | virtual_faiss_enabled | `True` | virtual_pos でビルドした第二 FAISS を並走（Phase H Stage 4）。priming 後の displacement を seed step に反映する |
+| virtual_faiss_save_interval_seconds | 60.0 | virtual FAISS の write-behind 周期。`cache.virtual_faiss_dirty` が立つたびに次の tick で full rebuild + disk save。`0` で無効化（compact / shutdown 時のみ rebuild、Phase J Stage 1 以前のレガシー挙動）。**長期常駐 MCP サーバーでは非ゼロ必須** — そうしないと Phase I/J の query attraction 累積が次の起動まで他プロセスの seed pool に反映されない。23k node 規模で rebuild ~数百 ms、60s 間隔なら 1% 未満の負荷 |
+| wave_neighbor_use_virtual | `True` | Phase H Stage 5。wave propagation の per-frontier `search_by_id` を virtual FAISS で行う（「星同士の引力」原則に沿った形）。raw FAISS は静的な天球で displacement を見ないため、`False` でレガシー（raw のみ）に戻せる。virtual FAISS が空 / None / 無効のときは自動 fallback。p50 への影響は誤差範囲（同サイズの index search） |
 
 ## 誕生時の重力 kick（Phase G — Stage 1）
 
@@ -123,6 +125,8 @@ quiet node を idle 時間に synthetic recall で再活性化し、co-occurrenc
 | dream_mass_ceiling | 1.5 | quiet と判定する mass 上限 | 高 mass まで再活性化 | 真に育っていないノードのみ救済 |
 | dream_min_idle_seconds | 300.0 | 最終 access からこれ以上経った node のみ対象 | 多くが対象になる | 本当に休眠中のもののみ |
 | dream_top_k | 10 | 各 synthetic recall の top_k | 広く co-occurrence | 焦点絞った re-activation |
+
+> **チューニング助言**: dream loop のチューニング結果を実測したいときは `scripts/bench_dream_loop.py` を使う。本番 DB を汚さず `/tmp/gaottt-dream-bench-*` で隔離実行し、N 件 add 後の baseline と M dream tick 後の差分 (edge 重み / mass 分布 / probe top-K stability) を計測。`--docs 200 --ticks 30 --batch 10` で 30 秒程度。Phase K supernova が edge **count** を index 時に saturate させるので、dream の signal は edge **weight** に出ることに注意。
 
 ## TTL 短期記憶（F4 + Phase D）
 

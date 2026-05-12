@@ -123,9 +123,9 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
 - **shutdown**: 両 index が save される。
 - **`compact(rebuild_faiss=True)`**: raw rebuild 後に virtual も rebuild。
 - **無効化**: `virtual_faiss_enabled=False` で legacy 挙動（raw のみ）。`gaottt.virtual.faiss` ファイルは残るが使われない。
-- **マルチプロセス安全性**: raw FAISS と同じ write-behind 周期で save されるが、現状 virtual FAISS は **shutdown または compact でのみ更新**。長期常駐プロセスの累積 displacement 変化は次の compact までは virtual に反映されない。
+- **マルチプロセス安全性**: raw FAISS と同じ write-behind 周期 (`faiss_save_interval_seconds=5`) で save される。virtual FAISS も `virtual_faiss_save_interval_seconds=60`（既定）で `cache.virtual_faiss_dirty` 検知時に full rebuild + disk save が走る — Phase I/J query attraction で蓄積した displacement が次の compact を待たずに他プロセスの seed pool に伝播する。
 
-bootstrap_report.py の neighbor preview は raw FAISS のみを見ている点に注意（Phase G priming 後の virtual 距離は別途診断スクリプトで）。
+bootstrap_report.py の neighbor preview は raw + virtual FAISS の **両方** を並べて表示する (2026-05-13 〜)。displacement で動いた node が raw と virtual で異なる近傍を持つ場合、`Δ:` 行に drift-in / drift-out した id が列挙される。`--no-virtual` で legacy raw-only モード。
 
 ## データディレクトリ
 
@@ -178,9 +178,10 @@ ingest(path="~/data.csv")
 .venv/bin/python scripts/bootstrap_report.py               # 既定（sample=10, k=5）
 .venv/bin/python scripts/bootstrap_report.py --sample 20   # 近傍プレビューを多めに
 .venv/bin/python scripts/bootstrap_report.py --dup-threshold 0.9  # 軟らかめの重複検出
+.venv/bin/python scripts/bootstrap_report.py --no-virtual  # virtual FAISS をロードしない (旧 data dir 向け)
 ```
 
-3 セクションを出す: (1) summary + source 分布、(2) 近重複クラスタ（`merge` 候補）、(3) ランダムに選んだノードの FAISS top-K 近傍（**まだ張られていないが、最初の co-recall で結ばれる潜在的エッジ** のプレビュー）。
+3 セクションを出す: (1) summary + source 分布 + **displacement 統計** (min/p50/p90/p99/max、|d|>0.3/1.0/3.0 件数)、(2) 近重複クラスタ（`merge` 候補）、(3) ランダムに選んだノードの FAISS top-K 近傍を **raw + virtual 両方**（**まだ張られていないが、最初の co-recall で結ばれる潜在的エッジ** のプレビュー、および displacement で動いた node の drift を `Δ:` 行で可視化）。
 
 DB への副作用なし、LLM 呼ばない。オンライン書き込み中の MCP サーバーと同時実行しても安全（read-only close で FAISS 再保存もしない）。
 

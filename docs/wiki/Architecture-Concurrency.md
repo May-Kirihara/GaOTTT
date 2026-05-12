@@ -46,6 +46,24 @@ async def _faiss_save_loop(self) -> None:
 - 残る race: 「save 中の新規 add は次の tick で saved」（実用上影響なし）
 - 残る競合: A と B が**同時に save** すると後勝ち → 重要書き込み後は `engine.compact(rebuild_faiss=True)` で再構築可（保険）
 
+### virtual FAISS の write-behind（2026-05-13 追加）
+
+raw FAISS の write-behind は新規 `remember` の他プロセス可視化を担うが、**virtual FAISS** (= raw + displacement, Phase H Stage 4) は別腹で、Phase J Stage 1 以前は `compact(rebuild_faiss=True)` または起動時 (disk file 欠落時) のみ rebuild されていた。Phase I/J query attraction で蓄積した displacement が次の compact まで他プロセスの seed pool に反映されない問題があった。
+
+```python
+# core/engine.py
+async def _virtual_faiss_save_loop(self) -> None:
+    """cache.virtual_faiss_dirty が立っていれば full rebuild + save。
+    set_displacement / evict_node / restore で flag が立つ。"""
+```
+
+- 周期は `config.virtual_faiss_save_interval_seconds`（既定 60s、`0` で無効化）
+- `cache.set_displacement` / `cache.evict_node` / `engine.restore` で `cache.virtual_faiss_dirty=True`
+- loop は `dirty=False`（claim）→ `await self._rebuild_virtual_faiss_index()` → `to_thread(virtual_faiss_index.save, path)` → 失敗時のみ `True` に戻す
+- rebuild は active node 全件の O(N) full rebuild（差分 update は FAISS IndexFlatIP の制約で困難）。23k 件規模で ~数百 ms、60s 周期なら負荷 < 1%
+- `shutdown()` で停止前に最終 save を呼ぶ（既存 shutdown path がカバー）
+- raw 5s + virtual 60s と周期が違うのは、virtual rebuild が O(N) で raw save (in-memory matrix → disk) より重いため。Phase I/J の incremental displacement は急ぐ伝播ではないという判断
+
 ### 逆方向上書きの罠（Bidirectional cache overwrite）
 
 `cache.flush_to_store` は dirty フラグベースで、自プロセス内 cache の現在値を SQLite に push する。これは startup 時の `load_from_store` でしか他プロセスの変更を pull しない設計のため、**古い cache を持つプロセスが flush し続ける限り、別プロセスが書いた新しい値を逆方向に上書き** する。
@@ -61,7 +79,7 @@ async def _faiss_save_loop(self) -> None:
 `startup()` で起動するもう一つのバックグラウンドタスク。`config.dream_interval_seconds`（既定 60s）周期で quiet node を synthetic recall し、co-occurrence と gravity 場を時間軸で育てる。
 
 - 並行 task: `_dream_task`（停止 event は `_dream_stop`）
-- shutdown 順: dream → faiss save → cache write-behind の順で停止
+- shutdown 順: dream → raw faiss save → virtual faiss save → cache write-behind の順で停止
 - 例外は loop 内で握りつぶし、次 tick で retry
 - `dream_enabled=False` または `dream_interval_seconds=0` で完全 skip
 - マルチプロセス: 各プロセスが独自の dream loop を持つ。同じ DB に対して複数プロセスが synthetic recall を撃つ → mass 加算が二重に進む可能性は理論上あるが、`return_count` は更新しないので saturation は乱れず、運用上の影響は小さい

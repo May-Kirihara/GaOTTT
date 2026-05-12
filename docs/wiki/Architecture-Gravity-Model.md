@@ -66,7 +66,9 @@ gravity_radius（mass から物理導出）でカットオフ
 
 **Phase H Stage 3 — Density-aware dynamic wave_k**: filter なしの mass-aware path で、top-N (`wave_density_window`) raw cosine の **tail/top 比率** を見て、`wave_density_threshold` 未満（急峻な減衰 = sparse 領域）なら `effective_k` を `wave_initial_k_max` まで拡大。dense 領域では `initial_k` のまま。query が sparse 領域に着地したときの reach を救う保険機構。
 
-**Phase H Stage 4 — Virtual FAISS**: 第二の FAISS index を `virtual_pos` (= raw + displacement、normalized) で構築し、raw FAISS と並走させる。`compute_virtual_position` で各 active node を投入。Phase G priming で 22k 件の displacement が動いても raw FAISS には反映されないため、Stage 4 がない世界では priming の効果は scoring 段階でしか効かなかった。Stage 4 では seed pool が raw・virtual top-N の **union** になるので、priming で query 方向に押された node が seed に入れる。`startup` 時に disk からロード（無ければ rebuild）、`compact(rebuild_faiss=True)` と `shutdown` で更新。
+**Phase H Stage 4 — Virtual FAISS**: 第二の FAISS index を `virtual_pos` (= raw + displacement、normalized) で構築し、raw FAISS と並走させる。`compute_virtual_position` で各 active node を投入。Phase G priming で 22k 件の displacement が動いても raw FAISS には反映されないため、Stage 4 がない世界では priming の効果は scoring 段階でしか効かなかった。Stage 4 では seed pool が raw・virtual top-N の **union** になるので、priming で query 方向に押された node が seed に入れる。`startup` 時に disk からロード（無ければ rebuild）、`compact(rebuild_faiss=True)` と `shutdown` で更新。さらに Phase J Stage 1 以降は `virtual_faiss_save_interval_seconds`（既定 60s）周期の write-behind で `cache.virtual_faiss_dirty` 検知時に full rebuild + disk save が走るため、Phase I/J query attraction で蓄積した displacement が次の compact を待たずに他プロセスの seed pool に到達する。
+
+**Phase H Stage 5 — Virtual neighbor expansion**: Stage 4 までは seed step が virtual を見ても、wave depth-N の `search_by_id` は raw FAISS を叩いていた（「星の引力なのに raw 天球で隣人を探す」設計上の不整合）。Phase H Stage 5 で `wave_neighbor_use_virtual=True`（既定）のとき neighbor 探索も virtual FAISS に切り替え。displacement で query 方向に動いた node が、seed の virtual cosine 近傍として後続 frontier に入れるようになる。`False` でレガシー raw のみ。virtual FAISS が None / 空のときは自動で raw に fallback。
 
 詳細: [Plans — Phase H](Plans-Phase-H-Wave-Seed-Redesign.md)。
 

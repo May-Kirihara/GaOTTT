@@ -11,17 +11,18 @@
 ## 走らせ方
 
 ```bash
-# 0. (推奨) 既存 MCP server を停止
+# 0. GaOTTT サーバーをすべて停止 (MCP server + REST server 両方)
 pkill -f gaottt.server.mcp_server
+pkill -f gaottt.server.app
 ps -ef | grep gaottt   # 停止確認
 
 # 1. dry-run で何が起きるか確認
 .venv/bin/python scripts/migrate.py
 
-# 2. (推奨) backup 付きで apply
-.venv/bin/python scripts/migrate.py --apply --backup
+# 2. apply (data_dir を自動バックアップしてから実行)
+.venv/bin/python scripts/migrate.py --apply
 
-# 3. MCP server を再起動 (新物理が live になる)
+# 3. サーバーを再起動 (新物理が live になる)
 # (各環境のやり方で再起動)
 
 # 4. 任意: smoke で動作確認
@@ -34,20 +35,20 @@ ps -ef | grep gaottt   # 停止確認
 |---|---|
 | (引数なし) | dry-run、適用予定の plan を表示するだけ |
 | `--list` | 既知 migration を全部 list (APPLIED/PENDING/SKIP) して終了 |
-| `--apply` | 実際に migration を実行する |
+| `--apply` | 実際に migration を実行する（data_dir を自動バックアップしてから） |
+| `--apply --no-backup` | バックアップをスキップして apply（CI 環境など、外部バックアップ済みの場合） |
 | `--apply --step M001` | 特定の version だけ実行 |
-| `--apply --backup` | apply 前に `data_dir` 全体を `data_dir.backup-<timestamp>/` に複製 |
-| `--apply --force` | live MCP プロセス検出を無視 (推奨せず) |
+| `--apply --force` | サーバープロセス検出を無視 (推奨せず) |
 
-dry-run は **読み取り専用** で、MCP プロセス検出も飛ばす。実 mutation は `--apply` 時のみ。
+dry-run は **読み取り専用** で、プロセス検出も飛ばす。実 mutation は `--apply` 時のみ。
 
 ## 安全装置
 
 `migrate.py` は以下の rail を持つ:
 
 1. **Dry-run by default** — `--apply` がないと何も書かない
-2. **MCP プロセス検出 (apply 時のみ)** — `pgrep -f gaottt.server.mcp_server` で live process があれば refuse。理由は cache 逆方向上書き罠 ([Architecture — Concurrency](Architecture-Concurrency.md))。古い cache を持つプロセスが write-behind tick で migrate.py の書き込みを **上書きし返す** ため、必ず止めてから走らせる
-3. **Backup** — `--backup` で data_dir 全体を timestamp 付きでコピー。production では強く推奨
+2. **サーバープロセス検出 (apply 時のみ)** — `pgrep -f gaottt.server.mcp_server` および `gaottt.server.app` で live process があれば refuse。理由は cache 逆方向上書き罠 ([Architecture-Overview.md](Architecture-Overview.md))。古い cache を持つプロセスが write-behind tick で migrate.py の書き込みを **上書きし返す** ため、**MCP server と REST server の両方** を必ず止めてから走らせる
+3. **自動バックアップ** — `--apply` 時に data_dir 全体を `data_dir.backup-<timestamp>/` に自動コピー。バックアップ対象は `gaottt.db`, `gaottt.db-wal`, `gaottt.faiss`, `gaottt.faiss.ids`, `gaottt.virtual.faiss`, `gaottt.virtual.faiss.ids` 等 data_dir 内の全ファイル。`--no-backup` でスキップ可
 4. **Idempotency** — 各 migration は `needs_apply` (state からの検出) + `_migrations` 台帳 (DB 内テーブル) の **両方** で重複を防ぐ。台帳が消えても `needs_apply` が「もう不要」と判断する強い detector を持つ設計
 5. **Verify** — 各 step は適用後に `verify()` を走らせ、期待状態になっているか確認。verify 失敗時は台帳に記録 **しない** (再 apply の余地を残す)
 
@@ -86,9 +87,16 @@ CREATE TABLE _migrations (
 
 ## トラブルシュート
 
-### `ERROR: detected gaottt.server.mcp_server processes`
+### `ERROR: detected running GaOTTT server processes`
 
-`pkill -f gaottt.server.mcp_server` で停止してから再実行。**`--force` で押し通すと cache 上書きで migration が無に帰す可能性がある**。
+MCP server と REST server の両方を停止してから再実行:
+
+```bash
+pkill -f gaottt.server.mcp_server
+pkill -f gaottt.server.app
+```
+
+**`--force` で押し通すと cache 上書きで migration が無に帰す可能性がある**。
 
 ### `ERROR: no GaOTTT database at ...`
 
