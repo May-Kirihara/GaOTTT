@@ -591,12 +591,20 @@ class GaOTTTEngine:
         # isn't enough — once the target is a seed, its own wave neighbours
         # can outrank it by sheer cluster mass. The caller's explicit ask
         # has to survive the final cut, not just the entry gate.
+        #
+        # Critical: when ``len(injected_ids) > k`` (e.g. ``tag_filter``
+        # matching 112 nodes with ``top_k=5``), we still respect the
+        # caller's ``top_k`` budget — pick the top-K *of the injected
+        # set itself* by final_score. Otherwise the API would silently
+        # blow past the requested page size.
         results.sort(key=lambda r: r.final_score, reverse=True)
         if injected_ids:
             forced = [r for r in results if r.id in injected_ids]
             others = [r for r in results if r.id not in injected_ids]
-            remaining = max(0, k - len(forced))
-            results = forced + others[:remaining]
+            if len(forced) >= k:
+                results = forced[:k]
+            else:
+                results = forced + others[: k - len(forced)]
         else:
             results = results[:k]
 

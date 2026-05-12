@@ -558,12 +558,17 @@ def propagate_gravity_wave(
         candidates.sort(key=lambda t: t[1], reverse=True)
         # Phase J Stage 2: also force-include injected ids in the seed set
         # on this restrictive path (same reasoning as the boost path below).
+        # When more nodes are injected than ``initial_k``, take the top
+        # ``initial_k`` of *the injected set itself* — otherwise we'd blow
+        # past the requested seed budget and the wave would explode.
         if has_injection:
             inject_set = set(injected_ids)
             forced = [(nid, raw) for nid, _, raw in candidates if nid in inject_set]
             others = [(nid, raw) for nid, _, raw in candidates if nid not in inject_set]
-            remaining = max(0, initial_k - len(forced))
-            seeds = forced + others[:remaining]
+            if len(forced) >= initial_k:
+                seeds = forced[:initial_k]
+            else:
+                seeds = forced + others[: initial_k - len(forced)]
         else:
             seeds = [(nid, raw) for nid, _, raw in candidates[:initial_k]]
     elif has_seed_boost or has_injection:
@@ -598,14 +603,19 @@ def propagate_gravity_wave(
 
         # Phase J Stage 2: injected ids are *forced* into the seed set
         # regardless of rerank position. The caller explicitly asked for
-        # them, so rerank order shouldn't be able to evict them. Remaining
-        # slots go to the highest-ranked non-injected candidates.
+        # them, so rerank order shouldn't be able to evict them. When the
+        # injected set is larger than ``effective_k`` we cap at
+        # ``effective_k`` of the injected (top by raw cosine) — otherwise
+        # the seed pool would blow past its budget and the wave would
+        # explode into hundreds of reached nodes.
         if has_injection:
             inject_set = set(injected_ids)
             forced = [(nid, raw) for nid, _, raw in rescored if nid in inject_set]
             others = [(nid, raw) for nid, _, raw in rescored if nid not in inject_set]
-            remaining = max(0, effective_k - len(forced))
-            seeds = forced + others[:remaining]
+            if len(forced) >= effective_k:
+                seeds = forced[:effective_k]
+            else:
+                seeds = forced + others[: effective_k - len(forced)]
         else:
             seeds = [(nid, raw) for nid, _, raw in rescored[:effective_k]]
     else:
