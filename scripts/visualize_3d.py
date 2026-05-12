@@ -5,8 +5,20 @@
 速度ベクトル（加速度方向）を矢印、重力圏を球として表現。
 
 Usage:
-    python scripts/visualize_3d.py [--method pca|umap] [--open]
-    python scripts/visualize_3d.py --compare --open    # 原始 vs 仮想の並列比較
+    # raw embedding (固定座標空間)
+    python scripts/visualize_3d.py --position-space raw [--open]
+
+    # virtual position = raw + displacement (デフォルト、重力で変位後の宇宙)
+    python scripts/visualize_3d.py [--position-space virtual] [--open]
+
+    # 並列比較 (raw 左 / virtual 右)
+    python scripts/visualize_3d.py --position-space compare [--open]
+
+    # virtual を Python で再計算ではなく、本番 gaottt.virtual.faiss から直接ロード
+    python scripts/visualize_3d.py --virtual-source faiss [--open]
+
+Legacy:
+    --compare は --position-space compare の alias として残してある。
 
 サーバー停止中でも実行可能（DB + FAISSファイルを直接読む）。
 """
@@ -193,6 +205,59 @@ def build_virtual_vectors(vectors, ids, displacements, state_map):
         if disp is not None and disp.shape[0] == vectors.shape[1]:
             virtual[i] = compute_virtual_position(vectors[i], disp, temperature=0.0)
     return virtual
+
+
+def load_virtual_faiss_vectors(config, ids, raw_vectors):
+    """Load virtual position vectors directly from the on-disk virtual FAISS.
+
+    Returns a (n, dim) ndarray aligned with the given ``ids`` list.
+
+    Reads ``gaottt.virtual.faiss`` — the deployed Stage 4 index that the
+    wave seed pool actually queries. Falls back to None when the file is
+    absent so the caller can branch to ``build_virtual_vectors``.
+
+    IDs missing from the virtual index inherit their raw embedding row
+    (the same fallback the wave path uses when virtual is unavailable),
+    so unmatched stars still appear at their pre-drift position.
+    """
+    import os
+    if not os.path.exists(config.virtual_faiss_index_path):
+        return None
+
+    virtual_index = FaissIndex(dimension=config.embedding_dim)
+    try:
+        virtual_index.load(config.virtual_faiss_index_path)
+    except Exception as e:  # noqa: BLE001
+        print(f"  WARNING: failed to load virtual FAISS ({e}); will recompute in Python")
+        return None
+    if virtual_index.size == 0:
+        return None
+
+    import faiss
+    raw = faiss.rev_swig_ptr(
+        virtual_index._index.get_xb(),
+        virtual_index.size * config.embedding_dim,
+    )
+    all_vectors = np.array(raw).reshape(virtual_index.size, config.embedding_dim)
+    id_to_vec = {nid: all_vectors[i] for i, nid in enumerate(virtual_index._id_map)}
+
+    out = raw_vectors.copy()  # fallback: raw embedding for ids not in virtual FAISS
+    matched = 0
+    nan_rows = 0
+    for i, nid in enumerate(ids):
+        v = id_to_vec.get(nid)
+        if v is None:
+            continue
+        if not np.isfinite(v).all():
+            nan_rows += 1
+            continue  # leave raw fallback in place
+        out[i] = v
+        matched += 1
+    note = f"  Virtual FAISS: {matched}/{len(ids)} ids matched"
+    if nan_rows:
+        note += f" ({nan_rows} NaN/inf rows fell back to raw — corrupted virtual FAISS?)"
+    print(note)
+    return out
 
 
 # -----------------------------------------------------------------------
@@ -552,9 +617,26 @@ def main():
     parser.add_argument("--open", action="store_true", help="Open in browser")
     parser.add_argument("--output", default="gaottt_3d.html")
     parser.add_argument("--sample", type=int, default=0, help="Sample N nodes (0=all)")
-    parser.add_argument("--compare", action="store_true",
-                        help="Side-by-side: original vs virtual coordinates")
+    parser.add_argument(
+        "--position-space", choices=["raw", "virtual", "compare"],
+        default="virtual",
+        help="Which embedding space to plot: raw (固定座標) / virtual "
+             "(raw + displacement, default) / compare (raw vs virtual 並列)",
+    )
+    parser.add_argument(
+        "--virtual-source", choices=["compute", "faiss"], default="compute",
+        help="Where to get virtual positions: compute (Python で raw + "
+             "displacement を再計算、default) / faiss (gaottt.virtual.faiss "
+             "から直接ロード — 本番の Stage 4/5 が実際に見る幾何)",
+    )
+    parser.add_argument(
+        "--compare", action="store_true",
+        help="(deprecated alias for --position-space compare)",
+    )
     args = parser.parse_args()
+
+    if args.compare:
+        args.position_space = "compare"
 
     config = GaOTTTConfig.from_config_file()
 
@@ -599,9 +681,19 @@ def main():
 
     props = compute_node_properties(ids, state_map, doc_map, displacements, velocities, config)
 
-    if args.compare:
-        print("Building virtual positions...")
-        virtual_vectors = build_virtual_vectors(vectors, ids, displacements, state_map)
+    def _build_virtual():
+        """Pick virtual vectors per --virtual-source, with graceful fallback."""
+        if args.virtual_source == "faiss":
+            print("Loading virtual positions from gaottt.virtual.faiss ...")
+            loaded = load_virtual_faiss_vectors(config, ids, vectors)
+            if loaded is not None:
+                return loaded, "faiss"
+            print("  Falling back to Python recomputation.")
+        print("Building virtual positions (raw + displacement)...")
+        return build_virtual_vectors(vectors, ids, displacements, state_map), "compute"
+
+    if args.position_space == "compare":
+        virtual_vectors, vsrc = _build_virtual()
 
         print(f"Reducing to 3D ({args.method.upper()}, joint fit)...")
         combined = np.vstack([vectors, virtual_vectors])
@@ -618,15 +710,31 @@ def main():
         orig_3d = combined_3d[:n]
         virtual_3d = combined_3d[n:]
 
-        # Project velocities to 3D
         vel_3d = project_velocities_to_3d(ids, velocities, vectors, args.method, pca_components)
 
-        print("Building cosmic comparison...")
+        print(f"Building cosmic comparison (virtual source: {vsrc})...")
         fig = build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, vel_3d, config,
                                       cooccurrence_neighbors=cooc_neighbors)
-    else:
-        print("Building virtual positions...")
-        virtual_vectors = build_virtual_vectors(vectors, ids, displacements, state_map)
+
+    elif args.position_space == "raw":
+        print(f"Reducing raw embedding to 3D ({args.method.upper()})...")
+        if args.method == "pca":
+            from sklearn.decomposition import PCA
+            pca = PCA(n_components=3)
+            coords_3d = pca.fit_transform(vectors)
+            pca_components = pca.components_
+        else:
+            coords_3d = reduce_to_3d(vectors, method=args.method)
+            pca_components = None
+
+        vel_3d = project_velocities_to_3d(ids, velocities, vectors, args.method, pca_components)
+
+        print("Building cosmic view...")
+        fig = build_single_figure(coords_3d, ids, props, edges, vel_3d, config,
+                                  cooccurrence_neighbors=cooc_neighbors, title_suffix="— Raw Space")
+
+    else:  # virtual
+        virtual_vectors, vsrc = _build_virtual()
 
         print(f"Reducing to 3D ({args.method.upper()})...")
         if args.method == "pca":
@@ -640,9 +748,10 @@ def main():
 
         vel_3d = project_velocities_to_3d(ids, velocities, vectors, args.method, pca_components)
 
-        print("Building cosmic view...")
+        suffix = f"— Virtual Space ({vsrc})"
+        print(f"Building cosmic view ({suffix.strip(' —')})...")
         fig = build_single_figure(coords_3d, ids, props, edges, vel_3d, config,
-                                  cooccurrence_neighbors=cooc_neighbors, title_suffix="— Virtual Space")
+                                  cooccurrence_neighbors=cooc_neighbors, title_suffix=suffix)
 
     print(f"Saving to {args.output}...")
     fig.write_html(args.output, include_plotlyjs=True)

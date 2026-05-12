@@ -43,6 +43,7 @@ REST API は [REST API Reference](REST-API-Reference.md)。
 |---|---|
 | サーバー起動・MCP 登録 | [Operations — Server Setup](Operations-Server-Setup.md) |
 | ハイパーパラメータ調整 | [Operations — Tuning](Operations-Tuning.md) |
+| アップグレード時の data migration | [Operations — Migration](Operations-Migration.md) |
 | 定期メンテナンス | [Operations — Compact & Backup](Operations-Compact-And-Backup.md) |
 | ベンチマーク（本番 DB を触らずに） | [Operations — Isolated Benchmark](Operations-Isolated-Benchmark.md) |
 | 詰まったとき | [Operations — Troubleshooting](Operations-Troubleshooting.md) |

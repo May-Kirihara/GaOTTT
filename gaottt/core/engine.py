@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
@@ -11,9 +12,14 @@ from gaottt.config import GaOTTTConfig
 from gaottt.core.clustering import Cluster, cluster_by_similarity, find_merge_candidates
 from gaottt.core.collision import MergeOutcome, merge_pair, pick_survivor
 from gaottt.core.gravity import (
+    compute_gravity_kick,
     compute_virtual_position,
     propagate_gravity_wave,
     update_orbital_state,
+)
+from gaottt.core.persona_gravity import (
+    collect_active_persona_ids,
+    compute_persona_proximities,
 )
 from gaottt.core.prefetch import PrefetchCache, PrefetchPool
 from gaottt.core.scorer import (
@@ -30,11 +36,33 @@ from gaottt.core.types import (
 )
 from gaottt.embedding.ruri import RuriEmbedder
 from gaottt.graph.cooccurrence import CooccurrenceGraph
+from gaottt.index.bm25_index import BM25Index
 from gaottt.index.faiss_index import FaissIndex
 from gaottt.store.cache import CacheLayer
 from gaottt.store.sqlite_store import SqliteStore
 
 logger = logging.getLogger(__name__)
+
+
+def _rrf_forced_key(
+    nid: str,
+    cosine_rank: dict[str, int],
+    bm25_rank: dict[str, int],
+    rrf_k: int,
+) -> float:
+    """RRF-combined rank score for forced ordering (Phase L Stage 1).
+
+    ``cosine_rank`` / ``bm25_rank`` map node id → 1-based rank (precomputed).
+    Absent ids contribute 0 for that metric.
+    """
+    score = 0.0
+    cr = cosine_rank.get(nid)
+    if cr is not None:
+        score += 1.0 / (rrf_k + cr)
+    br = bm25_rank.get(nid)
+    if br is not None:
+        score += 1.0 / (rrf_k + br)
+    return score
 
 
 class GaOTTTEngine:
@@ -45,10 +73,18 @@ class GaOTTTEngine:
         faiss_index: FaissIndex,
         cache: CacheLayer,
         store: SqliteStore,
+        virtual_faiss_index: FaissIndex | None = None,
+        bm25_index: BM25Index | None = None,
     ):
         self.config = config
         self.embedder = embedder
         self.faiss_index = faiss_index
+        self.virtual_faiss_index = virtual_faiss_index
+        # Phase L Stage 1: optional BM25 lexical index. When ``None``, the
+        # engine behaves exactly as before Phase L (raw + virtual FAISS only).
+        # Production should wire this up in build_engine; tests get the
+        # legacy behaviour for free.
+        self.bm25_index = bm25_index
         self.cache = cache
         self.store = store
         self.graph = CooccurrenceGraph(config, cache)
@@ -59,6 +95,27 @@ class GaOTTTEngine:
         self.prefetch_pool = PrefetchPool(
             max_concurrent=config.prefetch_max_concurrent,
         )
+        # FAISS write-behind state. New vectors enter only the in-memory
+        # FAISS index; without periodic save, other processes' startup()
+        # would load a stale index and never see them until this process
+        # called shutdown(). The background loop below saves the index on
+        # a fixed cadence whenever `_faiss_dirty` is set.
+        self._faiss_dirty: bool = False
+        self._faiss_save_task: asyncio.Task | None = None
+        self._faiss_save_stop: asyncio.Event | None = None
+        # Virtual FAISS write-behind. Same multi-process visibility
+        # problem as raw FAISS but driven by cache.displacement edits
+        # (Phase I/J query attraction, genesis kicks, dream loop). The
+        # dirty signal is `cache.virtual_faiss_dirty`; the loop reads it,
+        # rebuilds the full virtual index, saves, and clears.
+        self._virtual_faiss_save_task: asyncio.Task | None = None
+        self._virtual_faiss_save_stop: asyncio.Event | None = None
+        # Phase G — Dream loop: revisits quiet nodes on a slow cadence with
+        # synthetic recalls so co-occurrence and gravity state build up even
+        # without user query (hippocampal-replay analog). Disabled when
+        # dream_enabled=False or dream_interval_seconds<=0.
+        self._dream_task: asyncio.Task | None = None
+        self._dream_stop: asyncio.Event | None = None
 
     async def startup(self) -> None:
         await self.store.initialize()
@@ -67,7 +124,38 @@ class GaOTTTEngine:
             logger.info("Auto-expired %d nodes past their TTL", expired)
         await self.cache.load_from_store(self.store)
         self.faiss_index.load(self.config.faiss_index_path)
+        if self.virtual_faiss_index is not None:
+            virtual_path = self.config.virtual_faiss_index_path
+            self.virtual_faiss_index.load(virtual_path)
+            if self.virtual_faiss_index.size == 0 and self.faiss_index.size > 0:
+                # No persisted virtual index yet — rebuild from raw + cache.
+                logger.info(
+                    "Virtual FAISS missing; building from raw + displacement"
+                )
+                await self._rebuild_virtual_faiss_index()
+        # Phase L Stage 1: build BM25 index from active document content.
+        # D2: in-memory only — no disk persistence in Stage 1, so we always
+        # rebuild from SQLite content at startup.
+        if self.bm25_index is not None:
+            await self._build_bm25_from_store()
         self.cache.start_write_behind(self.store)
+        if self.config.faiss_save_interval_seconds > 0:
+            self._faiss_save_stop = asyncio.Event()
+            self._faiss_save_task = asyncio.create_task(self._faiss_save_loop())
+        if (
+            self.virtual_faiss_index is not None
+            and self.config.virtual_faiss_save_interval_seconds > 0
+        ):
+            self._virtual_faiss_save_stop = asyncio.Event()
+            self._virtual_faiss_save_task = asyncio.create_task(
+                self._virtual_faiss_save_loop()
+            )
+        if (
+            self.config.dream_enabled
+            and self.config.dream_interval_seconds > 0
+        ):
+            self._dream_stop = asyncio.Event()
+            self._dream_task = asyncio.create_task(self._dream_loop())
         logger.info(
             "Engine started: %d nodes cached, %d vectors indexed, %d displacements",
             len(self.cache.node_cache),
@@ -77,11 +165,164 @@ class GaOTTTEngine:
 
     async def shutdown(self) -> None:
         await self.prefetch_pool.drain(timeout=5.0)
+        if self._dream_stop is not None:
+            self._dream_stop.set()
+        if self._dream_task is not None:
+            try:
+                await asyncio.wait_for(self._dream_task, timeout=10.0)
+            except asyncio.TimeoutError:
+                self._dream_task.cancel()
+        if self._faiss_save_stop is not None:
+            self._faiss_save_stop.set()
+        if self._faiss_save_task is not None:
+            try:
+                await asyncio.wait_for(self._faiss_save_task, timeout=10.0)
+            except asyncio.TimeoutError:
+                self._faiss_save_task.cancel()
+        if self._virtual_faiss_save_stop is not None:
+            self._virtual_faiss_save_stop.set()
+        if self._virtual_faiss_save_task is not None:
+            try:
+                await asyncio.wait_for(
+                    self._virtual_faiss_save_task, timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                self._virtual_faiss_save_task.cancel()
         await self.cache.stop_write_behind()
         await self.cache.flush_to_store(self.store)
-        self.faiss_index.save(self.config.faiss_index_path)
+        # Final synchronous save guarantees durability even if the loop
+        # was disabled or skipped a final tick.
+        await asyncio.to_thread(
+            self.faiss_index.save, self.config.faiss_index_path,
+        )
+        if self.virtual_faiss_index is not None:
+            await asyncio.to_thread(
+                self.virtual_faiss_index.save,
+                self.config.virtual_faiss_index_path,
+            )
+        self._faiss_dirty = False
         await self.store.close()
         logger.info("Engine shut down, state persisted")
+
+    async def _faiss_save_loop(self) -> None:
+        """Background FAISS save: persists in-memory FAISS additions on a
+        fixed cadence. Crucial for multi-process visibility.
+        """
+        assert self._faiss_save_stop is not None
+        interval = self.config.faiss_save_interval_seconds
+        path = self.config.faiss_index_path
+        while not self._faiss_save_stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._faiss_save_stop.wait(), timeout=interval,
+                )
+                break  # stop signalled
+            except asyncio.TimeoutError:
+                pass  # interval elapsed, try a save tick
+            if self._faiss_dirty:
+                # Claim before save so any add() during the save itself
+                # leaves dirty=True for the next tick to handle.
+                self._faiss_dirty = False
+                try:
+                    await asyncio.to_thread(self.faiss_index.save, path)
+                except Exception:  # noqa: BLE001
+                    self._faiss_dirty = True
+                    logger.exception("Periodic FAISS save failed; will retry")
+
+    async def _virtual_faiss_save_loop(self) -> None:
+        """Background virtual FAISS rebuild + save: refreshes the
+        displacement-aware seed index on a fixed cadence whenever the
+        cache marks itself dirty. Without this, displacement edits from
+        recall (Phase I/J query attraction), genesis kicks, and the dream
+        loop never reach the seed pool of subsequent recalls — virtual
+        FAISS would only refresh at compact(rebuild_faiss=True).
+
+        Rebuild is O(N) over active nodes. The default 60s cadence keeps
+        the work amortized; tune via virtual_faiss_save_interval_seconds.
+        """
+        assert self._virtual_faiss_save_stop is not None
+        assert self.virtual_faiss_index is not None
+        interval = self.config.virtual_faiss_save_interval_seconds
+        path = self.config.virtual_faiss_index_path
+        while not self._virtual_faiss_save_stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._virtual_faiss_save_stop.wait(), timeout=interval,
+                )
+                break  # stop signalled
+            except asyncio.TimeoutError:
+                pass  # interval elapsed, try a rebuild tick
+            if self.cache.virtual_faiss_dirty:
+                # Claim before rebuild so any set_displacement during the
+                # rebuild itself leaves dirty=True for the next tick.
+                self.cache.virtual_faiss_dirty = False
+                try:
+                    await self._rebuild_virtual_faiss_index()
+                    await asyncio.to_thread(
+                        self.virtual_faiss_index.save, path,
+                    )
+                except Exception:  # noqa: BLE001
+                    self.cache.virtual_faiss_dirty = True
+                    logger.exception(
+                        "Periodic virtual FAISS rebuild failed; will retry"
+                    )
+
+    def _pick_dream_candidates(self, limit: int) -> list[str]:
+        """Quiet nodes worth revisiting in a dream tick.
+
+        Picks non-archived nodes whose mass is still below
+        ``dream_mass_ceiling`` and whose ``last_access`` is older than
+        ``dream_min_idle_seconds``. Sorted by oldest-access-first so the
+        coldest memories get revived earliest.
+        """
+        now = time.time()
+        ceiling = self.config.dream_mass_ceiling
+        min_idle = self.config.dream_min_idle_seconds
+        quiet = [
+            s for s in self.cache.get_all_nodes()
+            if not s.is_archived
+            and s.mass < ceiling
+            and (now - s.last_access) > min_idle
+        ]
+        quiet.sort(key=lambda s: s.last_access)
+        return [s.id for s in quiet[:limit]]
+
+    async def _dream_loop(self) -> None:
+        """Hippocampal-replay analog. While the user is silent, revisit
+        quiet nodes via synthetic recall so they accumulate co-occurrence
+        and gravity field updates without ever being shown to the LLM.
+        """
+        assert self._dream_stop is not None
+        interval = self.config.dream_interval_seconds
+        while not self._dream_stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._dream_stop.wait(), timeout=interval,
+                )
+                break  # stop signalled
+            except asyncio.TimeoutError:
+                pass
+
+            try:
+                candidates = self._pick_dream_candidates(
+                    limit=self.config.dream_batch_size,
+                )
+                for nid in candidates:
+                    if self._dream_stop.is_set():
+                        break
+                    doc = await self.store.get_document(nid)
+                    if not doc:
+                        continue
+                    await self._query_internal(
+                        text=doc["content"],
+                        top_k=self.config.dream_top_k,
+                        wave_depth=None,
+                        wave_k=None,
+                        _is_synthetic=True,
+                    )
+            except Exception:  # noqa: BLE001
+                # A bad tick should not kill the loop. Log and try again.
+                logger.exception("Dream tick failed; will retry next cycle")
 
     # --- US1: Document Indexing ---
 
@@ -111,6 +352,18 @@ class GaOTTTEngine:
 
         vectors = self.embedder.encode_documents(contents)
         self.faiss_index.add(vectors, ids)
+        if self.virtual_faiss_index is not None:
+            # Fresh nodes have displacement=0, so virtual_pos == raw.
+            # The genesis kick below mutates cache.displacement; for now,
+            # raw and virtual stay aligned, and a later compact (or the
+            # next kick step) will pull virtual_pos away from raw if
+            # needed.
+            self.virtual_faiss_index.add(vectors, ids)
+        # Phase L Stage 1: feed BM25 with the document text so lexical
+        # matches on the new docs are findable immediately, without waiting
+        # for the next compact/startup rebuild.
+        if self.bm25_index is not None:
+            self.bm25_index.add(ids, contents)
 
         now = time.time()
         docs_for_store = []
@@ -125,6 +378,15 @@ class GaOTTTEngine:
                 last_verified_at=now if "certainty" in doc_in else None,
             )
             self.cache.set_node(state, dirty=True)
+            meta = metadatas[i] or {}
+            src = meta.get("source")
+            if src:
+                self.cache.set_source(doc_id, src)
+            # Phase J Stage 2: mirror tags so tag_filter injection sees
+            # them without waiting for a cache reload.
+            tags = meta.get("tags")
+            if isinstance(tags, list):
+                self.cache.set_tags(doc_id, [t for t in tags if isinstance(t, str)])
             docs_for_store.append({
                 "id": doc_id,
                 "content": contents[i],
@@ -132,10 +394,122 @@ class GaOTTTEngine:
             })
 
         await self.store.save_documents(docs_for_store)
+
+        # Phase G — Genesis kick: apply one-step Newtonian gravity so the
+        # new nodes enter the field with non-zero orbital state instead of
+        # competing against established clusters from a "naked" mass=1,
+        # displacement=0 starting point. See Plans-Phase-G-Memory-Genesis.md.
+        if self.config.genesis_kick_enabled:
+            self._apply_genesis_kick(ids, vectors)
+
+        # Phase K — Stellar supernova cohort: when the batch is large enough,
+        # form mutual co-occurrence edges + outward initial velocity so the
+        # newly-born cohort has internal gravity from birth. See
+        # Plans-Phase-K-Stellar-Supernova-Cohort.md. Applied after Phase G so
+        # cohort-internal coupling stacks on top of existing-system binding.
+        if self.config.supernova_enabled:
+            self._apply_supernova_cohort(ids, vectors)
+
         await self.cache.flush_to_store(self.store)
+        self._faiss_dirty = True
 
         logger.info("Indexed %d documents", len(ids))
         return ids
+
+    def _top_k_heavy_neighbors(
+        self,
+        vec: np.ndarray,
+        k: int,
+        pool_size: int = 50,
+    ) -> list[tuple[np.ndarray, float]]:
+        """Pull a wide FAISS top-N pool, rerank by cached mass, return the
+        top-k as (embedding, mass) pairs. Used by the genesis kick to find
+        the heavy bodies whose gravity will bend the new node's orbit."""
+        pool = self.faiss_index.search(vec.reshape(1, -1), pool_size)
+        if not pool:
+            return []
+        candidates: list[tuple[str, float]] = []
+        for nid, _cos in pool:
+            state = self.cache.get_node(nid)
+            if state is None or state.is_archived:
+                continue
+            candidates.append((nid, state.mass))
+        if not candidates:
+            return []
+        candidates.sort(key=lambda t: t[1], reverse=True)
+        candidates = candidates[:k]
+        ids_only = [nid for nid, _ in candidates]
+        vec_map = self.faiss_index.get_vectors(ids_only)
+        out: list[tuple[np.ndarray, float]] = []
+        for nid, mass in candidates:
+            v = vec_map.get(nid)
+            if v is not None:
+                out.append((v, mass))
+        return out
+
+    def _apply_genesis_kick(
+        self, new_ids: list[str], new_vecs: np.ndarray,
+    ) -> None:
+        """Run one Verlet step of neighbor gravity on each freshly-indexed
+        node, seeding cache displacement/velocity and bumping mass.
+        Skips nodes with no qualifying neighbors (an empty DB or a region
+        with no heavy bodies)."""
+        for i, new_id in enumerate(new_ids):
+            new_vec = new_vecs[i]
+            neighbors = self._top_k_heavy_neighbors(
+                new_vec,
+                k=self.config.genesis_kick_neighbor_k,
+                pool_size=self.config.genesis_kick_pool_size,
+            )
+            if not neighbors:
+                continue
+            disp, vel, m_boost = compute_gravity_kick(
+                new_vec, neighbors, self.config,
+            )
+            disp_norm = float(np.linalg.norm(disp))
+            if disp_norm <= 1e-9 and m_boost <= 0.0:
+                continue
+            self.cache.set_displacement(new_id, disp)
+            self.cache.set_velocity(new_id, vel)
+            state = self.cache.get_node(new_id)
+            if state is not None and m_boost > 0.0:
+                state.mass = max(state.mass, 1.0 + m_boost)
+                self.cache.set_node(state, dirty=True)
+
+    def _apply_supernova_cohort(
+        self, new_ids: list[str], new_vecs: np.ndarray,
+    ) -> None:
+        """Form mutual co-occurrence edges + outward initial velocity for
+        the supernova cohort.
+
+        Velocity is *added* to whatever Phase G genesis kick already put
+        in cache (typically Phase G writes a velocity toward existing
+        heavy bodies; Phase K adds an outward push from the batch
+        centroid; the two compose). Edges are written via
+        ``cache.set_edge`` which mirrors both directions of the
+        undirected graph and marks them dirty for write-behind flush.
+        """
+        from gaottt.core.supernova import (
+            compute_supernova_velocities,
+            form_supernova_edges,
+        )
+
+        # Mutual co-occurrence edges
+        edges = form_supernova_edges(new_ids, self.config)
+        for src, dst, weight in edges:
+            self.cache.set_edge(src, dst, weight, dirty=True)
+
+        # Outward initial velocity (added to any Phase G velocity)
+        velocities = compute_supernova_velocities(new_ids, new_vecs, self.config)
+        for nid, v_supernova in velocities.items():
+            existing = self.cache.get_velocity(nid)
+            if existing is not None:
+                combined = existing + v_supernova
+            else:
+                combined = v_supernova
+            from gaottt.core.gravity import clamp_vector
+            combined = clamp_vector(combined, self.config.orbital_max_velocity)
+            self.cache.set_velocity(nid, combined.astype(np.float32))
 
     # --- US2: Query (Gravity Wave Propagation) ---
 
@@ -146,6 +520,9 @@ class GaOTTTEngine:
         wave_depth: int | None = None,
         wave_k: int | None = None,
         use_cache: bool = False,
+        source_filter: list[str] | None = None,
+        persona_context: list[str] | None = None,
+        tag_filter: list[str] | None = None,
     ) -> list[QueryResultItem]:
         """Run a recall query.
 
@@ -154,14 +531,34 @@ class GaOTTTEngine:
         (and crucially, without re-applying simulation updates — the prefetch
         already paid that cost). Cache hits are bounded by
         ``config.prefetch_ttl_seconds``.
+
+        ``source_filter`` (Phase H Stage 2) lets the seed step trim the
+        FAISS pool to nodes whose ``metadata.source`` matches. Source
+        filtering is not part of the prefetch cache key, so any call with
+        ``source_filter`` set bypasses the cache.
+
+        ``persona_context`` (Phase J Stage 2) — explicit list of declared
+        value/intention/commitment IDs overriding the Stage 1 auto-detect,
+        plus additive seed injection of those IDs.
+
+        ``tag_filter`` (Phase J Stage 2) — substring list (OR match) for
+        additive seed injection of every node whose ``metadata.tags`` list
+        contains any substring. Bypasses ``source_filter``.
+
+        Either explicit argument bypasses the prefetch cache.
         """
         k = top_k or self.config.top_k
+        if source_filter or persona_context or tag_filter:
+            use_cache = False
         if use_cache:
             cached = self.prefetch_cache.get(text, k)
             if cached is not None:
                 return cached
         results = await self._query_internal(
             text=text, top_k=k, wave_depth=wave_depth, wave_k=wave_k,
+            source_filter=source_filter,
+            persona_context=persona_context,
+            tag_filter=tag_filter,
         )
         if use_cache:
             self.prefetch_cache.put(text, k, results)
@@ -173,14 +570,53 @@ class GaOTTTEngine:
         top_k: int,
         wave_depth: int | None,
         wave_k: int | None,
+        _is_synthetic: bool = False,
+        source_filter: list[str] | None = None,
+        persona_context: list[str] | None = None,
+        tag_filter: list[str] | None = None,
     ) -> list[QueryResultItem]:
         k = top_k
         query_vec = self.embedder.encode_query(text)
+
+        # Phase J Stage 1 / Stage 2: compute persona proximities once per
+        # recall. Stage 2 explicit `persona_context` takes precedence over
+        # the Stage 1 auto-detected active set.
+        persona_proximities: dict[str, float] | None = None
+        if self.config.persona_boost_enabled and self.config.persona_boost_alpha > 0.0:
+            if persona_context:
+                persona_ids: set[str] = set(persona_context)
+            else:
+                persona_ids = collect_active_persona_ids(
+                    self.cache, self.config, time.time(),
+                )
+            if persona_ids:
+                persona_proximities = compute_persona_proximities(
+                    persona_ids, self.cache, self.config,
+                )
+
+        # Phase J Stage 2: build the additive injection set — explicit
+        # persona_context ids plus every node matching the tag_filter
+        # substring(s).
+        injected_ids: set[str] | None = None
+        if persona_context or tag_filter:
+            injected_ids = set()
+            if persona_context:
+                injected_ids |= set(persona_context)
+            if tag_filter:
+                injected_ids |= self.cache.find_ids_by_tag_filter(tag_filter)
+            if not injected_ids:
+                injected_ids = None
 
         # Step 1: Gravity wave propagation — recursive neighbor expansion
         reached = propagate_gravity_wave(
             query_vec, self.faiss_index, self.cache, self.config,
             wave_k=wave_k, wave_depth=wave_depth,
+            source_filter=source_filter,
+            virtual_faiss_index=self.virtual_faiss_index,
+            persona_proximities=persona_proximities,
+            injected_ids=injected_ids,
+            query_text=text,
+            bm25_index=self.bm25_index,
         )
 
         if not reached:
@@ -193,7 +629,19 @@ class GaOTTTEngine:
         # Step 3: Score all reached nodes with virtual coordinates + wave boost
         now = time.time()
         query_vec_flat = query_vec[0] if query_vec.ndim == 2 else query_vec
+        q_norm = float(np.linalg.norm(query_vec_flat)) + 1e-12
         results: list[QueryResultItem] = []
+        # Coordinate naming:
+        #   gravity_sim  = query_raw · virtual_pos  (stored as QueryResultItem.raw_score,
+        #                  labelled "virtual_score" in MCP output).  Carries displacement
+        #                  and temperature noise — reflects how far the node has drifted
+        #                  toward frequently co-recalled queries.
+        #   pure_raw_cosines = query_raw · node_raw  (no displacement).  Used only for
+        #                  Phase J Stage 3 forced-set ordering where "closest to this
+        #                  query's vocabulary" must win over "most-touched memo".
+        #   QueryResultItem.raw_score keeps the field name for REST backward compat;
+        #   formatters.format_recall labels it "virtual_score" in MCP output (2026-05-12).
+        pure_raw_cosines: dict[str, float] = {}
 
         for node_id in reached_ids:
             state = self.cache.get_node(node_id)
@@ -215,6 +663,12 @@ class GaOTTTEngine:
             )
 
             gravity_sim = float(np.dot(query_vec_flat, virtual_pos))
+            # Pure raw cosine — no displacement, no temperature noise.
+            emb_norm = float(np.linalg.norm(original_emb)) + 1e-12
+            pure_raw_cosines[node_id] = (
+                float(np.dot(query_vec_flat, original_emb)) / (q_norm * emb_norm)
+            )
+
             mass_boost = compute_mass_boost(state.mass, self.config.alpha)
             decay = compute_decay(state.last_access, now, self.config.delta)
             wave_boost = self.config.wave_boost_weight * reached[node_id]
@@ -251,17 +705,97 @@ class GaOTTTEngine:
                 )
             )
 
-        # Step 4: Sort and take top-K for presentation to LLM
-        results.sort(key=lambda r: r.final_score, reverse=True)
-        results = results[:k]
+        # Step 4: Sort and take top-K for presentation to LLM.
+        # Phase J Stage 2: when explicit injection is requested, force the
+        # injected ids into the top-K result. Seed-pool injection alone
+        # isn't enough — once the target is a seed, its own wave neighbours
+        # can outrank it by sheer cluster mass. The caller's explicit ask
+        # has to survive the final cut, not just the entry gate.
+        #
+        # Critical: when ``len(injected_ids) > k`` (e.g. ``tag_filter``
+        # matching 112 nodes with ``top_k=5``), we still respect the
+        # caller's ``top_k`` budget — pick the top-K *of the injected
+        # set itself* — but rank the forced set by ``raw_score`` rather
+        # than ``final_score`` (Phase J Stage 3). Final score is dominated
+        # by mass / wave / emotion / certainty, which makes "frequently
+        # touched memos win" regardless of query semantic. Inside a
+        # caller-injected set, the right ordering is "which of these
+        # tagged memos is closest to the query" — i.e. raw cosine.
+        # Non-injected results still rank by final_score.
+        #
+        # Phase L Stage 1 supplement: when BM25 is active, compute a
+        # per-node lexical score and combine it with pure raw cosine
+        # via RRF so that surface-form matches ("Eleventy Pipeline" →
+        # .eleventy.js) can outrank pure-embedding similarity.
+        bm25_forced_scores: dict[str, float] = {}
+        if (
+            injected_ids
+            and self.bm25_index is not None
+            and self.bm25_index.size > 0
+            and text
+        ):
+            bm25_pool = self.bm25_index.search(
+                text, max(len(injected_ids), 50),
+            )
+            bm25_forced_scores = {nid: sc for nid, sc in bm25_pool}
 
-        # Step 5: Update return_count for presented nodes + habituation recovery for all
+        if injected_ids:
+            forced = [r for r in results if r.id in injected_ids]
+            others = [r for r in results if r.id not in injected_ids]
+
+            if bm25_forced_scores:
+                forced_cosine_rank: dict[str, int] = {
+                    r.id: rank
+                    for rank, r in enumerate(
+                        sorted(
+                            forced,
+                            key=lambda r: pure_raw_cosines.get(r.id, 0.0),
+                            reverse=True,
+                        ),
+                        start=1,
+                    )
+                }
+                forced_bm25_rank: dict[str, int] = {}
+                bm25_sorted = sorted(
+                    bm25_forced_scores.items(),
+                    key=lambda t: t[1],
+                    reverse=True,
+                )
+                for rank, (nid, _) in enumerate(bm25_sorted, start=1):
+                    if nid in injected_ids:
+                        forced_bm25_rank[nid] = rank
+                forced.sort(
+                    key=lambda r: _rrf_forced_key(
+                        r.id, forced_cosine_rank, forced_bm25_rank,
+                        self.config.rrf_k,
+                    ),
+                    reverse=True,
+                )
+            else:
+                forced.sort(
+                    key=lambda r: pure_raw_cosines.get(r.id, 0.0),
+                    reverse=True,
+                )
+            others.sort(key=lambda r: r.final_score, reverse=True)
+            if len(forced) >= k:
+                results = forced[:k]
+            else:
+                results = forced + others[: k - len(forced)]
+        else:
+            results.sort(key=lambda r: r.final_score, reverse=True)
+            results = results[:k]
+
+        # Step 5: Update return_count for presented nodes + habituation recovery for all.
+        # Synthetic recalls (Phase G dream loop) skip return_count so that
+        # background revisits don't trip presentation saturation — the user
+        # never saw these results, so habituation must not punish them.
         result_ids = [r.id for r in results]
-        for node_id in result_ids:
-            state = self.cache.get_node(node_id)
-            if state:
-                state.return_count += 1.0
-                self.cache.set_node(state, dirty=True)
+        if not _is_synthetic:
+            for node_id in result_ids:
+                state = self.cache.get_node(node_id)
+                if state:
+                    state.return_count += 1.0
+                    self.cache.set_node(state, dirty=True)
 
         # Habituation recovery: all reached nodes slowly recover freshness
         all_reached_ids = list(reached.keys())
@@ -271,8 +805,13 @@ class GaOTTTEngine:
                 state.return_count *= (1.0 - self.config.habituation_recovery_rate)
                 self.cache.set_node(state, dirty=True)
 
-        # Step 6: Simulation update — ALL reached nodes
-        self._update_simulation(all_reached_ids, reached, original_embs, now)
+        # Step 6: Simulation update — ALL reached nodes.
+        # Phase I Stage 2: pass the query vector + wave scores so the orbital
+        # step can apply the query-attraction term to reached nodes.
+        self._update_simulation(
+            all_reached_ids, reached, original_embs, now,
+            query_anchor=query_vec_flat,
+        )
         self._update_cooccurrence(result_ids)
 
         return results
@@ -283,6 +822,7 @@ class GaOTTTEngine:
         reached: dict[str, float],
         original_embs: dict[str, np.ndarray],
         now: float,
+        query_anchor: np.ndarray | None = None,
     ) -> None:
         """Update gravity simulation for ALL wave-reached nodes.
 
@@ -337,6 +877,8 @@ class GaOTTTEngine:
                 current_displacements, current_velocities,
                 masses, last_accesses, now, self.config,
                 cache=self.cache,
+                query_anchor=query_anchor,
+                query_scores=reached if query_anchor is not None else None,
             )
 
             for nid in new_disps:
@@ -397,6 +939,10 @@ class GaOTTTEngine:
         affected = await self.store.set_archived(node_ids, archived=True)
         for nid in node_ids:
             self.cache.evict_node(nid)
+        # Phase L Stage 1: drop archived ids from BM25 so search excludes
+        # them immediately (the postings remain until compact/rebuild).
+        if self.bm25_index is not None and affected:
+            self.bm25_index.remove(node_ids)
         if affected:
             self.prefetch_cache.invalidate()
         logger.info("Archived %d nodes", affected)
@@ -418,6 +964,17 @@ class GaOTTTEngine:
                 self.cache.displacement_cache[nid] = disp
             for nid, vel in vels.items():
                 self.cache.velocity_cache[nid] = vel
+            # Restored nodes change the active set + their displacement
+            # was reloaded behind set_displacement's back; force a virtual
+            # FAISS refresh so they reappear in seed pools.
+            if affected:
+                self.cache.virtual_faiss_dirty = True
+            # Phase L Stage 1: BM25 also surfaces the restored docs again.
+            # Calling restore is cheap (just flips the soft-remove flag);
+            # if the postings were already compacted away, this is a no-op
+            # and the next startup rebuild picks them up.
+            if self.bm25_index is not None and affected:
+                self.bm25_index.restore(node_ids)
             self.prefetch_cache.invalidate()
         logger.info("Restored %d nodes", affected)
         return affected
@@ -436,6 +993,11 @@ class GaOTTTEngine:
         for nid in node_ids:
             self.cache.evict_node(nid)
         deleted = await self.store.hard_delete_nodes(node_ids)
+        # Phase L Stage 1: BM25 postings are reclaimed on the next compact;
+        # for now just drop them from active statistics so search excludes
+        # them.
+        if self.bm25_index is not None and deleted:
+            self.bm25_index.remove(node_ids)
         if deleted:
             self.prefetch_cache.invalidate()
         logger.info("Hard-deleted %d nodes", deleted)
@@ -449,6 +1011,8 @@ class GaOTTTEngine:
         top_k: int | None = None,
         wave_depth: int | None = None,
         wave_k: int | None = None,
+        persona_context: list[str] | None = None,
+        tag_filter: list[str] | None = None,
     ) -> object:
         """Schedule a background recall and cache its result.
 
@@ -456,12 +1020,20 @@ class GaOTTTEngine:
         ``await`` it for determinism). The next ``query(text, top_k,
         use_cache=True)`` within ``prefetch_ttl_seconds`` will be served from
         the cache without re-running the simulation.
+
+        Phase J Stage 3: `persona_context` / `tag_filter` are forwarded so
+        the prefetched result matches what an explicit `recall(...)` with
+        the same arguments would return. Cache key is still `(text, top_k)`
+        — callers re-running the same prefetch with different injection
+        args will overwrite the cache entry, which is the correct semantic
+        ("the latest call wins" for predictive pre-firing).
         """
         k = top_k or self.config.top_k
 
         async def _run() -> list[QueryResultItem]:
             results = await self._query_internal(
                 text=text, top_k=k, wave_depth=wave_depth, wave_k=wave_k,
+                persona_context=persona_context, tag_filter=tag_filter,
             )
             self.prefetch_cache.put(text, k, results)
             return results
@@ -496,12 +1068,19 @@ class GaOTTTEngine:
             weight=weight, created_at=time.time(), metadata=metadata,
         )
         await self.store.upsert_directed_edge(edge)
+        # Phase J Stage 1: mirror into the in-memory cache so persona
+        # traversal in the next recall sees the new edge without waiting
+        # for a cache reload.
+        self.cache.set_directed_edge(src_id, dst_id, edge_type)
         return edge
 
     async def unrelate(
         self, src_id: str, dst_id: str, edge_type: str | None = None,
     ) -> int:
-        return await self.store.delete_directed_edge(src_id, dst_id, edge_type)
+        deleted = await self.store.delete_directed_edge(src_id, dst_id, edge_type)
+        if deleted > 0:
+            self.cache.remove_directed_edge(src_id, dst_id, edge_type)
+        return deleted
 
     async def get_relations(
         self,
@@ -605,6 +1184,7 @@ class GaOTTTEngine:
 
         if keep is not None and keep in states_by_id:
             survivor = states_by_id.pop(keep)
+            keep_explicit = True
         else:
             ordered = sorted(
                 states_by_id.values(),
@@ -613,19 +1193,28 @@ class GaOTTTEngine:
             )
             survivor = ordered[0]
             states_by_id.pop(survivor.id)
+            keep_explicit = False
 
         outcomes: list[MergeOutcome] = []
         now = time.time()
         for absorbed in states_by_id.values():
-            survivor, _ = pick_survivor(survivor, absorbed)  # ensure heavier wins overall
-            if survivor.id == absorbed.id:
-                # pick_survivor flipped — swap
-                survivor, absorbed = absorbed, survivor
+            if not keep_explicit:
+                # Auto-pick the heavier body so mass conservation feels right.
+                # When the caller explicitly passed keep=, that intent wins —
+                # otherwise Phase-G mass perturbations could silently override
+                # the user's choice.
+                survivor, _ = pick_survivor(survivor, absorbed)
+                if survivor.id == absorbed.id:
+                    survivor, absorbed = absorbed, survivor
             outcome = merge_pair(survivor, absorbed, self.cache, self.config, now=now)
             outcomes.append(outcome)
             # Evict absorbed from cache after marking dirty so flush persists state
             await self.cache.flush_to_store(self.store)
             self.cache.evict_node(absorbed.id)
+            # Phase L Stage 1: drop absorbed from BM25 so the survivor wins
+            # all lexical searches (the absorbed content is now redundant).
+            if self.bm25_index is not None:
+                self.bm25_index.remove([absorbed.id])
         if outcomes:
             self.prefetch_cache.invalidate()
         return outcomes
@@ -661,9 +1250,14 @@ class GaOTTTEngine:
         if expire_ttl:
             now = time.time()
             n = await self.store.expire_due_nodes(now)
+            expired_ids: list[str] = []
             for state in list(self.cache.get_all_nodes()):
                 if state.expires_at is not None and state.expires_at <= now:
+                    expired_ids.append(state.id)
                     self.cache.evict_node(state.id)
+            # Phase L Stage 1: drop expired ids from BM25 active stats.
+            if self.bm25_index is not None and expired_ids:
+                self.bm25_index.remove(expired_ids)
             report["expired"] = n
 
         if auto_merge:
@@ -684,6 +1278,12 @@ class GaOTTTEngine:
         if rebuild_faiss:
             await self._rebuild_faiss_index()
             report["faiss_rebuilt"] = True
+            # Phase L Stage 1: rebuild BM25 together with FAISS so the
+            # lexical index also reclaims postings from forget/merge/expire
+            # and re-syncs with the SQLite content (covers any drift from
+            # other processes that wrote to the DB while this one was idle).
+            if self.bm25_index is not None:
+                await self._rebuild_bm25_from_store()
         report["vectors_after"] = self.faiss_index.size
 
         # Drop orphan directed edges (endpoints hard-deleted by the user)
@@ -702,20 +1302,137 @@ class GaOTTTEngine:
         return report
 
     async def _rebuild_faiss_index(self) -> None:
-        """Drop archived/merged vectors from FAISS by rebuilding the flat index."""
+        """Rebuild FAISS from all active cache nodes.
+
+        Nodes already in FAISS have their vectors extracted directly.
+        Nodes in cache but absent from FAISS (write-behind gap from a previous
+        session that ended before the flush fired) are re-embedded from store
+        so they are no longer invisible to recall.
+        """
         active_ids = [
             state.id for state in self.cache.get_all_nodes() if not state.is_archived
         ]
         if not active_ids:
             self.faiss_index.reset()
+            self._faiss_dirty = True
             return
         vecs = self.faiss_index.get_vectors(active_ids)
         present = [(nid, vecs[nid]) for nid in active_ids if nid in vecs]
-        if not present:
+
+        # Re-embed nodes that exist in cache/store but are absent from FAISS.
+        missing_ids = [nid for nid in active_ids if nid not in vecs]
+        recovered: list[tuple[str, np.ndarray]] = []
+        if missing_ids:
+            logger.info(
+                "_rebuild_faiss_index: re-embedding %d nodes missing from FAISS",
+                len(missing_ids),
+            )
+            contents: list[str] = []
+            valid_ids: list[str] = []
+            for nid in missing_ids:
+                doc = await self.store.get_document(nid)
+                if doc is not None:
+                    contents.append(doc["content"])
+                    valid_ids.append(nid)
+            if contents:
+                re_vecs = self.embedder.encode_documents(contents)
+                for nid, vec in zip(valid_ids, re_vecs):
+                    recovered.append((nid, vec))
+            logger.info(
+                "_rebuild_faiss_index: recovered %d/%d missing nodes",
+                len(recovered),
+                len(missing_ids),
+            )
+
+        all_pairs = present + recovered
+        if not all_pairs:
             return
-        matrix = np.stack([v for _, v in present]).astype(np.float32)
+        matrix = np.stack([v for _, v in all_pairs]).astype(np.float32)
         self.faiss_index.reset()
-        self.faiss_index.add(matrix, [nid for nid, _ in present])
+        self.faiss_index.add(matrix, [nid for nid, _ in all_pairs])
+        self._faiss_dirty = True
+        if self.virtual_faiss_index is not None:
+            await self._rebuild_virtual_faiss_index()
+
+    async def _rebuild_virtual_faiss_index(self) -> None:
+        """Build the virtual FAISS index from raw embeddings + cached
+        displacement (Phase H Stage 4).
+
+        Uses ``compute_virtual_position`` for each active node so that
+        Phase G priming (which moves displacement on every active node)
+        becomes seedable. Without this index, raw FAISS top-K never sees
+        priming-induced cluster shifts."""
+        if self.virtual_faiss_index is None:
+            return
+        active_ids = [
+            s.id for s in self.cache.get_all_nodes() if not s.is_archived
+        ]
+        if not active_ids:
+            self.virtual_faiss_index.reset()
+            return
+        raw_vecs = self.faiss_index.get_vectors(active_ids)
+        virtual_vectors: list[np.ndarray] = []
+        virtual_ids: list[str] = []
+        for nid in active_ids:
+            original = raw_vecs.get(nid)
+            if original is None:
+                continue
+            displacement = self.cache.get_displacement(nid)
+            state = self.cache.get_node(nid)
+            temperature = state.temperature if state is not None else 0.0
+            virtual_pos = compute_virtual_position(
+                original, displacement, temperature,
+            )
+            virtual_vectors.append(virtual_pos)
+            virtual_ids.append(nid)
+        if not virtual_vectors:
+            self.virtual_faiss_index.reset()
+            return
+        matrix = np.stack(virtual_vectors).astype(np.float32)
+        self.virtual_faiss_index.reset()
+        self.virtual_faiss_index.add(matrix, virtual_ids)
+        logger.info(
+            "Virtual FAISS rebuilt: %d active vectors", len(virtual_ids),
+        )
+
+    async def _build_bm25_from_store(self) -> None:
+        """Phase L Stage 1: Initial BM25 build at startup.
+
+        Loads every document content from SQLite and adds the active ones
+        (those present in ``cache.node_cache`` — archived/expired ids are
+        skipped) to the in-memory BM25 index. Decision D2 dictates that
+        Stage 1 has no disk persistence, so this rebuild happens on every
+        startup. The cost is proportional to total content length; at 24k
+        documents it completes in a few seconds.
+        """
+        if self.bm25_index is None:
+            return
+        contents = await self.store.get_all_contents()
+        active_ids: list[str] = []
+        active_texts: list[str] = []
+        for nid, text in contents.items():
+            if nid in self.cache.node_cache and text:
+                active_ids.append(nid)
+                active_texts.append(text)
+        if not active_ids:
+            return
+        self.bm25_index.add(active_ids, active_texts)
+        logger.info(
+            "BM25 index built: %d active docs (skipped %d archived/missing)",
+            len(active_ids), len(contents) - len(active_ids),
+        )
+
+    async def _rebuild_bm25_from_store(self) -> None:
+        """Phase L Stage 1: Full BM25 rebuild during compact.
+
+        Drops in-memory state and rebuilds from SQLite — reclaims postings
+        from forget/merge/expire and re-syncs with content written by other
+        processes (the multi-process visibility caveat in CLAUDE.md).
+        """
+        if self.bm25_index is None:
+            return
+        self.bm25_index.reset()
+        await self._build_bm25_from_store()
 
     # --- US5: State Reset ---
 

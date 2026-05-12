@@ -12,6 +12,12 @@ GaOTTT の Phase 進捗と未実装機能の俯瞰。
 | **Phase C** | F6 バックグラウンド prefetch | ✅ 完了 |
 | **Phase D** | 人格保存基盤 + タスク管理 | ✅ 完了 |
 | **Phase S** | REST × MCP 共有サービス層に集約、REST を MCP parity まで引き上げ | ✅ 完了（2026-04-22） |
+| **Phase G** | 新規 memory への重力法則の起動時適用（軌道捕獲 + 夢 + 全件 priming） | ✅ 完了（2026-05-10） — Stage 1 (G.1 軌道捕獲) + Stage 2 (G.2 夢) + Stage 0 (priming) を実装。Stage 3 (G.3 重心アンカー) は homogenization リスクで永久保留。新規 doc の surface 改善は構造的に Phase H の領域と判明 |
+| **Phase H** | Wave seed redesign — 新規 / sparse class が wave 入口で排除される問題の修正 | ✅ 完了（2026-05-10〜13）— Stage 1 (H.3 mass-aware boost) + Stage 2 (H.4 source-aware seed filtering) + Stage 3 (H.1 dynamic wave_k) + Stage 4 (H.2 virtual FAISS) 全段完了。本番 DB の filter=none top1 score が 5.6x 改善、一部クエリで初の agent surface 達成。残った agent surface 課題は displacement の方向問題で、Phase G の構造的限界。Stage 5 (2026-05-13): wave 中の per-frontier neighbor 探索を raw → virtual FAISS に切り替え（`wave_neighbor_use_virtual=True`）+ virtual FAISS write-behind 導入（`virtual_faiss_save_interval_seconds=60`）。seed pool だけ raw∪virtual で per-frontier が raw のみという設計上の不整合を解消、「星同士の引力」原則を wave 全段で literal に |
+| **Phase I** | Free Star Movement — displacement boundary 解除 + query-aware displacement | ✅ 完了（2026-05-11〜13）— Stage 1 (boundary removal: `max_displacement_norm` 0.3 → 1e6) で Hooke + decay + velocity cap の物理的均衡を実観測。Stage 2 (implicit query-aware kick: `compute_acceleration` に 4 項目追加、`α=0.01`) で TTT 解釈の「retrieval = gradient step」が実装として literal に成立。Stage 3 (mass-gated kick: `gate = tanh(m/θ)`, `θ=3.0`) で新規ノードを anchor が保護、単一アトラクタ pathology を物理的矯正。本番 acceptance で「dense mature agent cluster vs sparse new agent cluster」は別軸と判明し Phase J へ。Stage 1 [長期検証 ✅ (2026-05-12)](Plans-Phase-I-Free-Star-Movement.md#stage-1--長期検証-結果-2026-05-12) — 24,025 active nodes で max=0.60 / p99=0.54 / `|d|≥0.8` で 0 nodes、boundary 1e6 は理論通り redundant を確認 |
+| **Phase J** | Persona-Anchored Retrieval — declared identity が retrieval geometry を曲げる | ✅ **完遂**（2026-05-13）— Stage 1: auto-detect graph traversal + seed step boost。Stage 2: explicit `persona_context` + `tag_filter` で seed/final 両段階の force-inject。Stage 3: forced 内 query-aware ordering (raw_score 順) + prefetch/explore parity。retrieval geometry の三段構造 (pool 入場 / pool 内 rerank / forced 内 ordering) が完成 |
+| **Phase K** | Stellar Supernova Cohort — index 時に batch 内全員へ相互 edge + outward velocity | ✅ Stage 1 完了（2026-05-13）— Phase J Stage 1 acceptance での seed pool 入場権問題を、retrieval rerank ではなく **記憶生成の物理** で解決。1 batch の `remember` = 1 超新星爆発として読み、batch 内 N 件に N×(N-1)/2 本の co-occurrence edge と centroid からの outward velocity を付与。Phase G genesis kick の集合版、Articulation as Carrier の複数性を物理化。`supernova_enabled=False` で rollback |
+| **Phase L** | Hybrid Retrieval — embedder の semantic ranking 限界を別 metric tensor (BM25 lexical) の重ね合わせで突破 | ✅ Stage 1 完遬（2026-05-14）— [Plans](Plans-Phase-L-Hybrid-Retrieval.md)。「最も literal な解」基準で **A. Hybrid retrieval** を採用、Stage 1 = BM25 union seed (numpy in-memory + char 3-gram tokenizer + `_union_pool` 3-way 拡張 + **RRF fusion** + Phase J Stage 3 forced ordering 段にも RRF)。本番 acceptance: Surface 7/7 ✅ / Semantic 整合 strict 4/7 (Phase J Stage 3 時 0-1/7 から +3-4 改善) / top3 緩和 7/7、MCP transport 経由 strict 6/7。Sudachi は optional extra、BM25 disk persistence は別 stage、wave neighbor への BM25 拡張なし。LLM 不要・ローカル完結・rollback flag 1 つで完全 off。**Stage 2 起草中**（2026-05-13）— 別 embedder (BGE-M3) で意味空間 cosine を 4-way (raw + virtual × 2 embedder) に拡張、BM25 と合わせ 5-way RRF fusion、forced ordering も 3-way RRF。D1-D6 全 (a) 確定済み、実装は別 session で着手 |
 
 ## 累積 MCP ツール数
 
@@ -23,6 +29,12 @@ GaOTTT の Phase 進捗と未実装機能の俯瞰。
 
 - [Backend Phase A/B/C](Plans-Backend-Phase-A-B-C.md) — F1〜F7 の機能ロードマップ
 - [Phase D — Persona & Tasks](Plans-Phase-D-Persona-Tasks.md) — 人格層追加の設計
+- [Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md) — 軌道捕獲 + 夢 + 全件 priming で新規 memory を gravity 場に sink させる（完了）
+- [Phase H — Wave Seed Redesign](Plans-Phase-H-Wave-Seed-Redesign.md) — wave seed が raw cosine 固定で sparse class を排除する問題の修正（完了）
+- [Phase I — Free Star Movement](Plans-Phase-I-Free-Star-Movement.md) — displacement boundary 解除と query-aware displacement（Stage 1-3 完了）
+- [Phase J — Persona-Anchored Retrieval](Plans-Phase-J-Persona-Anchored-Retrieval.md) — declared identity から `fulfills`/`derived_from` で繋がるノードを seed step で gravity boost（Stage 1 完了）
+- [Phase K — Stellar Supernova Cohort](Plans-Phase-K-Stellar-Supernova-Cohort.md) — 1 batch の `remember` を超新星爆発として読み、batch 内全員へ相互 edge + outward velocity（Stage 1 完了）
+- [Phase L — Hybrid Retrieval](Plans-Phase-L-Hybrid-Retrieval.md) — embedder の hidden ranking 限界を BM25 lexical metric の union seed で構造的に拡張（Stage 1 完遬、Stage 2 起草中 — BGE-M3 ensemble で意味空間も二重化）
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md) — 二層語彙、パターンカタログ
 - [REST × MCP Unification Plan (Phase S)](https://github.com/May-Kirihara/GaOTTT/blob/main/docs/maintainers/rest-mcp-unification-plan.md) — 保守者向け、Phase S0–S6 の作業計画
 

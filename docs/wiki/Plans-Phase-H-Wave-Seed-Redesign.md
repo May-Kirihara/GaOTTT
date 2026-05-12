@@ -1,0 +1,275 @@
+# Plans — Phase H: Wave Seed Redesign（reach の入口を直す）
+
+> **Status**: 計画中（2026-05-10 ドラフト、未実装）
+> **Depends on**: [Phase G](Plans-Phase-G-Memory-Genesis.md) 完了（Stage 0 priming で本問題が顕在化）
+> **Author**: 2026-05-10 session — めいさん + Claude
+> **関連**: [Architecture — Gravity Model](Architecture-Gravity-Model.md), [Architecture — Concurrency](Architecture-Concurrency.md)
+
+---
+
+## 動機 — Phase G で発見した構造的盲点
+
+Phase G で「新規 / quiet ノードに重力法則を起動する」機構を整えた（genesis kick / dream loop / Stage 0 priming）。**しかし本番 DB 23k で priming 適用後でも、新規 `remember` の自然文 `recall` surface 率はほぼ改善しなかった**。
+
+原因は `gaottt/core/gravity.py:propagate_gravity_wave` の **seed 選定**:
+
+```python
+# gaottt/core/gravity.py — propagate_gravity_wave
+seeds = faiss_index.search(qv.reshape(1, -1), initial_k)   # ← raw cosine top-K
+```
+
+- FAISS index は **元の embedding** で構築される（`displacement` を反映しない）
+- `displacement` / `mass` / `velocity` は cache 上のみ
+- scoring 段階の `compute_virtual_position(original + displacement + thermal)` でしか virtual position は使われない
+- つまり **wave に reach されない node には Phase G の改善が一切届かない**
+
+実際 priming 後の検証で:
+- 既存 high mass tweet の score 0.95 → 0.10 ← scoring 段階で displacement は確かに効いた
+- しかし新規 `remember` (mass=1.16, |disp|=0.0017) は依然 wave seed top-K に入らず recall 圏外
+
+**Phase G は「物理法則の漏れを塞ぐ」phase だった。Phase H は「reach の入口を直す」phase**。三層対応で読むと：
+
+| 層 | Phase G | Phase H |
+|---|---|---|
+| 物理 | 重力法則の起動 | 重力場全体の "視野" を広げる（光円錐の拡張） |
+| TTT | parameter init / step | gradient signal の neighborhood 半径再設計 |
+| 生物 | 新生ニューロンの生育 | 受容野（receptive field）の動的拡大 |
+
+---
+
+## 設計案
+
+### H.1 — Dynamic `wave_initial_k`（密度応答型 seed）
+
+クエリ周辺の embedding 密度に応じて seed 数を動的に決める。
+
+```python
+# 疑似コード
+seeds_pool = faiss_index.search(qv, K_max=200)
+# top-K で score が rapidly に減衰する dense 領域 → small k で十分
+# 緩やかに減衰する sparse 領域 → 大きな k が必要
+threshold = seeds_pool[0][1] * config.wave_density_decay_threshold
+effective_k = sum(1 for _, s in seeds_pool if s >= threshold)
+seeds = seeds_pool[:max(config.wave_initial_k, min(effective_k, K_max))]
+```
+
+- **長所**: 現行 `wave_initial_k=3` を「下限」として上方拡大、dense 領域は変わらず、sparse 領域だけ救う
+- **短所**: 閾値設計が経験則。レイテンシは `wave_max_depth` までの再帰展開なので影響限定的
+
+### H.2 — Virtual position FAISS（定期 rebuild）
+
+`compact()` の延長で、**virtual_pos でビルドした補助 FAISS index** を持つ。recall は raw FAISS と virtual FAISS の両方から seed を取る (union)。
+
+```python
+# 疑似コード
+async def compact(...):
+    ...
+    if rebuild_virtual_faiss:
+        active_ids = ...
+        virtual_vecs = {nid: compute_virtual_position(...) for nid in active_ids}
+        self.virtual_faiss_index.reset()
+        self.virtual_faiss_index.add(virtual_vecs)
+
+def propagate_gravity_wave(qv, ...):
+    seeds_raw = faiss_index.search(qv, K)
+    seeds_virtual = self.virtual_faiss_index.search(qv, K)
+    seeds = list({nid: max(s_raw, s_virt) for nid, s in seeds_raw + seeds_virtual}.items())
+```
+
+- **長所**: 物理的に最も筋が通る（virtual_pos が seed にも効く）
+- **短所**: メモリ +50% (FAISS が 2 つ)、virtual_pos は時間と共に変わるので staleness を許容する設計が必要、`compact` 周期に依存
+
+### H.3 — Mass-aware seed boosting
+
+FAISS で top-K_pool（例 50）取り、`raw_score + log(mass) * α` で再 rank し top-K_actual を選ぶ。
+
+```python
+def _seed_with_mass_boost(qv, K_pool=50, K_actual=3):
+    pool = faiss_index.search(qv, K_pool)
+    rescored = []
+    for nid, raw in pool:
+        state = cache.get_node(nid)
+        mass = state.mass if state else 1.0
+        boosted = raw + config.wave_seed_mass_alpha * math.log(1.0 + mass)
+        rescored.append((nid, boosted))
+    rescored.sort(key=lambda t: t[1], reverse=True)
+    return rescored[:K_actual]
+```
+
+- **長所**: 実装最小。high mass node が seed に入りやすくなる
+- **短所**: query 自体が high mass cluster と関係薄ければ false positive
+- **副作用**: agent / value / commitment 系 sparse class も genesis kick で mass=1.16 → log(1+1.16) ≒ 0.77 — ツイートとの差を覆すには `wave_seed_mass_alpha` を相当大きく取る必要
+
+### H.4 — Source-aware seed selection
+
+`recall(source_filter=[...])` 指定時、FAISS pool から **source 一致のものを seed として優先選定** する。**Stage 1 の検証結果から、これが Phase H の本筋となった**（2026-05-10 確認）。
+
+**動機**: H.3 (mass-based rerank) では超えられない壁があった — sparse class の embedding 自体が dense cluster と FAISS 距離で離れている場合、mass をいくら持ち上げても raw cosine top-K に入らない。`source_filter` を **seed 段階に持ち込む** ことで、FAISS pool 内の sparse class を最初から seed に含める。
+
+**設計案**:
+
+```python
+# gaottt/core/gravity.py — propagate_gravity_wave に source_filter 引数を追加
+def propagate_gravity_wave(qv, faiss_index, cache, config, *,
+                           wave_k=None, wave_depth=None,
+                           source_filter=None):
+    ...
+    if source_filter:
+        # sparse class 救済: pool から source 一致を抽出して seed に
+        pool_size = max(initial_k, config.wave_k_with_filter)
+        pool = faiss_index.search(qv.reshape(1, -1), pool_size)
+        # source は cache.NodeState には現状無いので、metadata 経由で引く
+        # (要 NodeState への source 追加 migration もしくは別 path)
+        ...
+    elif config.wave_seed_mass_alpha > 0:
+        # H.3 mass-aware boost
+        ...
+    else:
+        # Legacy raw cosine top-K
+        seeds = faiss_index.search(qv.reshape(1, -1), initial_k)
+```
+
+**採用した実装** (2026-05-10): 案 2「別 cache」。`CacheLayer.source_by_id: dict[str, str]` を新設、`startup → load_from_store` で `store.get_all_sources()`（SQLite JSON1 `json_extract(metadata, '$.source')`）から一括 populate。`index_documents` でも metadata.source を `set_source` する。schema migration なしで済む。
+
+`propagate_gravity_wave` に `source_filter: list[str] | None` 引数を追加し、source_filter があれば pool（`wave_k_with_filter` まで広げる）から source 一致のものだけを候補に。`wave_seed_mass_alpha > 0` のときは候補に対して mass rerank も適用。
+
+### Stage 2 実装結果 (2026-05-10)
+
+**Measured**:
+| 観点 | 値 |
+|---|---|
+| pytest | 161/161 PASS（新規 source-aware 4 ケース含む） |
+| isolated bench | p50 = 15.2ms（< 50ms 必達 OK、Stage 1 の 15.8ms とほぼ同等） |
+| ruff | clean |
+| 本番 23k DB `cache.source_by_id` | 23,497 件 populate（json_extract で startup 時に一括取得、p99 ~数百 ms） |
+| **本番 DB agent surface（pool=1000）** | クエリ "Phase G priming kick orbital capture" で **agent 3 hits**（earlier の e2e で保存した node が初めて surface）。他 4 クエリは 0 hits |
+
+**設計判断**: `wave_k_with_filter` のデフォルトを 200 → **500** に引き上げ。本番 23k の agent 1.7% 比率で expected 8.5 件、200 だと 3.4 件で確率的に 0 件もありえた。500 はレイテンシ影響が許容範囲（hot path の `recall` には effect なし、source_filter 指定時のみ pool 拡大）。
+
+**残った構造的限界**: pool=1000 でも届かないクエリは、agent docs と query embedding の **raw cosine 距離自体が広く離れている** ため。Stage 3+ の方向性:
+- Stage 3 (H.1 Dynamic wave_k): query 周辺密度に応じて pool を動的拡大
+- Stage 4 (H.2 Virtual FAISS): displacement を含む virtual position で別 FAISS index を構築、両 index から seed を統合
+
+ただし Phase G priming で 22k 件の displacement が動いているので、Stage 4 で virtual FAISS を作れば「priming で寄せた agent doc」が virtual cosine で近づく可能性がある。Stage 3 + 4 の組み合わせが次の候補。
+
+### Stage 3 実装結果 (2026-05-10)
+
+`propagate_gravity_wave` の mass-aware path 内で、top-N (`wave_density_window`=10) raw cosine score を見て、**tail/top の比率が `wave_density_threshold`=0.95 未満**（＝ 急峻な減衰 = 「sparse」領域）なら **`effective_k` を `wave_initial_k_max`=50 まで拡大** する。dense 領域では `initial_k` のまま。
+
+`source_filter` 指定時は Stage 2 path に分岐するため Stage 3 は適用されない（pool は既に `wave_k_with_filter=500` で広い）。Stage 3 は filter なしの recall で sparse 領域 reach を広げる役割。
+
+**Measured**:
+| 観点 | 値 |
+|---|---|
+| pytest | 164/164 PASS（新規 dynamic seed 3 ケース含む） |
+| isolated bench | p50 = 16.1ms（< 50ms 必達 OK） |
+| ruff | clean |
+| 単体テスト | sparse 配置で seed > initial_k、dense 配置で seed = initial_k、disabled で = initial_k を確認 |
+
+**設計上の含意**: Stage 3 は「query が sparse 領域に着地した場合に reach を広げる」効果。最終 top_k=3 の結果が大きく変わる場面は限定的（reach 拡大は wave depth 経由でしか scoring に反映されない）。Stage 4（virtual FAISS）と組み合わせると、priming で動いた virtual position 経由で sparse 領域の候補が bubble up する可能性。
+
+**Open**: 本番 DB で Stage 3 のうれしさを定量化するベンチが未整備。「query が sparse のとき reach 件数が増える」を測る合成シナリオが必要。
+
+### Stage 4 実装結果 (2026-05-11)
+
+`gaottt.virtual.faiss` という第二の FaissIndex を engine に並走させる:
+- `index_documents`: 新規 vec を raw・virtual 両 index に同じベクトルで add (displacement=0)
+- `_rebuild_virtual_faiss_index()`: cache の displacement / temperature 反映で `virtual_pos = compute_virtual_position(raw, displacement, T)` を全 active node に対して計算、virtual_faiss_index に投入
+- `startup`: disk から load、empty かつ raw が non-empty なら rebuild
+- `compact(rebuild_faiss=True)`: raw rebuild の後に virtual も rebuild
+- `shutdown`: 両 index を save
+
+`propagate_gravity_wave` に `virtual_faiss_index` 引数を追加、`_union_pool()` で raw・virtual 両 top-N を union（id 重複は max score を保持）。Stage 1/2/3 のロジックはこの union pool 上で動く。
+
+**Measured (本番 23k DB、2026-05-11)**:
+
+| 観点 | 値 |
+|---|---|
+| pytest | 167/167 PASS（新規 virtual FAISS 4 ケース、1 skip は fixture lottery） |
+| isolated bench | p50 = 15.7ms（< 50ms 必達 OK） |
+| ruff | clean |
+| **filter=none top1 score** | "FAISS write-behind ..." 0.0587 → **0.3284** (5.6x)、"Articulation as Carving ..." 0.0620 → **0.3523** (5.7x)、"Phase G priming kick ..." 0.1982 → 0.3244 (1.6x)、"anchor 句 大規模 DB ..." 0.3568 → 0.3715 (1.04x) |
+| filter=agent surface | Stage 2/3 と同じ（Phase G 関連クエリで 3 hits、他は 0） |
+
+**観察された効果**: virtual FAISS が priming の displacement を seed に反映するため、意味マッチに displacement 補正が乗り、scoring が大きく改善。tweet/file 系の高 score が 0.3+ に集中する傾向。
+
+**残った構造的限界**: agent docs の displacement は priming 時に **近傍高 mass cluster方向**へ動かされる（Phase G の機構）。query と関係ない方向に動いているケースでは virtual cosine も近づかない → agent surface が改善しないクエリが残る。これは Phase G 設計の前提（neighbor-based kick）が embed 空間の dense cluster 中心に寄せる性質によるもので、Phase H の seed redesign では超えられない。今後の方向性として「query-aware displacement」や「semantic-targeted kick」が候補だが、それは別 Phase。
+
+---
+
+## 推奨組み合わせと実装順序
+
+| Stage | 案 | 期待効果 | 状態 |
+|---|---|---|---|
+| Stage 1 | **H.3 Mass-aware seed boosting** | 最小実装、まず効果を測る | ✅ 完了 (2026-05-10) — scoring 改善は確認、sparse class 救済には不足判明 |
+| Stage 2 | **H.4 Source-aware seed filtering** | sparse class 救済の本筋（H.3 で不足が確認されたため優先度上昇） | ✅ 完了 (2026-05-10) — 一部クエリで agent surface 達成、embedding 距離が遠いクエリは依然届かず |
+| Stage 3 | **H.1 Dynamic wave_initial_k** | sparse 領域の救済を上乗せ | ✅ 完了 (2026-05-10) — 密度応答型 seed 拡大、test で確認、本番 DB の filter=none 経路で reach 拡大 |
+| Stage 4 | **H.2 Virtual FAISS** | 上記で不足なら最終手段 | ✅ 完了 (2026-05-11) — 第二の FAISS index を virtual_pos で構築、seed pool は raw + virtual の union。priming の displacement が seed step に効くようになった |
+
+### Stage 1 実装結果（2026-05-10）
+
+`gaottt/core/gravity.py:propagate_gravity_wave` の seed 段階で
+`raw_cosine + α * log(1+mass)` で再 rank する H.3 を実装、本番 23k DB で検証。
+
+**Measured**:
+| 観点 | 値 |
+|---|---|
+| pytest | 157/157 PASS（新規 H seed boost 2 ケース含む） |
+| isolated bench | p50 = 15.8ms（前回 14.9ms から微増、< 50ms 必達 OK） |
+| ruff | clean |
+| 本番 DB scoring | 自然文クエリ top1 score 0.05 → **0.31**（5x 改善、α=0.1 / pool=50） |
+| 本番 DB scoring (α=1.0) | top1 score 0.05 → **0.31** 程度（α=0.1 と同等の上限挙動） |
+| 本番 DB sparse class surface | `source_filter=["agent"]` は **0 hits**（α=0.1 / 1.0 両方で確認） |
+
+**観察された限界**: α を 0.1 → 1.0 に強めても sparse class（agent / value / commitment）の surface は **0 件のまま**。原因は `mass × log` rerank が raw cosine 順位を覆せるのは差が小さいときだけで、agent 280 件は本番 DB の embedding 空間で **dense corpus cluster と物理的に距離がある**ため、そもそも FAISS raw cosine top-200 にすら入らない。displacement / mass の改善は scoring 段階でしか効かず、**FAISS 側の物理的距離**を変えるものではない。
+
+→ Stage 2 では **source による filter を seed 段階に持ち込む** H.4 を本筋として採用。
+
+---
+
+## 提案ハイパーパラメータ
+
+| パラメータ | 既定（案） | 目的 |
+|---|---|---|
+| `wave_seed_mass_alpha` | `0.1` | mass による seed 再 rank の重み（H.3） |
+| `wave_seed_pool_size` | `50` | 再 rank 前の FAISS pool 大きさ（H.3） |
+| `wave_density_threshold` | `0.95` | 密度応答型の score 閾値（H.1） |
+| `wave_initial_k_max` | `200` | 動的 wave_k の上限（H.1） |
+| `virtual_faiss_enabled` | `False` | H.2 のフラグ（後段） |
+| `virtual_faiss_rebuild_on_compact` | `True` | compact 時に virtual FAISS も更新（H.2） |
+
+---
+
+## 検証
+
+各 Stage 完了時に:
+
+1. **synthetic test** — `dense cluster N + sparse new 1` の合成テストで、sparse new が top-5 に入るか
+2. **本番 DB e2e** — `/tmp/verify_phase_g_e2e.py` を流用、新規 remember の surface 率を測定
+3. **scoring 回帰** — 既存 high mass node の recall 順位が大きく崩れていないか（priming 後の de868058 のような激変が起きないか確認）
+4. **isolated bench** — p50 < 50ms 必達
+
+---
+
+## リスクと未解決事項
+
+### Open
+
+- **homogenization リスク**: H.3 で mass を強く重視すると、すべての recall が high mass cluster に偏る可能性。Phase G G.3（重心アンカー）の保留と同じ構造の懸念
+- **virtual FAISS の staleness**: H.2 は compact 周期に依存するため、compact 直後と直前で recall 結果が変わりうる
+- **wave_k_with_filter との重複**: H.4 が既に存在するので、Stage 1 を実装する前に「H.4 だけで実は十分だった」可能性を排除すべき
+- **「surface 改善」の定義**: 何をもって改善とするか — 自然文 query の top-5 surface 率？ それとも anchor 句 query？ ベンチシナリオの定義が必要
+
+### 哲学的境界
+
+H.2 の virtual FAISS は「FAISS の意味（raw embedding の近傍）」を変える可能性がある。別 index に分離するなら問題ないが、本番 FAISS の中身を入れ替えると、`bootstrap_report.py` の neighbor preview 等の意味が変わる。raw / virtual の二重持ちが安全。
+
+---
+
+## 関連
+
+- [Plans — Roadmap](Plans-Roadmap.md) — 全 Phase の俯瞰
+- [Plans — Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md) — Phase H が引き継ぐ「Phase G の限界」
+- [Architecture — Gravity Model](Architecture-Gravity-Model.md) — `propagate_gravity_wave` / `compute_virtual_position`
+- [Architecture — Concurrency](Architecture-Concurrency.md) — virtual FAISS を入れる場合の write-behind 設計
+- [`scripts/prime_gravity.py`](https://github.com/May-Kirihara/GaOTTT/blob/main/scripts/prime_gravity.py) — Phase G Stage 0、本問題を顕在化させたツール

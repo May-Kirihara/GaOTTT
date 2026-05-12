@@ -6,6 +6,21 @@
 
 正常動作。初回クエリ時、`last_access` がインデックス時刻のため `decay = exp(-δ × 経過時間)` が非常に小さくなる。2 回目以降は decay ≈ 1.0。
 
+## 別プロセスから新規 `remember` が見えない（FAISS stale）
+
+**症状**: 別プロセスの MCP サーバー / opencode エージェント等で `remember` した直後、自プロセスの `recall` でその memory が一切 surface しない。`reflect(aspect="summary")` の `Total memories` は増えていることがある（SQLite は WAL で共有されるが FAISS index はプロセス毎独立）。
+
+**原因（歴史的バグ、2026-05-10 修正済み）**: かつて `engine.shutdown()` でしか FAISS が disk に save されなかった。MCP サーバー等の長期常駐プロセスは shutdown しないため、新規 vector が永久に in-memory のまま、他プロセスからは invisible だった。
+
+**修正**: `faiss_save_interval_seconds`（既定 5s）周期の write-behind loop を導入（[Architecture — Concurrency](Architecture-Concurrency.md) 参照）。
+
+**virtual FAISS の同等問題（2026-05-13 修正済み）**: 上記は raw FAISS のみの修正で、virtual FAISS は依然 `compact(rebuild_faiss=True)` または起動時 (disk file 欠落時) のみ rebuild されていた。Phase I/J query attraction で蓄積した displacement が次の compact まで他プロセスの seed pool に反映されない問題があり、`virtual_faiss_save_interval_seconds`（既定 60s）周期の write-behind loop を追加。`cache.virtual_faiss_dirty` が立つと次 tick で full rebuild + disk save。長期常駐 MCP では非ゼロ必須。
+
+**それでも見えない場合の対処**:
+- 自プロセスを再起動（startup() で disk から最新 FAISS を load）
+- 修正前の DB で長期間積もった「FAISS に無く SQLite/cache にのみ存在する」ノードがある場合、`engine.compact(rebuild_faiss=True)` で全 active から再構築すれば解消（diagnostics: `len(faiss._id_map - cache.node_cache.keys())` と逆向きを比較）
+- `faiss_save_interval_seconds=0` に設定してしまっていないか確認（disable 設定）
+
 ## メモリ使用量が大きい
 
 - embedding モデル: ~1.5GB（GPU VRAM）
@@ -74,3 +89,75 @@
 フラッシュされていない dirty 状態は消失するが、ドキュメントと embedding は保全される。動的状態（mass, temperature）はクエリを繰り返すことで自然に再構築される。
 
 → 関連: [Architecture — Concurrency](Architecture-Concurrency.md), [Compact & Backup](Operations-Compact-And-Backup.md)
+
+## `tag_filter` / `persona_context` で注入した node が recall 結果に出ない
+
+**症状**: `recall(query, tag_filter=["foo"])` を呼んだのに、タグ "foo" を持つ node が結果に表示されない。`reflect` で確認すると node 自体は存在する。
+
+**原因（2026-05-12 修正済み）**: Phase J Stage 2 の `injected_ids` が seed pool の `initial_k` 上限（既定 ~3 程度）を超えると、溢れた node が wave propagation の `reached` dict に入らず、Step 3 の `original_emb = faiss_index.get_vectors(reached_ids)` で `None` になり results から除外されていた。FAISS にベクトルが存在していても surface しないという非直感的な挙動。
+
+**修正内容** (`gaottt/core/gravity.py`): wave 終了後に `injected_ids` の欠落 node を `reached[nid] = 1.0`（direct seed と同等の force）で強制追加するパスを追加。これにより injected node 数が `initial_k` を超えても全件が scoring に参加する。
+
+**修正前の回避策**（旧バージョン対応時）:
+- `top_k` を小さくして `injected_ids` が `initial_k` を超えないようにする
+- 注入対象を 1 件に絞って `persona_context=[specific_id]` を使う
+
+## FAISS と SQLite のカウントが合わない
+
+**症状**: `recall` で存在するはずの node が surface しない、または `compact(rebuild_faiss=True)` を実行しても FAISS count が SQLite count より少ないまま。
+
+**診断**: `scripts/verify_faiss_recovery.py` を実行:
+```bash
+.venv/bin/python scripts/verify_faiss_recovery.py [node_id_prefix ...]
+```
+`Gap > 0` ならば SQLite にはあるが FAISS にない node が存在する。特定 ID を引数に渡すと IN FAISS / MISSING を確認できる。
+
+**原因 A — write-behind フラッシュ前のプロセス終了**: MCP サーバーが `faiss_save_interval_seconds`（既定 5s）周期のフラッシュ前に異常終了した場合、その session の `remember` が SQLite には保存されているが FAISS disk には反映されない。次回起動時に FAISS を disk から load するため欠落が続く。
+
+**原因 B — `_rebuild_faiss_index` の旧バグ（2026-05-12 修正済み）**: `compact(rebuild_faiss=True)` が FAISS に既存のベクトルのみ再構築し、SQLite/cache にあるが FAISS に載っていない node を再埋め込みしなかった。
+
+**修正内容** (`gaottt/core/engine.py`): `_rebuild_faiss_index` が `vecs = faiss_index.get_vectors(active_ids)` で返らなかった `missing_ids` を `store.get_document()` で content 取得 → `embedder.encode_documents()` で再埋め込み → FAISS 追加するパスを追加。これにより `compact(rebuild_faiss=True)` が SQLite 全 active node を確実に FAISS に収録する。
+
+**対処手順**:
+1. `scripts/verify_faiss_recovery.py` でギャップを確認
+2. MCP サーバーを再起動（修正済みコードを読み込む）
+3. `compact(rebuild_faiss=True)` を実行
+4. 再度 `verify_faiss_recovery.py` で `Gap: 0` を確認
+
+## 特定の memory が無関係なクエリでも上位に出続ける（重力井戸）
+
+**症状**: Phase I Stage 2/3 の query attraction や Phase J の累積 recall によって特定ノードの `displacement` が蓄積し、embedding 距離の遠いクエリでも wave の引力で浮上し続ける（重力井戸状態）。`recall` 結果の `displacement_norm` 値が 0.5 を超えている場合に疑う。
+
+**診断**: `scripts/reset_displacements.py`（引数なし）で全ノードの displacement 統計を表示:
+```bash
+.venv/bin/python scripts/reset_displacements.py
+# 出力例:
+# displacement 統計 (全 23695 件)
+#   min=0.0006  p50=0.0013  p90=0.3042  max=0.6005
+#   |d| > 1.0: 0 件
+```
+
+p90 > 1.0 や特定 tag に集中した高 displacement が見られたら要対処。
+
+**対処手順** (edges は保持、displacement のみリセット):
+```bash
+# 1. サーバーを停止
+pkill -f gaottt.server.mcp_server
+pkill -f gaottt.server.app
+
+# 2. 対象を確認 (dry-run)
+.venv/bin/python scripts/reset_displacements.py --tag <tag-name> --min-displacement 1.0
+# または特定 ID: --ids <id-prefix>
+# または全件: --all
+
+# 3. 実際にリセット
+.venv/bin/python scripts/reset_displacements.py --tag <tag-name> --min-displacement 1.0 --apply
+
+# 4. priming で Hooke 均衡に再収束 (省略可、効果を加速したい場合)
+.venv/bin/python scripts/prime_gravity.py --apply
+
+# 5. virtual FAISS を再構築してサーバー再起動
+# (MCP サーバー起動時に compact が自動実行される)
+```
+
+**注意**: `--all --apply` は全ノードの累積 recall 履歴をリセットするため不可逆。対象を `--tag` や `--min-displacement` で絞るか、`scripts/migrate.py --apply` で自動バックアップ後に実行することを推奨。

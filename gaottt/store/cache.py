@@ -18,10 +18,37 @@ class CacheLayer:
         self.graph_cache: dict[str, dict[str, float]] = {}
         self.displacement_cache: dict[str, np.ndarray] = {}
         self.velocity_cache: dict[str, np.ndarray] = {}
+        # Phase H Stage 2: id → metadata.source. Populated on load_from_store
+        # and on index_documents. Lets propagate_gravity_wave apply
+        # source_filter at the seed step without per-node store fetches.
+        self.source_by_id: dict[str, str] = {}
+        # Phase J Stage 1: in-memory mirror of directed_edges so that
+        # persona-anchored gravity boost can perform graph traversal in the
+        # sync propagate_gravity_wave path without per-recall DB hits.
+        # Each entry holds (other_id, edge_type). Loaded on startup, kept
+        # in sync by engine.relate / unrelate / forget(hard) / compact paths.
+        self.directed_out: dict[str, list[tuple[str, str]]] = {}
+        self.directed_in: dict[str, list[tuple[str, str]]] = {}
+        # Phase J Stage 2: tag reverse index for the tag_filter additive
+        # seed injection. ``tag_to_ids[tag_substring]`` does NOT live here
+        # — instead we keep the per-node tag list so callers can do
+        # substring matching at recall time (substring patterns vary by
+        # query). ``tags_by_id[node_id]`` = list of tag strings as written
+        # in documents.metadata.tags.
+        self.tags_by_id: dict[str, list[str]] = {}
         self.dirty_nodes: set[str] = set()
         self.dirty_edges: set[tuple[str, str]] = set()
         self.dirty_displacements: set[str] = set()
         self.dirty_velocities: set[str] = set()
+        # Phase H Stage 4 (cont.) — virtual FAISS write-behind tracker.
+        # Flipped True when displacement changes (the only input to
+        # compute_virtual_position aside from raw embedding + temperature,
+        # and temperature mutations always co-occur with displacement
+        # mutations via update_orbital_state). The engine's virtual-FAISS
+        # save loop reads this flag, rebuilds + saves, then clears it.
+        # Kept on the cache (not the engine) so unit tests that mutate
+        # displacement without an engine still set it consistently.
+        self.virtual_faiss_dirty: bool = False
         self._flush_interval = flush_interval
         self._flush_threshold = flush_threshold
         self._write_behind_task: asyncio.Task | None = None
@@ -39,6 +66,14 @@ class CacheLayer:
     def get_all_nodes(self) -> list[NodeState]:
         return list(self.node_cache.values())
 
+    # --- Source lookup (Phase H Stage 2) ---
+
+    def get_source(self, node_id: str) -> str | None:
+        return self.source_by_id.get(node_id)
+
+    def set_source(self, node_id: str, source: str) -> None:
+        self.source_by_id[node_id] = source
+
     # --- Displacement ---
 
     def get_displacement(self, node_id: str) -> np.ndarray | None:
@@ -47,6 +82,7 @@ class CacheLayer:
     def set_displacement(self, node_id: str, displacement: np.ndarray) -> None:
         self.displacement_cache[node_id] = displacement
         self.dirty_displacements.add(node_id)
+        self.virtual_faiss_dirty = True
 
     # --- Velocity ---
 
@@ -90,6 +126,84 @@ class CacheLayer:
                     )
         return edges
 
+    # --- Directed edges (Phase J Stage 1) ---
+
+    def set_directed_edge(self, src: str, dst: str, edge_type: str) -> None:
+        """Mirror an upserted directed edge into the in-memory cache.
+
+        SQLite is the SoT (upsert / delete go through SqliteStore). This cache
+        is read-only authoritative for the sync recall path — engine.relate /
+        unrelate / forget(hard) call this after writing to the store so the
+        next recall sees the change without waiting for a cache reload.
+        """
+        pair = (dst, edge_type)
+        out_list = self.directed_out.setdefault(src, [])
+        if pair not in out_list:
+            out_list.append(pair)
+        in_list = self.directed_in.setdefault(dst, [])
+        rev = (src, edge_type)
+        if rev not in in_list:
+            in_list.append(rev)
+
+    def remove_directed_edge(self, src: str, dst: str, edge_type: str | None = None) -> None:
+        """Drop an edge from the cache. ``edge_type=None`` removes all
+        edges between the pair."""
+        if src in self.directed_out:
+            self.directed_out[src] = [
+                (d, et)
+                for (d, et) in self.directed_out[src]
+                if d != dst or (edge_type is not None and et != edge_type)
+            ]
+            if not self.directed_out[src]:
+                self.directed_out.pop(src, None)
+        if dst in self.directed_in:
+            self.directed_in[dst] = [
+                (s, et)
+                for (s, et) in self.directed_in[dst]
+                if s != src or (edge_type is not None and et != edge_type)
+            ]
+            if not self.directed_in[dst]:
+                self.directed_in.pop(dst, None)
+
+    def get_outgoing(self, node_id: str) -> list[tuple[str, str]]:
+        """Return [(dst_id, edge_type), ...] for edges going out of node_id."""
+        return self.directed_out.get(node_id, [])
+
+    def get_incoming(self, node_id: str) -> list[tuple[str, str]]:
+        """Return [(src_id, edge_type), ...] for edges coming into node_id."""
+        return self.directed_in.get(node_id, [])
+
+    # --- Tag index (Phase J Stage 2) ---
+
+    def set_tags(self, node_id: str, tags: list[str]) -> None:
+        """Mirror the tags of a (just-indexed) document into the cache. Empty
+        ``tags`` list is dropped (no need to keep an entry that never matches)."""
+        clean = [t for t in tags if isinstance(t, str) and t]
+        if clean:
+            self.tags_by_id[node_id] = clean
+        else:
+            self.tags_by_id.pop(node_id, None)
+
+    def get_tags(self, node_id: str) -> list[str]:
+        return self.tags_by_id.get(node_id, [])
+
+    def find_ids_by_tag_filter(self, tag_substrings: list[str]) -> set[str]:
+        """OR-match: return ids whose tag list contains any string that
+        contains any of the requested substrings (substring match per
+        Phase J Stage 2 §「設計判断 2」). Returns an empty set on no
+        filters / no hits."""
+        if not tag_substrings:
+            return set()
+        # Pre-lowercase substrings? Phase H Stage 2 source_filter is case-
+        # sensitive; mirror that for consistency.
+        hits: set[str] = set()
+        for nid, tags in self.tags_by_id.items():
+            for tag in tags:
+                if any(sub in tag for sub in tag_substrings):
+                    hits.add(nid)
+                    break
+        return hits
+
     # --- Load from store ---
 
     async def load_from_store(self, store: StoreBase) -> None:
@@ -112,11 +226,36 @@ class CacheLayer:
 
         self.displacement_cache = await store.load_displacements()
         self.velocity_cache = await store.load_velocities()
+        self.source_by_id = await store.get_all_sources()
+
+        # Phase J Stage 2: tag reverse index for tag_filter additive injection.
+        tags_map = await store.get_all_tags()
+        # Drop archived ids so tag_filter does not surface zombie nodes.
+        self.tags_by_id = {
+            nid: tags for nid, tags in tags_map.items() if nid not in archived_ids
+        }
+
+        # Phase J Stage 1: mirror directed edges into the in-memory cache.
+        # Skip edges that touch archived nodes so the sync recall path never
+        # traverses zombie connections.
+        self.directed_out.clear()
+        self.directed_in.clear()
+        loaded_directed = 0
+        directed = await store.get_directed_edges()
+        for e in directed:
+            if e.src in archived_ids or e.dst in archived_ids:
+                continue
+            self.directed_out.setdefault(e.src, []).append((e.dst, e.edge_type))
+            self.directed_in.setdefault(e.dst, []).append((e.src, e.edge_type))
+            loaded_directed += 1
 
         logger.info(
-            "Cache loaded: %d active nodes (%d archived skipped), %d edges, %d displacements, %d velocities",
+            "Cache loaded: %d active nodes (%d archived skipped), %d edges, "
+            "%d directed_edges, %d displacements, %d velocities, %d sources",
             len(self.node_cache), len(archived_ids), loaded_edges,
+            loaded_directed,
             len(self.displacement_cache), len(self.velocity_cache),
+            len(self.source_by_id),
         )
 
     # --- Archive (F4 + F5) ---
@@ -130,12 +269,34 @@ class CacheLayer:
         self.node_cache.pop(node_id, None)
         self.displacement_cache.pop(node_id, None)
         self.velocity_cache.pop(node_id, None)
+        self.source_by_id.pop(node_id, None)
+        self.tags_by_id.pop(node_id, None)
         self.dirty_nodes.discard(node_id)
         self.dirty_displacements.discard(node_id)
         self.dirty_velocities.discard(node_id)
+        # Active-set membership changed → virtual FAISS needs rebuild.
+        self.virtual_faiss_dirty = True
         neighbors = self.graph_cache.pop(node_id, {})
         for other in neighbors:
             self.graph_cache.get(other, {}).pop(node_id, None)
+        # Phase J Stage 1: prune directed edges touching this node so the
+        # cache stays consistent with what the persona traversal expects.
+        outgoing = self.directed_out.pop(node_id, [])
+        for dst, _et in outgoing:
+            if dst in self.directed_in:
+                self.directed_in[dst] = [
+                    (s, et) for (s, et) in self.directed_in[dst] if s != node_id
+                ]
+                if not self.directed_in[dst]:
+                    self.directed_in.pop(dst, None)
+        incoming = self.directed_in.pop(node_id, [])
+        for src, _et in incoming:
+            if src in self.directed_out:
+                self.directed_out[src] = [
+                    (d, et) for (d, et) in self.directed_out[src] if d != node_id
+                ]
+                if not self.directed_out[src]:
+                    self.directed_out.pop(src, None)
 
     # --- Flush to store ---
 

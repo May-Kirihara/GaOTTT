@@ -170,6 +170,66 @@ class SqliteStore(StoreBase):
             "metadata": json.loads(row[2]) if row[2] else None,
         }
 
+    async def get_all_contents(self) -> dict[str, str]:
+        """Bulk fetch {id: content} for all documents. Phase L Stage 1 uses
+        this at engine startup to build the BM25 lexical index in-memory.
+        Archived/expired filtering is applied by the engine layer via
+        cache.node_cache, not here."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT id, content FROM documents WHERE content IS NOT NULL"
+        )
+        rows = await cursor.fetchall()
+        return {row[0]: row[1] for row in rows if row[1]}
+
+    async def get_all_sources(self) -> dict[str, str]:
+        """Bulk fetch {id: metadata.source} via SQLite's JSON1 extension.
+
+        Skips rows where source is missing. Phase H Stage 2 uses this at
+        cache load time to populate `cache.source_by_id`, enabling
+        source_filter to be applied at the wave seed step without paying
+        a per-node store fetch.
+        """
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT id, json_extract(metadata, '$.source') "
+            "FROM documents WHERE metadata IS NOT NULL"
+        )
+        rows = await cursor.fetchall()
+        return {row[0]: row[1] for row in rows if row[1] is not None}
+
+    async def get_all_tags(self) -> dict[str, list[str]]:
+        """Bulk fetch {id: list of tag strings} via SQLite's JSON1 extension.
+
+        Phase J Stage 2 uses this at cache load time to populate
+        ``cache.tags_by_id``, enabling tag_filter to be applied at the
+        wave seed step (additive injection) without per-node store fetches.
+
+        Documents with no ``tags`` field or with a non-list value are
+        skipped. Returns only non-empty tag lists.
+        """
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT id, json_extract(metadata, '$.tags') "
+            "FROM documents WHERE metadata IS NOT NULL "
+            "AND json_extract(metadata, '$.tags') IS NOT NULL"
+        )
+        rows = await cursor.fetchall()
+        result: dict[str, list[str]] = {}
+        for nid, tags_json in rows:
+            if tags_json is None:
+                continue
+            try:
+                tags = json.loads(tags_json) if isinstance(tags_json, str) else tags_json
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(tags, list) and tags:
+                # Defensive: keep only string tags
+                clean_tags = [t for t in tags if isinstance(t, str)]
+                if clean_tags:
+                    result[nid] = clean_tags
+        return result
+
     _NODE_COLS = (
         "id, mass, temperature, last_access, sim_history, return_count, "
         "expires_at, is_archived, merged_into, merge_count, merged_at, "

@@ -140,7 +140,89 @@ class GaOTTTConfig:
     gravity_epsilon: float = 1e-6      # Zero-division guard
     displacement_decay: float = 0.995  # Per-step displacement decay
     displacement_age_delta: float = 0.005  # Access-age based decay rate
-    max_displacement_norm: float = 0.3 # Max L2 norm of displacement vector
+    max_displacement_norm: float = 1e6 # L2 norm cap on displacement. Phase I (2026-05-11): default raised from 0.3 → 1e6 (effectively ∞). Hooke (orbital_anchor_strength) + displacement_decay + orbital_max_velocity provide physical equilibrium around d ≈ (G·m/k)^(1/3) ≈ 0.8–3.0 without a hard cap. Set to a small value only as an emergency knob.
+
+    # Phase I Stage 2 — Query-aware displacement (implicit kick)
+    # Adds a 4th term to compute_acceleration: F_query = α · score · (q - pos);
+    # a_query = F_query / m. Acts as the Hebbian gradient term in the TTT reading.
+    # Hooke (orbital_anchor_strength) continues to pull back toward the raw
+    # embedding anchor — query attraction is a transient force, not anchor
+    # migration. Set to 0.0 as a clean roll-back.
+    query_kick_strength: float = 0.01  # α — start small. Per-step accel is bounded by orbital_max_velocity (0.05), so α larger than ~0.05 saturates immediately. d=0.01 means ~10 recalls of the same query → ~0.1 drift toward query (Hooke equilibrium ~0.8).
+    query_kick_enabled: bool = True    # Global off-switch; if False, skip the 4th term entirely.
+
+    # Phase I Stage 3 — Mass-gated query attraction:
+    # Adds a gate to the Stage 2 query-attraction term so that brand-new
+    # (low-mass) nodes are protected by anchor (Hooke) until co-occurrence
+    # structure forms. Without this gate, m_i ≈ 1.0 lets a single recall
+    # trigger a near-full-α drift, producing the single-attractor pathology
+    # (one node becoming top1 for many queries via positive feedback).
+    #   gate = tanh(m_i / mass_anchor_threshold)
+    #     mass=1, θ=3   → 0.32  (newly-added: heavily damped)
+    #     mass=3, θ=3   → 0.76  (gate's characteristic point)
+    #     mass=10, θ=3  → 0.997 (mature: nearly full)
+    # Set θ=0.0 for clean rollback to Stage 2 behaviour (gate forced to 1.0).
+    mass_anchor_threshold: float = 3.0
+
+    # Phase J Stage 1 — Persona-anchored retrieval (graph traversal seed boost).
+    # Boosts seed-pool ranking for nodes within N hops of an actively-declared
+    # value / intention / commitment, via fulfills / derived_from edges.
+    # Translates the Five-Layer persona layer into retrieval geometry — what
+    # the user has declared as identity bends the gravity field at recall time.
+    #   boosted_seed_score = raw_cosine + α_mass × log(1+mass)
+    #                                   + α_persona × proximity
+    #   proximity(node) = persona_hop_decay ** min_hop_distance(node, persona)
+    #                     0.0 beyond persona_max_hop
+    # Set persona_boost_enabled=False for clean rollback (boost path skipped).
+    persona_boost_enabled: bool = True
+    persona_boost_alpha: float = 0.5           # weight of proximity in seed rerank (5× wave_seed_mass_alpha — "context dominates mass" prior)
+    persona_max_hop: int = 2                    # graph traversal limit (1=fulfills only, 2=+derived_from chain, 3+=indirect mixing risk)
+    persona_hop_decay: float = 0.5              # per-hop decay (0.5: 1 hop=0.5, 2 hop=0.25)
+    persona_active_ttl_seconds: float = 14 * 86400.0  # commitment TTL synchronized; intention/value are always active unless archived
+
+    # Phase K Stage 1 — Stellar supernova cohort.
+    # When `index_documents` receives a batch of size ≥ supernova_min_cohort_size,
+    # the new nodes are treated as a single supernova event:
+    #   (1) all pairs in the batch get a co-occurrence edge of weight
+    #       supernova_initial_weight (event-driven, independent of Phase B's
+    #       recall-based edge_threshold accumulation)
+    #   (2) each node receives an outward initial velocity = α × (embedding - centroid),
+    #       clamped to orbital_max_velocity
+    # Applied AFTER Phase G genesis_kick (Phase G: existing-system binding;
+    # Phase K: cohort-internal binding + explosion energy). Velocities are
+    # added, not replaced — both physics co-exist.
+    # Rationale: Phase J Stage 1 acceptance revealed that newly-remembered
+    # cohorts have no mutual gravity, so they can't compete with mature
+    # past-session clusters for FAISS top-K entry. Phase K fixes the physics
+    # of memory creation rather than reranking after the fact.
+    supernova_enabled: bool = True
+    supernova_min_cohort_size: int = 2          # 1 件だけの remember は単独彗星 (Phase G で足りる)、2 件以上で発火
+    supernova_initial_weight: float = 1.0       # 相互 edge の初期 weight (wave_seed_mass_alpha × log(1+w) で boost が効く)
+    supernova_velocity_alpha: float = 0.03      # 爆発の運動量 α (orbital_max_velocity=0.05 以下に収まる)
+
+    # Phase L Stage 1 — Hybrid retrieval (BM25 union seed).
+    # Adds a third metric (BM25 lexical) alongside raw FAISS (semantic) and
+    # virtual FAISS (semantic+history) to the seed pool. Lexical and semantic
+    # are independent metric tensors — surface-form matches BM25 catches that
+    # embedder cosine misses ("Eleventy Pipeline" → exact .eleventy.js match).
+    # RRF fusion combines ranks scale-invariantly across the 3 indexes.
+    #
+    # Decision log (めいさん 2026-05-14):
+    #   D1. bm25_score_mode default = "rrf" (Reciprocal Rank Fusion, k=60)
+    #   D2. in-memory only in Stage 1 — startup rebuild from SQLite content;
+    #       disk persistence is a future stage
+    #   D3. tokenizer default = "trigram"; "sudachi" available as optional
+    #       extra (uv pip install -e ".[bm25-sudachi]")
+    #   D4. wave_neighbor 中の BM25 拡張なし — Stage 1 は seed pool 入場権のみ
+    # Set hybrid_bm25_enabled=False for clean rollback (BM25 skipped entirely).
+    hybrid_bm25_enabled: bool = True
+    bm25_seed_k: int = 50                       # BM25 top-N drawn into the union pool
+    bm25_k1: float = 1.5                        # Robertson-Sparck-Jones k1 (term-saturation)
+    bm25_b: float = 0.75                        # length-normalization b
+    bm25_score_mode: str = "rrf"                # "rrf" (default) | "weighted_sum"
+    bm25_score_alpha: float = 0.5               # weighted_sum: BM25 normalized share; ignored for "rrf"
+    rrf_k: int = 60                             # RRF rank-fusion constant (Cormack 2009 standard)
+    bm25_tokenizer: str = "trigram"             # "trigram" (default) | "sudachi" (optional extra)
 
     # Gravity wave propagation
     wave_initial_k: int = 3            # Initial FAISS top-k for seed nodes
@@ -178,9 +260,15 @@ class GaOTTTConfig:
     db_path: str = ""
     faiss_index_path: str = ""
 
-    # Write-behind
+    # Write-behind (cache → SQLite + FAISS index → disk)
     flush_interval_seconds: float = 5.0
     flush_threshold: int = 100
+    # Periodic FAISS save: if non-zero, the engine spawns a background task
+    # that calls faiss_index.save() every N seconds when dirty. Critical for
+    # multi-process visibility — without this, brand-new `remember` lives
+    # only in the writing process's in-memory FAISS until shutdown(), so
+    # other processes' recall() never sees it. Set to 0 to disable.
+    faiss_save_interval_seconds: float = 5.0
 
     # F4: TTL for ephemeral memory (source="hypothesis")
     default_hypothesis_ttl_seconds: float = 7 * 86400.0  # 7 days
@@ -200,9 +288,105 @@ class GaOTTTConfig:
     prefetch_ttl_seconds: float = 90.0                # Cache entry lifetime
     prefetch_max_concurrent: int = 4                  # Bounded async pool size
 
+    # Source-filtered recall — seed pool expansion
+    # When `source_filter` is set on `recall`, the default `wave_initial_k=3`
+    # seeds from the densest cluster only, so sparse classes (agent / value /
+    # intention / commitment / compaction) get squeezed out of the seed
+    # pool entirely on corpus-heavy DBs (~10k+ entries). Boosting wave_k
+    # for filtered queries oversamples seeds so the requested sources have
+    # a real chance of being reached. Raised to 1000 (2026-05-12) after
+    # production 23k-DB acceptance showed multiple queries reachable at 1000
+    # that missed at 500; latency impact is negligible since source_filter
+    # is only used for explicit sparse-class carve-out, not on hot paths.
+    wave_k_with_filter: int = 1000
+
+    # Phase H — Wave seed redesign (H.3 Mass-aware seed boosting):
+    # FAISS raw cosine top-K seed alone misses heavy nodes that sit
+    # slightly outside top cosine. We pull a wider pool, rerank by
+    # `raw + α * log(1+mass)`, then take the top initial_k. With α=0
+    # the behaviour is identical to legacy raw cosine top-K seeding,
+    # so existing setups can opt out by setting it to 0.
+    wave_seed_mass_alpha: float = 0.1
+    wave_seed_pool_size: int = 50
+
+    # Phase H Stage 3 — Density-aware dynamic wave_k:
+    # Look at top_N raw cosine scores and decide if the query landed in
+    # a "dense" cluster (top scores all close together) or a "sparse"
+    # region (top-1 alone, then sharp dropoff). For sparse regions we
+    # expand the effective seed pool up to `wave_initial_k_max` so that
+    # the wave can reach further before mass / source rerank narrows it.
+    # Set wave_dynamic_k_enabled=False to fall back to fixed initial_k.
+    wave_dynamic_k_enabled: bool = True
+    wave_density_window: int = 10            # how many top-N to inspect
+    wave_density_threshold: float = 0.95     # tail/top ratio above this = "dense"
+    wave_initial_k_max: int = 50             # cap for sparse-region expansion
+
+    # Phase H Stage 4 — Virtual FAISS:
+    # A second FAISS index built on virtual_pos (= raw embedding +
+    # cached displacement, normalized). Phase G priming moves
+    # displacement on every active node, but raw FAISS does not see
+    # those updates — wave seeding therefore can't benefit from priming.
+    # Virtual FAISS does. propagate_gravity_wave unions seeds from raw
+    # and virtual indexes; if a node moved closer to the query through
+    # priming, it can enter the seed pool via the virtual index even
+    # when its raw cosine is far. Rebuilt at startup (if disk file is
+    # missing) and on compact(rebuild_faiss=True). Saved on shutdown.
+    virtual_faiss_enabled: bool = True
+    virtual_faiss_index_path: str = ""
+    # Phase H Stage 4 (cont., 2026-05-13) — Virtual FAISS write-behind:
+    # Without this, virtual FAISS only refreshes at compact(rebuild_faiss=
+    # True) or startup-when-missing, so Phase I/J query attraction and
+    # genesis kicks accumulate in cache.displacement without ever being
+    # visible to the next recall's seed pool. The loop checks
+    # cache.virtual_faiss_dirty on a fixed cadence and triggers a full
+    # rebuild + disk save when dirty. Default is 60s — slower than raw
+    # FAISS's 5s because rebuild is O(N) over all active nodes; tune
+    # down on small DBs, up on large ones. Set to 0 to disable.
+    virtual_faiss_save_interval_seconds: float = 60.0
+    # Phase H Stage 5 — Wave neighbor uses virtual FAISS:
+    # Previously the seed pool unioned raw+virtual, but the wave's per-
+    # frontier `search_by_id` only queried raw FAISS. That breaks the
+    # "stars attract stars" design — the star is the virtual position
+    # (raw + cached displacement), not the raw embedding. With this on,
+    # neighbor expansion uses `virtual_faiss_index.search_by_id` (so a
+    # node's virtual position drives who it pulls in), falling back to
+    # raw when virtual_faiss_index is None or empty. Set to False to
+    # restore the legacy raw-only neighbor search.
+    wave_neighbor_use_virtual: bool = True
+
     # Phase D: persona & task TTL defaults
     default_task_ttl_seconds: float = 30 * 86400.0       # 30 日 (要 revalidate / complete / abandon)
     default_commitment_ttl_seconds: float = 14 * 86400.0  # 14 日
+
+    # Phase G — Genesis kick: brand-new nodes receive a one-step gravitational
+    # interaction with their top-K heavy neighbors at index time. Without this,
+    # a fresh `remember` lands with mass=1.0 and zero displacement/velocity,
+    # losing recall ranking to established clusters even when semantically
+    # close. The kick gives the new node initial orbital state derived from
+    # the same Newtonian formula the rest of the engine uses (no special-case
+    # physics — just one step of update_orbital_state's force calculation).
+    genesis_kick_enabled: bool = True
+    genesis_kick_neighbor_k: int = 5      # heaviest K to include in the kick
+    genesis_kick_pool_size: int = 50       # FAISS top-N pool to mass-rank from
+    genesis_mass_boost_alpha: float = 0.5  # initial mass boost = α * |kick force|
+    # Mass boost cap per kick — raw |acc| can spike for nodes near dense
+    # cluster centers (observed max ~71 on the 23k production DB before
+    # capping). Without a cap a single step could push mass close to m_max
+    # in one go, which violates the "gradual accretion" feel of the model.
+    genesis_mass_boost_cap: float = 1.0
+
+    # Phase G — Dream consolidation (Stage 2): a background loop that picks
+    # quiet (low-mass, idle) nodes and runs synthetic recalls against them
+    # so they accumulate co-occurrence edges and gravity field updates over
+    # time. Hippocampal-replay analog. Distinct from genesis kick — kick is
+    # the single bound-to-orbit moment, dream is gradual tidal capture
+    # spread across idle wall-clock.
+    dream_enabled: bool = True
+    dream_interval_seconds: float = 60.0   # tick cadence; 0 disables loop
+    dream_batch_size: int = 5              # quiet nodes revisited per tick
+    dream_mass_ceiling: float = 1.5        # only nodes with mass below this
+    dream_min_idle_seconds: float = 300.0  # only nodes idle this long
+    dream_top_k: int = 10                  # top_k for the synthetic recall
 
     def __post_init__(self):
         if not self.db_path:
@@ -223,6 +407,10 @@ class GaOTTTConfig:
                 self.faiss_index_path = legacy_faiss
             else:
                 self.faiss_index_path = new_faiss
+        if not self.virtual_faiss_index_path:
+            self.virtual_faiss_index_path = os.path.join(
+                self.data_dir, "gaottt.virtual.faiss"
+            )
 
     @classmethod
     def from_config_file(cls) -> "GaOTTTConfig":

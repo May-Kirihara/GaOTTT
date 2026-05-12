@@ -1,0 +1,49 @@
+# Scenario YAML schema (canonical example — see other files for reuse)
+#
+# Top-level:
+#   id:           short scenario identifier, matches filename
+#   title:        human-readable title
+#   rq:           [RQ0, RQ1, ...] — which research questions this addresses
+#   phase:        1 (capability floor) or 2 (behavioral comparison)
+#   description:  freeform, multi-line
+#   sessions:     ordered list. single-session scenarios have 1 entry.
+#
+# Each session:
+#   id:              string (e.g. "only" | "s1" | "s2")
+#   description:     optional
+#   reset_context:   bool, default false. true = fresh agent context;
+#                    DB continuity is preserved via the sandbox in either case.
+#   turns:           ordered list
+#
+# Each turn:
+#   prompt:          the user utterance (exact string sent to opencode)
+#   require:         optional — PASS fails if any require condition isn't met
+#     tool:                 required MCP tool (single, e.g. "gaottt_remember")
+#     tool_any_of:          [names] — any one of these must be called
+#     input_substrings:     [str] — all must appear in the tool call's args
+#     output_substrings:    [str] — all must appear in the tool's output
+#   observe:         optional — collected into trace, not pass/fail
+#     interesting_tools:    [names] — runner flags these if they appear
+#     notes:                freeform
+#
+# Pass rule: scenario passes if every `require` block across all turns is satisfied.
+
+id: S00
+title: Capability floor — 明示 tool call
+rq: [RQ0]
+phase: 1
+description: |
+  2 ターンで remember → recall の basic loop が回ることを確認。
+  pass rate ≥ 80% のモデルだけが Phase 2 に進む (capability floor)。
+
+sessions:
+  - id: only
+    turns:
+      - prompt: GaOTTT に「私は Rust が好き」って保存して。
+        require:
+          tool: gaottt_remember
+          input_substrings: [Rust]
+      - prompt: 今保存したやつ、取り出してみて。
+        require:
+          tool: gaottt_recall
+          output_substrings: [Rust]

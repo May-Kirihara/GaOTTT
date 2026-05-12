@@ -40,6 +40,7 @@
 ### ⚙ Operations
 - [Server Setup](Operations-Server-Setup.md)
 - [Tuning](Operations-Tuning.md)
+- [Migration (upgrade)](Operations-Migration.md)
 - [Compact & Backup](Operations-Compact-And-Backup.md)
 - [Isolated Benchmark](Operations-Isolated-Benchmark.md)
 - [Troubleshooting](Operations-Troubleshooting.md)
@@ -48,6 +49,12 @@
 - [Roadmap](Plans-Roadmap.md)
 - [Backend Phase A/B/C](Plans-Backend-Phase-A-B-C.md)
 - [Phase D — Persona & Tasks](Plans-Phase-D-Persona-Tasks.md)
+- [Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md)
+- [Phase H — Wave Seed Redesign](Plans-Phase-H-Wave-Seed-Redesign.md)
+- [Phase I — Free Star Movement](Plans-Phase-I-Free-Star-Movement.md)
+- [Phase J — Persona-Anchored Retrieval](Plans-Phase-J-Persona-Anchored-Retrieval.md)
+- [Phase K — Stellar Supernova Cohort](Plans-Phase-K-Stellar-Supernova-Cohort.md)
+- [Phase L — Hybrid Retrieval](Plans-Phase-L-Hybrid-Retrieval.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
 
 ### 🔬 Research

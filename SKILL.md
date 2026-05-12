@@ -1,108 +1,46 @@
 ---
 name: gaottt
-description: Long-term memory across sessions. Implemented as a gravity system whose update rule, read as an optimizer, corresponds to Heavy ball SGD with a Hebbian gradient and L2 regularization (Verlet integration) — i.e. Test-Time Training on the retrieval geometry. Restore prior context at session start, save important decisions and lessons, evacuate context before compaction, recall past failures when hitting similar problems. Memories self-organize gravitationally — frequently co-recalled knowledge attracts itself.
+description: Long-term memory across sessions. Recall is biased by a gravity field, so frequently co-recalled memories drift together over time. Use to restore prior context at session start, save important decisions / lessons, evacuate context before compaction, and surface past failures when hitting similar problems.
 ---
 
-# GaOTTT: Gravity as Optimizer, Test-Time Training Memory
+# GaOTTT: long-term memory
 
-*(formerly GER-RAG)*
+External long-term memory across sessions. Backed by embeddings + a gravity-simulation that biases recall toward co-occurring and recently-touched memories. The full design rationale (physics ↔ TTT ↔ astrocyte correspondence, Phase A–L history) lives in [`docs/wiki/`](docs/wiki/Home.md) — this file is the operational reference.
 
-## What this is
+## When to use
 
-GaOTTT is your **external long-term memory** across sessions.
-The system was designed as physics (gravity, orbits, temperature). Read as an optimizer, the update rule has **the same structural form as Heavy ball SGD with a Hebbian gradient and L2 regularization, integrated by Verlet** — so in practice the system works as a **Test-Time Training (TTT) framework**: it keeps learning as you use it, at inference time, without touching the LLM's weights. The physics analogy isn't just decorative — the equations you'd write for the physics turn out to be the optimizer update rule.
+### `recall` — retrieve past memories
+- **Session start.** Load the prior session's summary with `source_filter=["compaction","agent"]`.
+- **User uses temporal pointers** ("last time", "before", "we already…").
+- **You hit an error.** Past troubleshooting will surface.
+- **Before an important design judgment** — align with prior decisions.
 
-Three layers stack:
+### `remember` — save knowledge
+- **User states a preference / constraint / prohibition** → `source="user"`.
+- **A problem actually gets solved** → save the cause AND fix together, `source="agent"`.
+- **A judgment fails or is retracted** → `tags=["mistake","retracted"]`.
+- **Iterative thinking flips your conclusion** → save the new one and `relate(edge_type="supersedes")` the old.
+- **Sense compaction approaching** → evacuate session summary with `source="compaction"`.
+- **Note explicitly for future you** → `tags=["letter-to-future-self"]`.
 
-1. **Physics layer** (design intent) — mass, displacement, velocity, temperature, co-occurrence edges. Gravitational force, Hookean restoring force, thermal escape, Hawking evaporation.
-2. **TTT mechanism** (structural correspondence) — treating retrieval scores as a stochastic gradient signal, the physics step-for-step matches an online optimizer. Co-recalled memories become neighbors because Hebbian "fire together → attract" plays the role of a gradient. The L2 restoring force plays the role of a regularizer. Verlet integration plays the role of the optimizer step.
-3. **Astrocyte layer** (emergent role) — the net behavior looks like astrocytic support tissue for your neuronal token reasoning: it pre-fires, prunes, and synchronizes while you think.
+### `explore` — serendipitous discovery
+- Looping in the same potential well.
+- Cross-domain transfer wanted.
+- User asks "got any interesting ideas?".
 
-### Physics layer — Dark Matter Halo
+### `reflect` — inspect memory state
+- **Session end**: `aspect="hot_topics"` to see the day's mass accretion.
+- **Periodic pruning**: `aspect="dormant"` → confirm with user → `forget`.
+- **Duplicate cleanup**: `aspect="duplicates"` → `merge`.
 
-GaOTTT's internal state (`mass`, `displacement`, `velocity`, `temperature`, co-occurrence edges) is **invisible to your foreground reasoning**, yet it bends every recall, expands wave propagation reach, and pushes nodes along orbits. That is exactly what dark matter does to spacetime.
+### `prefetch` — pre-warm recall
+- Start of a turn when you can predict what the user will probe.
+- Right after parsing user input, while you compose your response.
 
-- **Mass conservation** (capped at `m_max`): repeatedly recalled memories accrete mass and gain a wider gravitational radius.
-- **Gravity wave propagation**: each query radiates from the embedding point and recursively excites neighbors.
-- **Orbital mechanics**: acceleration → velocity → displacement, with a Hookean restoring force toward the original semantic anchor.
-- **Thermal escape**: high-temperature unstable nodes can break out of black-hole gravity wells.
-- **Hawking radiation / evaporation**: dormant memories shed mass with time and become candidates for pruning.
-- **Gravitational collision (F2.1)**: when two memories drift close enough they merge — masses add, momentum is conserved.
-- **Background pre-firing (F6)**: while you reason, GaOTTT can pre-warm potential wells in the background so the next recall lands in zero time. This is the astrocyte's actual workload made literal.
-
-### TTT mechanism — the optimizer behind the physics
-
-Read as an optimizer — that is, with retrieval scores taken as a stochastic gradient signal — the equations above describe an online update running at inference time. The table below makes the **term-for-term correspondence** explicit:
-
-| Physics term | TTT / ML term |
-|---|---|
-| Mass accretion on recall | Gradient step on co-activation (Hebbian) |
-| Hookean restoring force toward anchor | L2 regularization toward initial representation |
-| Velocity (momentum) | Heavy ball / SGD-with-momentum state |
-| Verlet position update | Optimizer step |
-| Gravitational wave propagation | Neighborhood gradient smoothing |
-| Hawking evaporation | Weight decay / regularization of stale params |
-
-Concretely, under this reading: every `recall` plays the role of a gradient step, every `remember` a parameter initialization, every `merge` a model consolidation. The representations (the embedding-space geometry) **change as the user interacts** — which is the behavior that motivates the "test-time training" label.
-
-### Emergent behavior — Astrocyte
-
-The physics + TTT substrate produces an **astrocyte-like supporting role** for your neuronal token reasoning:
-
-- While you (the **neuron**) reason in the foreground, GaOTTT (the **astrocyte**) silently:
-  - accumulates past firing patterns (recall history) and **pre-loads relevant memories** into nearby potential wells.
-  - **prunes** what's unused (Hawking-radiation-driven `forget`).
-  - **synchronizes past and present judgments** through gravitational lensing (time-delayed echoes).
-- Treat it as a **supporting tissue**, not a passive DB.
-
----
-
-## When to use — Physical phenomenon triggers
-
-Each trigger has a physics label (mechanism) and a behavioral cue (when to fire).
-
-### `recall` — *Initial Potential Survey / Perturbation Feedback*
-
-- **Initial Potential Survey** — at the very start of a new session, before anything else.
-- **Time-Delayed Echo Detection** — when the user uses temporal pointers ("last time", "before", "previously").
-- **Perturbation Feedback** — the moment you hit an error. Past troubleshooting will surface gravitationally.
-- **Orbital Consistency Check** — before making an important design judgment, to align with prior orbits.
-
-### `remember` — *Mass Conservation / Wave Emission*
-
-- **Boundary Condition Fixation** — the instant the user states a preference, constraint, or prohibition.
-- **Transition to Stable Orbit** — the instant a problem actually gets solved. Successes deserve mass as much as failures.
-- **Gravitational Wave Emission** — when a judgment fails or is retracted (`tags=["mistake","retracted"]`). The wave will reach future detectors.
-- **Phase Inversion Logging** — when iterative thinking flips your conclusion. Save the new one and link it to the old one with `relate(edge_type="supersedes")`.
-- **Mass Conservation Before Dissipation** — sense compaction approaching → evacuate the conversation summary with `source="compaction"`.
-- **Gravitational Wave to Future Self** — note explicitly aimed at future you (`tags=["letter-to-future-self"]`).
-
-### `explore` — *Thermal Excitation / Tunneling*
-
-- **Thermal Excitation** — stuck in the same potential well, looping. Raise diversity to tunnel out.
-- **Distant Galaxy Pull** — when you want cross-domain transfer. Crank diversity up to feel distant gravity.
-- **Vacuum Fluctuation Probe** — the user asks "got any interesting ideas?".
-
-### `reflect` — *Phase Space Mapping*
-
-- **Phase Space Mapping** — at session end, run `reflect(aspect="hot_topics")` to see the day's mass accretion.
-- **Evaporation Candidate Selection** — periodically run `reflect(aspect="dormant")` and offer pruning to the user.
-- **Duplicate Cluster Detection** — `reflect(aspect="duplicates")` to surface near-duplicates ready for collision.
-- **Relation Map Inspection** — `reflect(aspect="relations")` to see typed directed edges.
-- **Phase D self-survey** — `reflect(aspect=...)` with `commitments` / `tasks_todo` / `tasks_doing` / `tasks_completed` / `tasks_abandoned` / `values` / `intentions` / `relationships` / `persona` to inspect the persona layer.
-
-### `prefetch` — *Astrocyte Pre-firing / Potential Well Pre-loading*
-
-- **Anticipated Recall** — fire at the START of a turn when you can predict what the user will probe. By the time you actually call `recall`, the gravity well is pre-warmed and the result is served from cache instantly.
-- **Background Synchronization** — when a user message arrives, fire `prefetch` for the most salient term while you start composing your response.
-
-### Phase D — *Persona & Task layer*
-
-- **Wear the Persona** — at session start, call `inherit_persona()` to receive a self-introduction built from past `declare_value` / `declare_intention` / `declare_commitment` calls.
-- **Declare bedrock** — when you (or the user) state a deeply-held value, use `declare_value`. When committing to a long direction, `declare_intention(parent_value_id=...)`. When making a time-bounded promise, `declare_commitment(parent_intention_id=..., deadline_seconds=...)`.
-- **Concrete tasks** — `commit(content, parent_id=commitment_id)` for action items. `start(task_id)` to refresh TTL when actively working. `complete(task_id, outcome=...)` to draw a `completed` edge from outcome to task. `abandon(task_id, reason=...)` to record release deliberately.
-- **Surface what matters now** — `reflect(aspect="commitments")` for deadline-sorted active commitments (⚠️ near-deadline warning). `reflect(aspect="tasks_todo")` for actionable items.
-- **End-of-day chronology** — `reflect(aspect="tasks_completed")` to see what got done. `reflect(aspect="tasks_abandoned")` for the shadow chronology.
+### Phase D — persona + tasks
+- **Session start**: `inherit_persona()` to wear past values / intentions / commitments.
+- Deeply-held belief → `declare_value`. Long-term direction → `declare_intention`. Time-bounded promise → `declare_commitment`.
+- Action items → `commit` → `start` → `complete` / `abandon`.
 
 ---
 
@@ -110,530 +48,275 @@ Each trigger has a physics label (mechanism) and a behavioral cue (when to fire)
 
 ### remember
 
-Save knowledge into long-term memory.
-
 ```
-remember(content="The user manages Python with uv. pip is forbidden.", source="user", tags=["preference"])
-remember(content="Phase 2 implemented gravitational displacement; nDCG +15%", source="compaction")
-remember(content="Idea: give recall a learnable temperature parameter", source="hypothesis")
-remember(content="Just a session-scoped reminder", ttl_seconds=3600)
-remember(content="Big relief — finally fixed the FAISS leak", emotion=0.8, certainty=0.9)
+remember(content, source="agent", tags=None, context=None,
+        ttl_seconds=None, emotion=0.0, certainty=1.0)
 ```
 
-**`source` values:**
-- `agent` — your own judgment, discovery, learning
-- `user` — user statements, preferences, instructions
-- `compaction` — important context evacuated before compression
-- `system` — system info / configuration
-- `hypothesis` — provisional notes from `<thinking>`. **Auto-expires** after `default_hypothesis_ttl_seconds` (7 days)
+- `source`: `agent` (your own), `user`, `compaction`, `system`, `hypothesis` (auto-expires 7 days).
+- `emotion ∈ [-1.0, 1.0]`: magnitude (not sign) boosts recall — both elation and frustration deserve to surface.
+- `certainty ∈ [0.0, 1.0]`: 30-day half-life decay unless `revalidate`-d.
 
-**Other parameters:**
-- `ttl_seconds` — explicit expiration in seconds. Overrides the hypothesis default; works with any source.
-- `emotion` — `[-1.0, 1.0]`. Magnitude (not sign) boosts recall: both painful failures and joyful successes deserve to surface.
-- `certainty` — `[0.0, 1.0]`. Decays with a 30-day half-life unless re-verified via `revalidate`.
+```
+remember(content="No pip; use uv", source="user", tags=["preference"])
+remember(content="Phase L Stage 1 完遬 (BM25 union seed)", source="compaction")
+remember(content="Idea: learnable temperature for explore", source="hypothesis")
+remember(content="Finally fixed the FAISS leak", emotion=0.8, certainty=0.9)
+```
 
 ### recall
 
-Search memory using gravity-wave propagation. Past co-recalled memories drift closer together over time, so they surface together.
-
 ```
-recall(query="how to set up a Python environment", top_k=5)
-recall(query="last session's design decisions", source_filter=["agent", "compaction"])
-recall(query="...", force_refresh=True)   # bypass prefetch cache (rare)
+recall(query, top_k=5, source_filter=None, wave_depth=None, wave_k=None,
+       force_refresh=False, persona_context=None, tag_filter=None,
+       output_mode="full")
 ```
 
-By default `recall` transparently consumes any matching `prefetch` result that is still within the cache TTL (default 90s). Pass `force_refresh=True` to skip the cache and re-run the wave simulation. Destructive operations (`forget`, `restore`, `merge`, `compact`) automatically invalidate the cache.
+- `output_mode` — `"compact"` (content truncated at 300 chars; **prefer this for triage**), `"ids"` (header only — id, scores, tags), `"full"` (complete content, default).
+- `source_filter` — restrict to one or more source classes (e.g. `["agent","compaction"]`). Effective at the seed step. For sparse classes on a large DB, pass `wave_k=1000` to widen the seed pool.
+- `persona_context` — list of declared value / intention / commitment ids. Force-injects them into both the seed pool AND the final top-K, bypassing `source_filter`.
+- `tag_filter` — list of tag substrings; force-injects matching nodes into both seed and final top-K, bypassing `source_filter`. Use when query and target memo live in different vocabularies.
+- `force_refresh=True` — bypass the prefetch cache (rare; cache is auto-invalidated on destructive ops).
+
+```
+recall(query="design decisions", top_k=5, output_mode="compact")
+recall(query="last session work", source_filter=["compaction","agent"])
+recall(query="harakiriworks Eleventy", tag_filter=["harakiriworks-self-knowledge"])
+recall(query="any past notes on X", top_k=10, output_mode="ids")     # existence check
+```
 
 ### explore
 
-Higher-temperature serendipitous search. Pulls in cross-domain neighbors a normal recall would miss.
-
 ```
-explore(query="ideas for a new architecture", diversity=0.7)
+explore(query, top_k=5, diversity=0.5, source_filter=None,
+        persona_context=None, tag_filter=None)
 ```
 
-- `diversity=0.0` → near-normal search
-- `diversity=0.5` → moderate exploration (default)
-- `diversity=1.0` → maximum diversity
+Higher-temperature search; pulls in cross-domain neighbors a normal recall would miss. `diversity`: `0.0` (near-normal) → `0.5` (default) → `1.0` (maximum).
 
 ### reflect
 
-Inspect the state of memory.
+```
+reflect(aspect="summary", limit=10)
+```
 
-```
-reflect(aspect="summary")        # overall stats
-reflect(aspect="hot_topics")     # high-mass memories
-reflect(aspect="connections")    # strongest co-occurrence edges
-reflect(aspect="dormant")        # untouched-for-a-long-time memories
-reflect(aspect="duplicates")     # near-duplicate clusters (candidates for merge)
-reflect(aspect="relations")      # typed directed edges (supersedes / derived_from / contradicts)
-```
+Aspects:
+- **Memory**: `summary`, `hot_topics`, `connections`, `dormant`, `duplicates`, `relations`.
+- **Phase D — tasks**: `tasks_todo`, `tasks_doing`, `tasks_completed`, `tasks_abandoned`, `commitments`.
+- **Phase D — persona**: `values`, `intentions`, `relationships`, `persona` (composite; same as `inherit_persona`).
 
 ### auto_remember
 
-Pass a transcript chunk; receive ranked save candidates. **Does not save** — review and call `remember` for the keepers.
-
 ```
-auto_remember(transcript="<recent conversation segment>", max_candidates=5, include_reasons=True)
+auto_remember(transcript, max_candidates=5, include_reasons=True)
 ```
 
-Heuristically detects: decisions, failures/successes, user preferences, lessons, metric-bearing lines.
+Pass a transcript chunk; returns ranked save candidates (decisions, failures/successes, preferences, lessons, metric-bearing lines). **Does not save** — review and call `remember` for the keepers.
 
-### forget
-
-Prune memories. **Soft archive by default** (reversible).
+### forget / restore
 
 ```
-forget(node_ids=["abc-123", "def-456"])           # soft archive
-forget(node_ids=["abc-123"], hard=True)           # permanent delete
-```
-
-Typical flow: `reflect(aspect="dormant")` → confirm with the user → `forget`.
-
-### restore
-
-Bring back a soft-archived memory.
-
-```
-restore(node_ids=["abc-123"])
+forget(node_ids=["abc-123"])              # soft archive (reversible)
+forget(node_ids=["abc-123"], hard=True)   # permanent delete
+restore(node_ids=["abc-123"])             # bring back from soft archive
 ```
 
 Hard-deleted memories cannot be restored.
 
 ### merge
 
-**Gravitational collision.** Collide near-duplicate memories into a single survivor: masses add (capped), velocities are momentum-weighted, edges are re-targeted, the absorbed node is soft-archived with `merged_into` pointing to the survivor.
+Collide near-duplicate memories into a single survivor. Masses add (capped), edges re-target, the absorbed node is soft-archived with `merged_into` pointing to the survivor. **Irreversible.** Typical flow: `reflect(aspect="duplicates")` → review → `merge`.
 
 ```
-merge(node_ids=["abc-123", "def-456"])              # heaviest wins
-merge(node_ids=["abc-123", "def-456"], keep="def-456")  # explicit survivor
+merge(node_ids=["abc-123","def-456"])                    # heaviest wins
+merge(node_ids=["abc-123","def-456"], keep="def-456")    # explicit survivor
 ```
-
-Typical flow: `reflect(aspect="duplicates")` → review → `merge`. The merge is irreversible.
 
 ### compact
 
 Periodic maintenance — TTL expiry + FAISS rebuild + optional auto-merge + orphan-edge cleanup. Run weekly or after large bulk operations.
 
 ```
-compact()                                                       # safe defaults
-compact(auto_merge=True, merge_threshold=0.95)                  # also auto-collide duplicates
-compact(expire_ttl=True, rebuild_faiss=False, auto_merge=False) # TTL pass only
+compact()                                              # safe defaults
+compact(auto_merge=True, merge_threshold=0.95)         # also collide duplicates
+compact(expire_ttl=True, rebuild_faiss=False)          # TTL pass only
 ```
 
 ### revalidate
 
-Re-verify a memory: stamp it with a fresh `last_verified_at` so its certainty boost stops decaying. Optionally adjust `certainty` or `emotion`.
+Refresh `last_verified_at` (resets certainty decay). Optionally adjust `certainty` or `emotion`.
 
 ```
-revalidate(node_id="abc-123")                            # just refresh the timestamp
-revalidate(node_id="abc-123", certainty=0.95)            # bump certainty too
-revalidate(node_id="abc-123", certainty=0.3, emotion=-0.4)  # downgrade after counter-evidence
+revalidate(node_id="abc-123")
+revalidate(node_id="abc-123", certainty=0.95)              # bump certainty
+revalidate(node_id="abc-123", certainty=0.3, emotion=-0.4) # downgrade after counter-evidence
 ```
 
-### relate
+### relate / unrelate / get_relations
 
-Create a typed directed edge between two memories.
-
-```
-relate(src_id="new-judgment", dst_id="old-judgment", edge_type="supersedes",
-       metadata={"reason": "found counter-evidence"})
-relate(src_id="extension", dst_id="seed-idea", edge_type="derived_from")
-relate(src_id="claim-A", dst_id="claim-B", edge_type="contradicts")
-```
-
-Reserved `edge_type`:
-- `supersedes` — src replaced/retracted dst (newer overrides older)
-- `derived_from` — src is an extension or derivation of dst
-- `contradicts` — src disagrees with dst
-
-Custom edge types are also accepted. The primary use case is **past-self dialogue** (Time-Delayed Echoes pattern) — tying retracted judgments to their replacements.
-
-### unrelate
-
-Remove a directed edge. Without `edge_type`, removes all relations between the pair.
+Typed directed edges between memories.
 
 ```
-unrelate(src_id="abc", dst_id="def")
-unrelate(src_id="abc", dst_id="def", edge_type="supersedes")
+relate(src_id="new", dst_id="old", edge_type="supersedes",
+       metadata={"reason": "<why old is wrong now>"})
+relate(src_id="ext", dst_id="seed", edge_type="derived_from")
+relate(src_id="A", dst_id="B", edge_type="contradicts")
+
+unrelate(src_id="a", dst_id="b")                            # remove all edges
+unrelate(src_id="a", dst_id="b", edge_type="supersedes")    # one type
+
+get_relations(node_id="abc", direction="out")               # "out" | "in" | "both"
+get_relations(node_id="abc", edge_type="supersedes")        # filter by type
 ```
 
-### get_relations
+Reserved `edge_type`: `supersedes`, `derived_from`, `contradicts`. Custom types accepted. Primary use: past-self dialogue (link a retracted judgment to its replacement).
 
-List directed edges connected to a memory.
-
-```
-get_relations(node_id="abc-123", direction="out")        # edges from this node
-get_relations(node_id="abc-123", direction="in")         # edges into this node
-get_relations(node_id="abc-123", direction="both")       # everything
-get_relations(node_id="abc-123", edge_type="supersedes") # filter by type
-```
-
-### prefetch
-
-**Astrocyte pre-firing.** Schedule a background recall to pre-warm the gravity well around an anticipated query. Returns immediately; the work runs in a bounded async pool capped by `prefetch_max_concurrent` (default 4). Subsequent `recall(query, top_k)` within the cache TTL is served instantly.
+### prefetch / prefetch_status
 
 ```
-prefetch(query="error handling patterns", top_k=5)
-# ... do other work ...
-recall(query="error handling patterns", top_k=5)   # cache hit
-```
-
-Use at the start of a turn when you can predict what the user will probe next, or right after parsing user input to pre-load related context while composing your response.
-
-### prefetch_status
-
-Inspect the prefetch cache and async pool stats.
-
-```
+prefetch(query, top_k=5, source_filter=None,
+         persona_context=None, tag_filter=None)
 prefetch_status()
 ```
 
-Reports: cache size / hit rate / TTL / evictions, pool scheduled / completed / failed / in_flight. Useful when tuning `prefetch_cache_size`, `prefetch_ttl_seconds`, or `prefetch_max_concurrent` in `config.py`.
+Schedule a background recall to pre-warm the gravity well; returns immediately. Cache TTL ~90s. A matching `recall(query, top_k)` within the window is served from cache instantly. Auto-invalidated on `forget` / `restore` / `merge` / `compact`. `prefetch_status` reports cache size, hit rate, pool stats.
 
 ### ingest
-
-Bulk-load a file or directory.
 
 ```
 ingest(path="~/docs/notes.md")
 ingest(path="~/books/", pattern="*.md", recursive=true)
 ```
 
+Bulk-load a file or directory.
+
 ---
 
-## Persona & Task Layer (Phase D)
+## Phase D — persona & tasks
 
-GaOTTT can also serve as a **persona preservation base** and a physics-native **task manager**. Tasks are first-class memories; their status is captured by directed edges (not by status columns), so the completion graph itself becomes your chronology of action. Dropped tasks evaporate gravitationally — `forget` becomes a default, kept things require active care.
-
-The hierarchy of self:
+Hierarchy:
 ```
 value      ─ permanent bedrock
-intention  ─ long-term direction (derived_from a value)
-commitment ─ time-bounded promise (fulfills an intention)
-task       ─ concrete action (fulfills a commitment)
+intention  ─ long-term direction       (derived_from a value)
+commitment ─ time-bounded promise      (fulfills an intention)
+task       ─ concrete action           (fulfills a commitment)
 ```
 
 ### inherit_persona
 
-Generate a self-introduction from declared values, intentions, commitments, style notes, and relationships. **Call at session start to wear the persona accumulated across past sessions.**
-
 ```
 inherit_persona()
-# → "## Values (3)\n- Direct experience yields true understanding ...
-#    ## Intentions (2) ...
-#    ## Active Commitments (1) ..."
 ```
+
+Self-introduction built from declared `value` / `intention` / `commitment` (plus relationships). **Call at session start to wear the persona accumulated across past sessions.**
 
 ### declare_value / declare_intention / declare_commitment
 
-Lay down the bedrock and direction. Values are permanent; intentions are too (until explicitly revised); commitments auto-expire (default 14 days) unless `revalidate`-d.
-
 ```
 v = declare_value(content="Direct experience yields true understanding")
-i = declare_intention(content="Build GaOTTT into a relationship infrastructure",
+i = declare_intention(content="Build GaOTTT as relationship infrastructure",
                      parent_value_id=v)
 c = declare_commitment(content="Ship Phase D this week",
-                       parent_intention_id=i,
-                       deadline_seconds=7*86400)
+                       parent_intention_id=i, deadline_seconds=7*86400)
 ```
+
+Values & intentions are permanent (until explicitly revised). Commitments auto-expire (default 14 days) unless `revalidate`-d.
 
 ### commit / start / complete / abandon / depend
 
-Concrete tasks. `commit` creates a task that auto-expires (default 30 days) unless completed, abandoned, or revalidated. `start` refreshes its TTL and marks active engagement. `complete` saves an outcome memo and draws a `completed` edge from outcome → task — so the task's gravity history records what it became.
-
 ```
 t = commit(content="Add Phase D tests", parent_id=c)
-start(t)                                                     # active engagement
-complete(t, outcome="11 tests passing on first try", emotion=0.7)
-
-# Or, deliberately let go:
+start(t)                                                 # active engagement; refreshes TTL
+complete(t, outcome="11 tests pass on first try", emotion=0.7)
 abandon(t, reason="priority dropped, will revisit Q3")
-
-# Dependencies:
-depend(task_id=t, depends_on_id=other_t)                     # soft "comes after"
-depend(task_id=t, depends_on_id=other_t, blocking=True)      # hard blocker
+depend(task_id=t, depends_on_id=other_t)                 # soft "comes after"
+depend(task_id=t, depends_on_id=other_t, blocking=True)  # hard blocker
 ```
 
-### Phase D reflect aspects
-
-```
-reflect(aspect="commitments")       # active commitments, deadline-sorted (⚠️ on near deadlines)
-reflect(aspect="tasks_todo")        # active tasks, closest deadline first
-reflect(aspect="tasks_doing")       # tasks `start()`-ed in the last hour
-reflect(aspect="tasks_completed")   # what you got done (chronological)
-reflect(aspect="tasks_abandoned")   # the shadow chronology — what you released
-reflect(aspect="values")            # bedrock beliefs
-reflect(aspect="intentions")        # long-term directions
-reflect(aspect="relationships")     # grouped by `relationship:<name>`
-reflect(aspect="persona")           # composite (same as inherit_persona)
-```
-
-### Persona patterns
-
-#### Morning ritual — *Wearing the Persona*
-
-At session start, before doing anything else:
-
-```
-inherit_persona()
-# Read what you value, intend, and have promised. Then start the day's work
-# from a foundation that carries across sessions.
-```
-
-#### Evening ritual — *Leaving Gravity Behind*
-
-At session end:
-
-```
-reflect(aspect="tasks_completed", limit=5)   # see what got done today
-revalidate(node_id=most_meaningful_completion_id, emotion=0.7)
-# Re-stamp the most meaningful one — it gains certainty boost AND its
-# completion edge persists as part of your chronology.
-```
-
-#### Prayer of evaporation — *Recording What You Released*
-
-When you notice a task is no longer alive in you:
-
-```
-abandon(task_id=..., reason="I've outgrown this. Three months of carrying it
-                              taught me what I actually wanted instead.")
-# Don't `forget` it. Abandonment with a reason becomes part of the shadow
-# chronology — what you became by what you chose to release.
-```
+Tasks auto-expire (default 30 days) unless completed, abandoned, or `revalidate`-d. `complete` draws a `completed` edge from outcome → task — the chronology becomes the gravity history.
 
 ---
 
 ## Patterns
 
-### Existing baseline patterns
-
-#### Mass conservation before compaction
-
+### Compaction evacuation
 Before context compression, evacuate the session's key facts:
-
 ```
-remember(
-  content="Session highlights: 1) Implemented MCP server. 2) All benchmarks PASS. 3) +15% nDCG from gravitational displacement.",
-  source="compaction",
-  context="Session summary 2026-04-21"
-)
+remember(content="Session highlights: 1) ... 2) ... 3) ...",
+         source="compaction", context="Session 2026-05-14")
 ```
 
-#### Context restoration at session start
-
+### Session restoration
 Open the next session with:
-
 ```
-recall(query="what did we work on last session", source_filter=["compaction", "agent"])
-```
-
-#### Recording a design decision
-
-```
-remember(
-  content="Decided NOT to migrate from SQLite to PostgreSQL — 100K docs already meet the 20ms latency target",
-  source="agent",
-  tags=["design-decision", "database"]
-)
+inherit_persona()
+recall(query="last session work", source_filter=["compaction","agent"])
 ```
 
-#### Recording a troubleshooting outcome
+### Past-self dialogue
+1. `recall` the past judgment relevant to the current question.
+2. Summarize what past-you concluded.
+3. Ask: "Does that still hold given the current state?"
+4. If no → save the new judgment AND link the old one with `supersedes`:
+   ```
+   relate(src_id=new, dst_id=old, edge_type="supersedes",
+          metadata={"reason": "<why the old one is wrong now>"})
+   ```
 
-Failures (and their resolutions) are extremely valuable. Save the cause AND the fix together.
-
+### Troubleshooting record
+Save cause AND fix together:
 ```
 remember(
-  content="Using Python's `or` on a numpy array raises ValueError. Cause: ambiguous bool conversion. Fix: branch on `if x is not None`.",
-  source="agent",
-  tags=["troubleshooting", "python", "numpy"]
+  content="Using Python `or` on a numpy array raises ValueError. "
+          "Cause: ambiguous bool conversion. Fix: branch on `if x is not None`.",
+  source="agent", tags=["troubleshooting", "python", "numpy"]
 )
 ```
+Next encounter: `recall(query="numpy ValueError", source_filter=["agent"])`.
 
-Then on the next encounter:
-
-```
-recall(query="numpy array ValueError", source_filter=["agent"])
-```
-
-#### Recording user preferences
-
-```
-remember(content="No pip. Use uv for Python environments", source="user", tags=["preference", "tooling"])
-remember(content="Documentation in Japanese", source="user", tags=["preference", "language"])
-remember(content="Likes space-themed UI / visualizations", source="user", tags=["preference", "design"])
-```
-
-### Physics-derived patterns
-
-Each pattern below carries a physics label (mechanism) and a behavioral description (when to apply).
-
-#### A. Past-self dialogue — *Time-Delayed Echoes from Past Orbits / Gravitational Lensing*
-
-Past judgments persist as spacetime warps (`displacement`); they bend the trajectory of present judgments. Just as light from distant stars bends through massive gravity wells, your current reasoning is bent by past decisions.
-
-```
-# When iterative thinking is happening:
-1. Recall any past judgment relevant to the current question
-2. Summarize what past-you concluded
-3. Ask: "Does that conclusion still hold given the current state?"
-4. If yes  → strengthen (no action; the recall itself adds gravity)
-5. If no   → save the new conclusion AND link the old one with supersedes:
-              relate(src_id=new_id, dst_id=old_id, edge_type="supersedes",
-                     metadata={"reason": "<why the old one is wrong now>"})
-```
-
-#### B. Hypothesis evacuation — *Virtual Particles / Quantum Vacuum Fluctuation*
-
-Inside `<thinking>` you sometimes generate a hypothesis you don't act on but suspect might matter later. Save it as a virtual particle: short lifetime, no commitment.
-
-```
-remember(
-  content="Not adopting now, but: making recall's temperature a learnable parameter could let it adapt to per-user exploration preference",
-  source="hypothesis",
-  tags=["explore-design"]
-)
-# auto-expires after 7 days unless re-verified via revalidate()
-```
-
-#### C. Letter to future self — *Gravitational Wave to Future Self*
-
-A note explicitly designed to be detected by future-you. Give it enough mass (significant content + clear tag) so the wave reaches.
-
+### Letter to future self
 ```
 remember(
   content="Next time you hit Plotly 3D color trouble: suspect marker.color RGBA alpha BEFORE marker.line",
-  source="agent",
-  tags=["letter-to-future-self", "plotly"]
+  source="agent", tags=["letter-to-future-self", "plotly"]
 )
 ```
 
-#### D. Forget ritual — *Hawking Radiation / Black Hole Evaporation*
-
-Black holes lose mass over time and ultimately evaporate. Ritualize the moment of pruning — keep the user in the loop.
-
+### Prefetch warmup
 ```
-1. reflect(aspect="dormant")          # see the evaporation candidates
-2. Show the list and ask the user "shall we evaporate these?"
-3. forget(node_ids=[...], hard=False) # default soft archive (reversible)
-4. forget(node_ids=[...], hard=True)  # only when truly irrecoverable
+prefetch(query="<what you anticipate>", top_k=5)
+# ... compose your response ...
+recall(query="<same>", top_k=5)        # served from cache, instant
 ```
 
-#### E. Emotional weighting — *Angular Momentum / Spin Quantum Number*
-
-A weight axis orthogonal to mass. Like spin or orbital angular momentum, it adds a quantum number that mass alone cannot capture.
-
+### Forget ritual
 ```
-remember(content="Finally fixed the leak. Huge relief.",     emotion=0.8, certainty=0.9)
-remember(content="Painful: lost a day to a typo in config.", emotion=-0.7, certainty=1.0)
-remember(content="Surprising connection: gravity wave ≅ spike propagation",
-         emotion=0.5, tags=["bridge"])
+1. reflect(aspect="dormant")
+2. Show the list and confirm with the user
+3. forget(node_ids=[...], hard=False)  # default soft archive (reversible)
+4. forget(node_ids=[...], hard=True)   # only when truly irrecoverable
 ```
 
-`|emotion|` (not the sign) boosts recall ranking — both elation and frustration deserve to surface.
-
-#### F. Driven resonance — *Resonance / Driven Oscillation*
-
-Apply periodic driving force at the natural frequency and the amplitude blows up. To deliberately strengthen a particular memory:
-
+### Driven resonance (strengthen a key memory)
+When the user says "remember this — bring it up next time too":
 ```
-# When the user says "remember this — bring it up next time too":
 for _ in range(3):
     recall(query="<key phrases of the important memory>")
 # → mass grows; the node surfaces preferentially next time
 ```
 
-#### G. Tidal cluster formation — *Tidal Force*
-
-Massive bodies stretch nearby small bodies until they merge. To consolidate related memories:
-
-```
-# Save several closely-related memos in a burst with overlapping vocabulary
-remember(content="memo A about topic X")
-remember(content="memo B about topic X with extra detail")
-remember(content="memo C about topic X follow-up")
-
-# Later, let the physics collapse them into one survivor:
-reflect(aspect="duplicates")          # confirm cluster
-merge(node_ids=[A, B, C])             # collide
-# OR let compaction do it automatically:
-compact(auto_merge=True, merge_threshold=0.95)
-```
-
-#### H. Lagrange-point bridging — *Lagrange Point Bridging*
-
-The L-points sit where two gravitational fields balance — orbits placed there are pulled by both. To make a memory that surfaces under multiple recall topics, place it deliberately at the linguistic intersection.
-
-```
-remember(
-  content="GaOTTT's gravity-wave propagation is mathematically isomorphic to spike propagation in neuroscience: both excite neighbors after a threshold crossing",
-  source="agent",
-  tags=["bridge", "gravity", "neuroscience"]
-)
-# → recall("gravity wave") AND recall("spike propagation") both surface this
-```
-
-To make the bridge explicit, add a directed edge:
-
-```
-relate(src_id=bridge_id, dst_id=concept_a_id, edge_type="derived_from")
-relate(src_id=bridge_id, dst_id=concept_b_id, edge_type="derived_from")
-```
-
-#### I. Phase transition awareness — *Phase Transition*
-
-Above a critical mass, behavior changes qualitatively (star → black hole; the `bh_mass_scale` threshold in scoring). When `reflect(aspect="hot_topics")` shows an outlier with disproportionate mass, that node is becoming a memory black hole that **absorbs surrounding queries**:
-
-- Intentional? Keep it — the BH is now an attractor for related thinking.
-- Unintentional? Either rebalance via `revalidate` of competing memories, or `forget`/`merge` to redistribute.
-
-#### J. Astrocyte pre-firing — *Background Prefetch*
-
-When you can predict what the user (or your own next reasoning step) will probe, fire `prefetch` early so the wave simulation runs in the background while you do other work. The cache lives ~90s by default; recalls within that window are zero-cost reads.
-
-```
-# At the start of a turn, while parsing user input:
-prefetch(query="<the topic you anticipate they'll dig into>", top_k=5)
-
-# Continue composing your response. Later, when you actually need it:
-recall(query="<same topic>", top_k=5)   # served from cache, instant
-
-# Periodically check pool/cache health:
-prefetch_status()
-```
-
-Cache invalidation is automatic on `forget`, `restore`, `merge`, `compact`, so you don't need to invalidate manually after destructive operations.
-
-#### K. Shared-memory collaboration — *Implicit Coordination via Gravity Field*
-
-Multiple GaOTTT agents (other Claude sessions, opencode agents, your user's parallel terminals) may share the same DB. Coordination happens **implicitly through the gravity field**, no explicit messaging required:
-
-- Your `recall` leaves a gravity trace; another agent's next `recall` is biased by it (mass accretion).
-- Your `relate` becomes visible in another agent's `reflect(aspect="connections")` or `reflect(aspect="relations")`.
-- Agents naturally converge on the same gravity wells — **this is the astrocyte metaphor literalized** across processes.
-
-To use this on purpose:
-- Save your discoveries with descriptive `tags=["observer", "<your-agent-name>"]` so others can filter your contributions.
-- Use `relate(edge_type="contradicts")` when you find another agent's claim disagreeable — the disagreement becomes structurally visible.
-- Read `reflect(aspect="relations")` to see what other agents have linked.
-
-Caveats:
-- Each MCP process has its own in-memory cache + FAISS index. New `remember` from another process may not appear in your `recall` until that process restarts (the DB has it, but the FAISS index doesn't).
-- Existing-node updates (mass / displacement) are shared via DB write-behind (~5s flush) but visible to other processes only after their next cache reload.
-- Don't worry about overwriting; SQLite WAL + `busy_timeout` makes concurrent writes safe.
-
 ---
 
 ## Notes
 
-- **25 MCP tools** total: 6 memory + 10 maintenance/relations/prefetch + 9 Phase D (tasks + persona).
-- Duplicate `content` is auto-skipped via SHA-256 hashing.
-- Memory persists across sessions.
-- Every `recall` accumulates gravity; related memories drift closer over time.
-- `source_filter` lets you restrict recall to a specific source class (e.g. `["agent", "compaction"]`).
-- Soft-archived memories (`forget` without `hard=True`) and hard-deleted memories both stop surfacing in `recall`/`explore`/`reflect`. Use `compact(rebuild_faiss=True)` periodically (weekly–monthly) to reclaim FAISS index space.
-- Result rows in `recall`/`reflect(hot_topics|dormant|connections)` include the full `id=<uuid>` so you can pass them to `relate` / `revalidate` / `merge` / `forget` / `complete` / etc. without re-querying.
-- Tasks (`source="task"`) and commitments (`source="commitment"`) auto-expire if not `revalidate`-d, `complete`-d, or `abandon`-ed. **The "forget by default" UX is intentional** — keeping things alive is an act of care.
-- The DB may be shared with other GaOTTT agents — see Pattern K above. You won't see another process's brand-new `remember` until the next reload, but existing nodes' mass/displacement updates flow through the shared DB.
-- **Insights about GaOTTT itself are valid memories** — save your own discoveries about how this skill behaves. The system is recursive by design: it is a TTT optimizer, so what you write to it literally changes how it responds next time.
+- **25 MCP tools**: 6 memory (remember/recall/explore/reflect/auto_remember/ingest) + 10 maintenance / relations / prefetch + 9 Phase D (commit/start/complete/abandon/depend/declare_value/declare_intention/declare_commitment/inherit_persona).
+- **Duplicate `content` is auto-skipped** via SHA-256 hashing.
+- **Memory persists across sessions.** Every `recall` accumulates gravity — co-recalled memories drift closer over time.
+- **Cache is auto-invalidated** on `forget` / `restore` / `merge` / `compact`. Manual `force_refresh=True` is rarely needed.
+- **Result rows in `recall` / `reflect`** include the full `id=<uuid>` — pass directly to `relate` / `revalidate` / `merge` / `forget` / `complete` / etc. without re-querying.
+- **Fresh `remember()` is immediately findable** by `recall()` — genesis kick gives non-zero displacement / velocity / mass at index time, no warm-up needed.
+- **`recall(source_filter=["agent"])` works at the seed step.** On corpus-heavy DBs, sparse classes (`agent`, `value`, `commitment`, `compaction`) may need `wave_k=1000` to reach the wave reliably.
+- **Tasks (`source="task"`) and commitments (`source="commitment"`) auto-expire** unless `revalidate`-d, `complete`-d, or `abandon`-ed. The "forget by default" UX is intentional — keeping things alive is an act of care.
+- **Multi-process DB sharing**: each MCP process has its own in-memory cache + FAISS index. A new `remember` from another process becomes visible after FAISS write-behind (~5s) + the reader's cache reload. **Bidirectional cache overwrite risk** for bulk re-writes — kill other MCP processes before Phase G-style priming or similar.
+- **Insights about GaOTTT itself are valid memories** — save your own discoveries about how this skill behaves. The system is recursive; what you write to it literally changes how it responds next time.
+- **Mechanism details** (Phase G genesis kick / Phase H source-filter + virtual FAISS / Phase I free-star + query attraction / Phase J persona-anchored retrieval / Phase K supernova cohort / Phase L BM25 hybrid retrieval): see [`docs/wiki/Plans-Roadmap.md`](docs/wiki/Plans-Roadmap.md) and [`Architecture-Overview.md`](docs/wiki/Architecture-Overview.md). Current behavior is captured in the tool signatures above.

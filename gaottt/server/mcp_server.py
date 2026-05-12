@@ -203,6 +203,9 @@ async def recall(
     wave_depth: int | None = None,
     wave_k: int | None = None,
     force_refresh: bool = False,
+    persona_context: list[str] | None = None,
+    tag_filter: list[str] | None = None,
+    output_mode: str = "full",
 ) -> str:
     """Search long-term memory with gravitational wave propagation.
 
@@ -214,20 +217,45 @@ async def recall(
     instantly. Pass `force_refresh=True` to bypass the prefetch cache and
     re-run the full wave simulation.
 
+    **Phase J Stage 2 — explicit pool injection** (`persona_context` /
+    `tag_filter`): the seed step pulls FAISS top-K *and* unions in every
+    node matching the caller's explicit filters, bypassing
+    `source_filter` restrictions. Use this when you need to surface a
+    memo whose embedding is far from the query — e.g., a tag-tied cohort
+    in a different language or vocabulary from the query.
+
     Args:
         query: Search query
         top_k: Number of results (default 5)
-        source_filter: Filter by source, e.g. ["agent", "compaction"]
+        source_filter: Restrictive — only ``metadata.source`` matches survive
+                       the seed pool (Phase H Stage 2). Use for sparse class
+                       carve-out like ``["agent"]``.
         wave_depth: Override recursion depth (default from config)
         wave_k: Override initial seed count (default from config)
         force_refresh: Bypass prefetch cache (default False)
+        persona_context: Explicit list of declared value/intention/commitment
+                         IDs. Overrides Stage 1 auto-detect for proximity
+                         calculation *and* additively injects these IDs into
+                         the seed pool (Phase J Stage 2).
+        tag_filter: Substring list (OR match) of ``metadata.tags`` entries.
+                    Every matching node is additively injected into the seed
+                    pool, even if it is distant in embedding space. Bypasses
+                    ``source_filter`` (caller's explicit ask wins).
+        output_mode: Controls how much content is returned per result.
+                     "full" (default) — complete content, backward-compatible.
+                     "compact" — content truncated at 300 chars; use when you
+                     only need to scan/triage results before deciding which to
+                     read in full. Saves significant tokens on large recalls.
+                     "ids" — header line only (id, scores, tags), no content;
+                     use when you only need to know which memories exist.
     """
     engine = await get_engine()
     result = await memory_service.recall(
         engine, query=query, top_k=top_k, source_filter=source_filter,
         wave_depth=wave_depth, wave_k=wave_k, force_refresh=force_refresh,
+        persona_context=persona_context, tag_filter=tag_filter,
     )
-    return formatters.format_recall(result)
+    return formatters.format_recall(result, output_mode=output_mode)
 
 
 @mcp.tool()
@@ -235,20 +263,30 @@ async def explore(
     query: str,
     diversity: float = 0.5,
     top_k: int = 10,
+    persona_context: list[str] | None = None,
+    tag_filter: list[str] | None = None,
 ) -> str:
     """Explore memories serendipitously with increased randomness.
 
     Higher diversity increases wave depth and temperature noise,
     bringing unexpected cross-domain connections through deeper gravitational propagation.
 
+    Phase J Stage 3: parity with ``recall`` — explicit pool injection works
+    here too. ``tag_filter`` forces the matched tagged memos into the result
+    set even on a wide exploratory wave, useful for "explore within this
+    intention's neighbourhood".
+
     Args:
         query: Starting point for exploration
         diversity: 0.0 = normal search, 1.0 = maximum exploration
         top_k: Number of results
+        persona_context: Explicit persona ids (Phase J Stage 2 semantics)
+        tag_filter: Tag substring list (OR match) for additive injection
     """
     engine = await get_engine()
     result = await memory_service.explore(
         engine, query=query, diversity=diversity, top_k=top_k,
+        persona_context=persona_context, tag_filter=tag_filter,
     )
     return formatters.format_explore(result)
 
@@ -339,6 +377,8 @@ async def prefetch(
     top_k: int = 5,
     wave_depth: int | None = None,
     wave_k: int | None = None,
+    persona_context: list[str] | None = None,
+    tag_filter: list[str] | None = None,
 ) -> str:
     """Schedule a background recall to pre-load related memories.
 
@@ -351,15 +391,23 @@ async def prefetch(
     Subsequent `recall(query, top_k)` calls within the cache TTL (default 90s)
     are served from the cache without re-running the wave simulation.
 
+    Phase J Stage 3: ``persona_context`` / ``tag_filter`` are forwarded so
+    the pre-warmed result matches what a subsequent ``recall`` with the
+    same injection arguments would compute. Pre-fire the precise context
+    you expect to recall.
+
     Args:
         query: search text to pre-warm
         top_k: number of results to cache (must match the eventual recall)
         wave_depth: optional override
         wave_k: optional override
+        persona_context: Explicit persona ids (Phase J Stage 2 semantics)
+        tag_filter: Tag substring list (OR match) for additive injection
     """
     engine = await get_engine()
     result = maintenance_service.prefetch(
         engine, query=query, top_k=top_k, wave_depth=wave_depth, wave_k=wave_k,
+        persona_context=persona_context, tag_filter=tag_filter,
     )
     return formatters.format_prefetch(result)
 

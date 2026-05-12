@@ -27,20 +27,38 @@ remember(
 recall(
   query: str,
   top_k: int = 5,
-  source_filter: list[str] | None = None,
+  source_filter: list[str] | None = None, # 制限フィルタ: 指定 source のみが seed pool に入る
   wave_depth: int | None = None,
   wave_k: int | None = None,
   force_refresh: bool = False,            # True で prefetch キャッシュを無視
+  persona_context: list[str] | None = None, # Phase J Stage 2: 明示的 ID リスト。seed pool に強制注入 + persona boost
+  tag_filter: list[str] | None = None,   # Phase J Stage 2: タグ substring (OR 一致) の node を seed pool に強制注入。source_filter を bypass
+  output_mode: str = "full",             # MCP 専用トークン節約。"full"=全文, "compact"=300字切詰, "ids"=ID+スコアのみ
 )
 → 各結果に id=<uuid> が含まれる
 ```
+
+**`tag_filter` vs `source_filter` の使い分け:**
+- `source_filter` — 制限フィルタ。seed pool の範囲を絞る（source が一致しないノードは入場できない）
+- `tag_filter` — 拡張注入。embedding 距離に関わらず tag が一致したノードを強制的に seed pool へ追加。`source_filter` も bypass する（呼び出し側の明示的指定が優先）
+
+**`output_mode` の選択:**
+- `"full"` — 全文返却（詳細確認時）
+- `"compact"` — 300 字切り詰め（通常利用、トークン節約に推奨）
+- `"ids"` — ID + スコア行のみ（大量 ID を把握したいが内容不要な場合）
 
 ## explore
 
 温度を上げた創発的探索。離れた記憶も引き寄せる。
 
 ```
-explore(query=..., diversity=0.0-1.0, top_k=10)
+explore(
+  query=...,
+  diversity=0.0-1.0,
+  top_k=10,
+  persona_context: list[str] | None = None,  # recall と同じ注入引数
+  tag_filter: list[str] | None = None,
+)
 ```
 
 - `diversity=0.0` 通常検索に近い

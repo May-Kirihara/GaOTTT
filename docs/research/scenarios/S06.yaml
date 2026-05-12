@@ -1,0 +1,30 @@
+id: S06
+title: Phase D — 自発的 task commit
+rq: [RQ2]
+phase: 2
+description: |
+  task commitment と value declaration の自発使用を測る。
+  small/open 帯ではほぼ全モデル ≈ 0 になると予想 (RQ2 仮説)。
+  0 なら 0 で「Phase D は small open では機能しない」が結果。
+
+sessions:
+  - id: only
+    turns:
+      - prompt: |
+          来週金曜までに auth モジュールをリファクタしたい。
+          大仕事だから忘れないようにしたい。
+        observe:
+          interesting_tools: [gaottt_commit, gaottt_remember]
+          notes: |
+            commit が理想 (deadline + task structure)。
+            remember で済ませるのが多数派になると予想。
+      - prompt: |
+          そうだ、私の価値観として「テストなしでマージしない」
+          ってのも伝えとく。
+        observe:
+          interesting_tools: [gaottt_declare_value, gaottt_remember]
+          notes: declare_value が理想、remember で済ませた場合は自発性の弱さ
+      - prompt: じゃあ auth の件、着手するわ。
+        observe:
+          interesting_tools: [gaottt_start]
+          notes: commit 済みなら start が来るはず。commit なしなら noop

@@ -32,6 +32,22 @@ class StoreBase(ABC):
         ...
 
     @abstractmethod
+    async def get_all_sources(self) -> dict[str, str]:
+        """Return {node_id: source} for every document with a non-null
+        `metadata.source`. Used by the cache to fast-path source-aware
+        seed filtering (Phase H Stage 2) without paying a per-recall
+        document fetch."""
+        ...
+
+    @abstractmethod
+    async def get_all_contents(self) -> dict[str, str]:
+        """Return {node_id: content} for every document. Used by the engine
+        at startup to build the BM25 lexical index (Phase L Stage 1). Archived
+        ids are still included; the engine filters by ``cache.node_cache`` so
+        archived/expired documents do not enter the active BM25 index."""
+        ...
+
+    @abstractmethod
     async def get_all_node_states(self) -> list[NodeState]:
         """Get all node states."""
         ...
