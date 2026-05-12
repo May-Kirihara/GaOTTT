@@ -529,13 +529,16 @@ class GaOTTTEngine:
         query_vec_flat = query_vec[0] if query_vec.ndim == 2 else query_vec
         q_norm = float(np.linalg.norm(query_vec_flat)) + 1e-12
         results: list[QueryResultItem] = []
-        # Phase J Stage 3 patch: ``raw_score`` (= gravity_sim) is computed
-        # against the *virtual* position (raw + displacement + temperature
-        # noise), so it carries the same displacement bias that
-        # ``final_score`` does. For the forced-set ordering we want the
-        # **pure** query-vs-raw-embedding cosine, which is what an LLM
-        # caller intuitively expects from "semantic distance to query".
-        # Compute it separately here and carry through to Step 4.
+        # Coordinate naming:
+        #   gravity_sim  = query_raw · virtual_pos  (stored as QueryResultItem.raw_score,
+        #                  labelled "virtual_score" in MCP output).  Carries displacement
+        #                  and temperature noise — reflects how far the node has drifted
+        #                  toward frequently co-recalled queries.
+        #   pure_raw_cosines = query_raw · node_raw  (no displacement).  Used only for
+        #                  Phase J Stage 3 forced-set ordering where "closest to this
+        #                  query's vocabulary" must win over "most-touched memo".
+        #   QueryResultItem.raw_score keeps the field name for REST backward compat;
+        #   formatters.format_recall labels it "virtual_score" in MCP output (2026-05-12).
         pure_raw_cosines: dict[str, float] = {}
 
         for node_id in reached_ids:

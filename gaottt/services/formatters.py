@@ -98,7 +98,7 @@ def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
         tag_str = f" [{', '.join(item.tags)}]" if item.tags else ""
         header = (
             f"[{i+1}] id={item.id} "
-            f"(score={item.final_score:.4f}, raw={item.raw_score:.4f}, "
+            f"(score={item.final_score:.4f}, virtual_score={item.raw_score:.4f}, "
             f"source={item.source}{tag_str}, "
             f"displacement={item.displacement_norm:.4f})"
         )

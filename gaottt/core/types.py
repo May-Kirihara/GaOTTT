@@ -91,7 +91,7 @@ class QueryResultItem(BaseModel):
     id: str
     content: str
     metadata: dict[str, Any] | None
-    raw_score: float
+    raw_score: float   # query_raw · virtual_pos (= gravity_sim). Labelled "virtual_score" in MCP output.
     final_score: float
 
 
