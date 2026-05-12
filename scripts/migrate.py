@@ -11,20 +11,22 @@ Usage::
 
     scripts/migrate.py                       # dry-run, show plan
     scripts/migrate.py --list                # list all known migrations + status
-    scripts/migrate.py --apply               # apply all pending migrations
+    scripts/migrate.py --apply               # apply (auto-backups data_dir first)
+    scripts/migrate.py --apply --no-backup   # skip the automatic backup
     scripts/migrate.py --apply --step M001   # apply just one
-    scripts/migrate.py --apply --backup      # auto-backup data_dir first
-    scripts/migrate.py --apply --force       # bypass MCP-running check
+    scripts/migrate.py --apply --force       # bypass running-server check
 
 Safety rails:
 
 * **Dry-run by default**. ``--apply`` is required to actually mutate state.
-* **MCP-running check** refuses to proceed if a ``gaottt.server.mcp_server``
-  process is detected (cache write-back would overwrite our changes — see
-  Architecture-Concurrency.md "Bidirectional cache overwrite"). ``--force``
-  bypasses, but you should not need to.
-* **Backup** (``--backup``) copies the entire data_dir to a sibling directory
-  with a timestamp suffix before any mutation.
+* **Auto-backup** — ``--apply`` automatically copies the entire data_dir to a
+  timestamped sibling directory before any mutation. Pass ``--no-backup`` to
+  skip (e.g. in CI where the dir is already under version control).
+* **Server-running check** refuses to proceed if any GaOTTT server process is
+  detected (MCP server OR REST server — both hold an in-memory cache whose
+  write-back would overwrite migration changes; see Architecture-Overview.md
+  "Bidirectional cache overwrite trap"). ``--force`` bypasses, but you should
+  not need to in normal operation.
 * **Idempotent**. Running ``--apply`` twice does nothing the second time;
   each migration's ``needs_apply`` is a strong detector independent of the
   ``_migrations`` ledger, so even a wiped ledger does the right thing.
@@ -297,21 +299,31 @@ def _ledger_record(conn: sqlite3.Connection, m: Migration, notes: str) -> None:
 # Safety helpers
 # =====================================================================
 
-def _running_mcp_pids() -> list[int]:
-    """pgrep-style check for live gaottt.server.mcp_server processes."""
-    try:
-        out = subprocess.check_output(
-            ["pgrep", "-f", "gaottt.server.mcp_server"],
-            stderr=subprocess.DEVNULL,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return []
-    pids = []
-    for line in out.decode().splitlines():
-        line = line.strip()
-        if line.isdigit():
-            pids.append(int(line))
-    return pids
+def _running_gaottt_pids() -> list[tuple[int, str]]:
+    """Return (pid, label) pairs for live GaOTTT server processes.
+
+    Both MCP server and REST server hold an in-memory cache.  Either can
+    flush stale cache entries back to SQLite after migration, undoing the
+    migration's changes (bidirectional cache overwrite trap).
+    """
+    patterns = [
+        ("gaottt.server.mcp_server", "MCP server"),
+        ("gaottt.server.app",        "REST server"),
+    ]
+    found: list[tuple[int, str]] = []
+    for pattern, label in patterns:
+        try:
+            out = subprocess.check_output(
+                ["pgrep", "-f", pattern],
+                stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+        for line in out.decode().splitlines():
+            line = line.strip()
+            if line.isdigit():
+                found.append((int(line), label))
+    return found
 
 
 def _backup_data_dir(data_dir: Path) -> Path:
@@ -381,14 +393,16 @@ async def main_async(args: argparse.Namespace) -> int:
         )
         return 2
 
-    # Pre-flight: MCP-running check (only when we'll actually mutate state)
+    # Pre-flight: server-running check (only when we'll actually mutate state)
     if args.apply:
-        pids = _running_mcp_pids()
-        if pids and not args.force:
+        procs = _running_gaottt_pids()
+        if procs and not args.force:
+            desc = ", ".join(f"pid={pid} ({label})" for pid, label in procs)
             print(
-                f"ERROR: detected gaottt.server.mcp_server processes: {pids}.\n"
-                "  Stop them first (cache write-back would overwrite this script's changes):\n"
+                f"ERROR: detected running GaOTTT server processes: {desc}.\n"
+                "  Stop them first (in-memory cache write-back would overwrite migration changes):\n"
                 "    pkill -f gaottt.server.mcp_server\n"
+                "    pkill -f gaottt.server.app\n"
                 "  Then re-run. Pass --force to bypass at your own risk.",
                 file=sys.stderr,
             )
@@ -435,10 +449,12 @@ async def main_async(args: argparse.Namespace) -> int:
                     print("\n[dry-run] no migrations to apply.")
                 return 0
 
-            # --apply path
-            if args.backup:
+            # --apply path — backup unless explicitly skipped
+            if not args.no_backup:
                 print("=== Backup ===")
                 _backup_data_dir(data_dir)
+            else:
+                print("[backup skipped — --no-backup passed]\n")
 
             print(f"=== Apply ({time.strftime('%Y-%m-%d %H:%M:%S')}) ===\n")
             already_applied = [m.version for m in MIGRATIONS if m.version in applied]
@@ -524,15 +540,16 @@ def main() -> None:
         help="Apply only this specific migration (e.g. M001).",
     )
     parser.add_argument(
-        "--backup", action="store_true",
-        help="Before applying, copy the entire data_dir to "
-             "<data_dir>.backup-<timestamp>/. Recommended for production DBs.",
+        "--no-backup", action="store_true",
+        help="Skip the automatic data_dir backup that normally runs before "
+             "--apply. Use only in CI environments where the directory is "
+             "already under version control or backed up externally.",
     )
     parser.add_argument(
         "--force", action="store_true",
-        help="Bypass the running-MCP-process check. Don't use unless you "
-             "know cache overwrite cannot affect this DB (Architecture-"
-             "Concurrency.md).",
+        help="Bypass the running-server check. Don't use unless you know "
+             "neither MCP server nor REST server can flush stale cache to "
+             "this DB (see Architecture-Overview.md).",
     )
     args = parser.parse_args()
     try:
