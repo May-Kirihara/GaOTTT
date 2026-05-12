@@ -499,6 +499,14 @@ def propagate_gravity_wave(
     active node, which raw FAISS does not see; virtual FAISS does, so
     primed nodes can still enter the seed pool through it.
 
+    Phase H Stage 5 — Virtual FAISS also drives neighbor expansion: per-
+    frontier ``search_by_id`` queries the virtual index instead of raw
+    when ``config.wave_neighbor_use_virtual`` is True (default) and a
+    non-empty virtual index is supplied. The "star" in this model is the
+    virtual position (raw + cached displacement), so star-to-star gravity
+    is best expressed by neighbor search against virtual cosine. Falls
+    back to raw when virtual is unavailable or opted out.
+
     Phase J Stage 1 — Persona-anchored seed boosting: when
     ``persona_proximities`` is provided (typically from
     ``persona_gravity.compute_persona_proximities``) and
@@ -631,6 +639,19 @@ def propagate_gravity_wave(
     for nid, force in frontier:
         reached[nid] = max(reached.get(nid, 0.0), force)
 
+    # Phase H Stage 5 — Neighbor search index selection. The "star"
+    # in this model is the virtual position (raw + cached displacement),
+    # so star-to-star gravity is most faithfully expressed by neighbor
+    # search against the virtual index. Raw FAISS is the static sky and
+    # cannot see displacement updates. When virtual is unavailable
+    # (None / empty / opt-out), fall back to raw — the old behaviour.
+    use_virtual_neighbors = (
+        config.wave_neighbor_use_virtual
+        and virtual_faiss_index is not None
+        and virtual_faiss_index.size > 0
+    )
+    neighbor_index = virtual_faiss_index if use_virtual_neighbors else faiss_index
+
     for depth in range(1, max_depth + 1):
         next_frontier: list[tuple[str, float]] = []
 
@@ -646,7 +667,7 @@ def propagate_gravity_wave(
                 continue
 
             min_sim = config.compute_gravity_radius(mass)
-            neighbors = faiss_index.search_by_id(node_id, node_k + 1)
+            neighbors = neighbor_index.search_by_id(node_id, node_k + 1)
 
             for neighbor_id, sim_score in neighbors:
                 if neighbor_id == node_id:

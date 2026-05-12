@@ -75,6 +75,13 @@ class GaOTTTEngine:
         self._faiss_dirty: bool = False
         self._faiss_save_task: asyncio.Task | None = None
         self._faiss_save_stop: asyncio.Event | None = None
+        # Virtual FAISS write-behind. Same multi-process visibility
+        # problem as raw FAISS but driven by cache.displacement edits
+        # (Phase I/J query attraction, genesis kicks, dream loop). The
+        # dirty signal is `cache.virtual_faiss_dirty`; the loop reads it,
+        # rebuilds the full virtual index, saves, and clears.
+        self._virtual_faiss_save_task: asyncio.Task | None = None
+        self._virtual_faiss_save_stop: asyncio.Event | None = None
         # Phase G — Dream loop: revisits quiet nodes on a slow cadence with
         # synthetic recalls so co-occurrence and gravity state build up even
         # without user query (hippocampal-replay analog). Disabled when
@@ -102,6 +109,14 @@ class GaOTTTEngine:
         if self.config.faiss_save_interval_seconds > 0:
             self._faiss_save_stop = asyncio.Event()
             self._faiss_save_task = asyncio.create_task(self._faiss_save_loop())
+        if (
+            self.virtual_faiss_index is not None
+            and self.config.virtual_faiss_save_interval_seconds > 0
+        ):
+            self._virtual_faiss_save_stop = asyncio.Event()
+            self._virtual_faiss_save_task = asyncio.create_task(
+                self._virtual_faiss_save_loop()
+            )
         if (
             self.config.dream_enabled
             and self.config.dream_interval_seconds > 0
@@ -131,6 +146,15 @@ class GaOTTTEngine:
                 await asyncio.wait_for(self._faiss_save_task, timeout=10.0)
             except asyncio.TimeoutError:
                 self._faiss_save_task.cancel()
+        if self._virtual_faiss_save_stop is not None:
+            self._virtual_faiss_save_stop.set()
+        if self._virtual_faiss_save_task is not None:
+            try:
+                await asyncio.wait_for(
+                    self._virtual_faiss_save_task, timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                self._virtual_faiss_save_task.cancel()
         await self.cache.stop_write_behind()
         await self.cache.flush_to_store(self.store)
         # Final synchronous save guarantees durability even if the loop
@@ -171,6 +195,44 @@ class GaOTTTEngine:
                 except Exception:  # noqa: BLE001
                     self._faiss_dirty = True
                     logger.exception("Periodic FAISS save failed; will retry")
+
+    async def _virtual_faiss_save_loop(self) -> None:
+        """Background virtual FAISS rebuild + save: refreshes the
+        displacement-aware seed index on a fixed cadence whenever the
+        cache marks itself dirty. Without this, displacement edits from
+        recall (Phase I/J query attraction), genesis kicks, and the dream
+        loop never reach the seed pool of subsequent recalls — virtual
+        FAISS would only refresh at compact(rebuild_faiss=True).
+
+        Rebuild is O(N) over active nodes. The default 60s cadence keeps
+        the work amortized; tune via virtual_faiss_save_interval_seconds.
+        """
+        assert self._virtual_faiss_save_stop is not None
+        assert self.virtual_faiss_index is not None
+        interval = self.config.virtual_faiss_save_interval_seconds
+        path = self.config.virtual_faiss_index_path
+        while not self._virtual_faiss_save_stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._virtual_faiss_save_stop.wait(), timeout=interval,
+                )
+                break  # stop signalled
+            except asyncio.TimeoutError:
+                pass  # interval elapsed, try a rebuild tick
+            if self.cache.virtual_faiss_dirty:
+                # Claim before rebuild so any set_displacement during the
+                # rebuild itself leaves dirty=True for the next tick.
+                self.cache.virtual_faiss_dirty = False
+                try:
+                    await self._rebuild_virtual_faiss_index()
+                    await asyncio.to_thread(
+                        self.virtual_faiss_index.save, path,
+                    )
+                except Exception:  # noqa: BLE001
+                    self.cache.virtual_faiss_dirty = True
+                    logger.exception(
+                        "Periodic virtual FAISS rebuild failed; will retry"
+                    )
 
     def _pick_dream_candidates(self, limit: int) -> list[str]:
         """Quiet nodes worth revisiting in a dream tick.
@@ -814,6 +876,11 @@ class GaOTTTEngine:
                 self.cache.displacement_cache[nid] = disp
             for nid, vel in vels.items():
                 self.cache.velocity_cache[nid] = vel
+            # Restored nodes change the active set + their displacement
+            # was reloaded behind set_displacement's back; force a virtual
+            # FAISS refresh so they reappear in seed pools.
+            if affected:
+                self.cache.virtual_faiss_dirty = True
             self.prefetch_cache.invalidate()
         logger.info("Restored %d nodes", affected)
         return affected

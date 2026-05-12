@@ -270,11 +270,11 @@ class GaOTTTConfig:
     # intention / commitment / compaction) get squeezed out of the seed
     # pool entirely on corpus-heavy DBs (~10k+ entries). Boosting wave_k
     # for filtered queries oversamples seeds so the requested sources have
-    # a real chance of being reached. Default 500 is calibrated for 20-30k
-    # corpora with sparse target classes (~1-2% of total) — at 1.7% sparsity
-    # the expected agent-class count in top-500 is ~8.5, robust against
-    # the all-zero outcome that hit at 200 (expected ~3.4).
-    wave_k_with_filter: int = 500
+    # a real chance of being reached. Raised to 1000 (2026-05-12) after
+    # production 23k-DB acceptance showed multiple queries reachable at 1000
+    # that missed at 500; latency impact is negligible since source_filter
+    # is only used for explicit sparse-class carve-out, not on hot paths.
+    wave_k_with_filter: int = 1000
 
     # Phase H — Wave seed redesign (H.3 Mass-aware seed boosting):
     # FAISS raw cosine top-K seed alone misses heavy nodes that sit
@@ -309,6 +309,26 @@ class GaOTTTConfig:
     # missing) and on compact(rebuild_faiss=True). Saved on shutdown.
     virtual_faiss_enabled: bool = True
     virtual_faiss_index_path: str = ""
+    # Phase H Stage 4 (cont., 2026-05-13) — Virtual FAISS write-behind:
+    # Without this, virtual FAISS only refreshes at compact(rebuild_faiss=
+    # True) or startup-when-missing, so Phase I/J query attraction and
+    # genesis kicks accumulate in cache.displacement without ever being
+    # visible to the next recall's seed pool. The loop checks
+    # cache.virtual_faiss_dirty on a fixed cadence and triggers a full
+    # rebuild + disk save when dirty. Default is 60s — slower than raw
+    # FAISS's 5s because rebuild is O(N) over all active nodes; tune
+    # down on small DBs, up on large ones. Set to 0 to disable.
+    virtual_faiss_save_interval_seconds: float = 60.0
+    # Phase H Stage 5 — Wave neighbor uses virtual FAISS:
+    # Previously the seed pool unioned raw+virtual, but the wave's per-
+    # frontier `search_by_id` only queried raw FAISS. That breaks the
+    # "stars attract stars" design — the star is the virtual position
+    # (raw + cached displacement), not the raw embedding. With this on,
+    # neighbor expansion uses `virtual_faiss_index.search_by_id` (so a
+    # node's virtual position drives who it pulls in), falling back to
+    # raw when virtual_faiss_index is None or empty. Set to False to
+    # restore the legacy raw-only neighbor search.
+    wave_neighbor_use_virtual: bool = True
 
     # Phase D: persona & task TTL defaults
     default_task_ttl_seconds: float = 30 * 86400.0       # 30 日 (要 revalidate / complete / abandon)

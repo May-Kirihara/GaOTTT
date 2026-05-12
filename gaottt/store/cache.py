@@ -40,6 +40,15 @@ class CacheLayer:
         self.dirty_edges: set[tuple[str, str]] = set()
         self.dirty_displacements: set[str] = set()
         self.dirty_velocities: set[str] = set()
+        # Phase H Stage 4 (cont.) — virtual FAISS write-behind tracker.
+        # Flipped True when displacement changes (the only input to
+        # compute_virtual_position aside from raw embedding + temperature,
+        # and temperature mutations always co-occur with displacement
+        # mutations via update_orbital_state). The engine's virtual-FAISS
+        # save loop reads this flag, rebuilds + saves, then clears it.
+        # Kept on the cache (not the engine) so unit tests that mutate
+        # displacement without an engine still set it consistently.
+        self.virtual_faiss_dirty: bool = False
         self._flush_interval = flush_interval
         self._flush_threshold = flush_threshold
         self._write_behind_task: asyncio.Task | None = None
@@ -73,6 +82,7 @@ class CacheLayer:
     def set_displacement(self, node_id: str, displacement: np.ndarray) -> None:
         self.displacement_cache[node_id] = displacement
         self.dirty_displacements.add(node_id)
+        self.virtual_faiss_dirty = True
 
     # --- Velocity ---
 
@@ -264,6 +274,8 @@ class CacheLayer:
         self.dirty_nodes.discard(node_id)
         self.dirty_displacements.discard(node_id)
         self.dirty_velocities.discard(node_id)
+        # Active-set membership changed → virtual FAISS needs rebuild.
+        self.virtual_faiss_dirty = True
         neighbors = self.graph_cache.pop(node_id, {})
         for other in neighbors:
             self.graph_cache.get(other, {}).pop(node_id, None)
