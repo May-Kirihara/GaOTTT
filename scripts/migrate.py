@@ -151,6 +151,33 @@ def _top_k_heavy_neighbors(engine, vec, k, pool_size, exclude_id):
 
 
 async def _m001_needs_apply(engine, config):
+    # Phase M Stage 1 interaction (2026-05-13): M002 deliberately zeros
+    # displacement to give the new physics a clean slate. Without this
+    # guard, M001 would see "100% zero displacement → re-prime everyone"
+    # and write displacement biased toward residual mass-heavy nodes,
+    # partially re-creating BH-like clusters that M002 was meant to clear.
+    # When M002 is in the ledger, M001's "Phase G legacy priming needed"
+    # assumption no longer holds — the displacement zeroing is intentional.
+    db_path = config.db_path
+    try:
+        ledger_conn = sqlite3.connect(db_path)
+        try:
+            cur = ledger_conn.execute(
+                "SELECT 1 FROM _migrations WHERE version = ?", ("M002",)
+            )
+            m002_applied = cur.fetchone() is not None
+        finally:
+            ledger_conn.close()
+    except sqlite3.OperationalError:
+        m002_applied = False
+    if m002_applied:
+        return False, (
+            "M002 (Phase M BH residue cleanup) already applied — Phase G "
+            "re-priming would re-bias displacement toward residual heavy "
+            "nodes. Skipping; the new physics expects a clean displacement "
+            "state until natural recall accretion fills it back in."
+        )
+
     total, zero = _zero_displacement_stats(engine)
     if total == 0:
         return False, "DB has no active nodes — nothing to prime"
@@ -363,11 +390,6 @@ M002 = Migration(
 # every node's mass back to 1.0 so accretion under the new rule starts
 # from a clean baseline.
 
-# Pre-Phase-M inflation peaks were observed at max=49, p99=26 (see Plans
-# §2.1). Natural post-Phase-M growth caps far below those values, so 5.0 is
-# a clean dividing line — anything above is pre-rollout state that calls
-# for the reset, anything below is normal Phase M operation.
-M003_INFLATED_TRIGGER = 5.0
 M003_VERIFY_TOLERANCE = 1e-6
 
 
@@ -388,17 +410,24 @@ def _mass_stats(engine) -> tuple[int, float, float]:
 
 
 async def _m003_needs_apply(engine, config):
+    """Phase M Stage 1 mass reset is a one-time rollout step that applies to
+    **every** user upgrading across Phase M, not a state-driven cleanup.
+
+    Threshold-based auto-detect would silently SKIP for users whose DB
+    looks "clean" by some numeric measure even when the user actually
+    wants the reset (e.g., they want to start fresh under the new rule
+    even though some manual partial reset has flattened the peaks).
+    Instead, this migration is always reported as PENDING and the wizard
+    presents it to the user with the current state in the description —
+    the user decides. The ledger still suppresses re-asks once applied.
+    """
     total, max_mass, mean = _mass_stats(engine)
     if total == 0:
-        return False, "DB has no active nodes"
-    if max_mass > M003_INFLATED_TRIGGER:
-        return True, (
-            f"max mass = {max_mass:.2f}, mean = {mean:.2f} across {total} nodes "
-            f"— pre-Phase-M inflation still present"
-        )
-    return False, (
-        f"max mass = {max_mass:.2f}, mean = {mean:.2f} across {total} nodes "
-        f"— already at clean baseline (threshold {M003_INFLATED_TRIGGER})"
+        return False, "DB has no active nodes — nothing to reset"
+    return True, (
+        f"current state: max mass = {max_mass:.2f}, mean = {mean:.2f} "
+        f"across {total} nodes — wizard will ask whether to apply Phase M "
+        f"Stage 1 one-time mass reset"
     )
 
 
@@ -585,8 +614,12 @@ def _render_plan(
 # Wizard helpers
 # =====================================================================
 
-def _confirm_critical(m: Migration) -> bool:
+def _confirm_critical(m: Migration, reason: str = "") -> bool:
     """Prompt the user about a critical migration. Returns True to apply.
+
+    ``reason`` is the per-run state info from ``needs_apply``; surfaced in
+    the prompt so the user can see "your DB currently looks like X" next
+    to the generic warning text.
 
     When stdin is not a TTY (CI / piped input), refuse and tell the user
     to pass ``--yes`` explicitly — silently auto-applying a destructive
@@ -609,6 +642,8 @@ def _confirm_critical(m: Migration) -> bool:
             print(f"      {line}")
         print()
     print(f"      Description: {m.description}")
+    if reason:
+        print(f"      Current DB: {reason}")
     print()
     while True:
         try:
@@ -740,7 +775,7 @@ async def main_async(args: argparse.Namespace) -> int:
                         continue
                     if not args.yes:
                         print(f"[{m.version}] {m.name}: PENDING — {reason}")
-                        if not _confirm_critical(m):
+                        if not _confirm_critical(m, reason=reason):
                             print(f"[{m.version}] declined by user — skipping")
                             skipped_critical += 1
                             continue

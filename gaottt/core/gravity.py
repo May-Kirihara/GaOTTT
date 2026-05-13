@@ -61,62 +61,6 @@ clamp_displacement = clamp_vector
 # Orbital mechanics (Stage 1-2-3)
 # -----------------------------------------------------------------------
 
-def compute_bh_acceleration(
-    pos_i: np.ndarray,
-    node_id: str,
-    temperature_i: float,
-    cache: "CacheLayer",
-    all_positions: dict[str, np.ndarray],
-    config: GaOTTTConfig,
-) -> np.ndarray:
-    """Phase M Stage 1 — deprecated co-occurrence BH (no longer called by
-    ``compute_acceleration``). Kept here so ``scripts/visualize_3d.py``
-    and other inspection tooling still import cleanly; removed in
-    Phase M Stage 2.
-
-    Original behaviour: gravitational acceleration toward the weighted
-    centroid of co-occurrence neighbors. BH mass = ``bh_mass_scale *
-    log(1 + Σ edge_weight)`` with presentation-saturation and thermal-
-    escape damping.
-    """
-    neighbors = cache.get_neighbors(node_id)
-    if not neighbors:
-        return np.zeros_like(pos_i)
-
-    total_weight = 0.0
-    centroid = np.zeros_like(pos_i)
-    for neighbor_id, weight in neighbors.items():
-        pos_j = all_positions.get(neighbor_id)
-        if pos_j is None:
-            continue
-        # Saturation: neighbors returned often contribute less to BH
-        neighbor_state = cache.get_node(neighbor_id)
-        rc = neighbor_state.return_count if neighbor_state else 0.0
-        saturation = 1.0 / (1.0 + rc * config.saturation_rate)
-        effective_weight = weight * saturation
-
-        centroid = centroid + effective_weight * pos_j
-        total_weight += effective_weight
-
-    if total_weight < 1e-8:
-        return np.zeros_like(pos_i)
-
-    centroid = centroid / total_weight
-    bh_mass = config.bh_mass_scale * math.log(1.0 + total_weight)
-
-    diff = centroid - pos_i
-    distance_sq = float(np.dot(diff, diff)) + config.gravity_epsilon
-    distance = math.sqrt(distance_sq)
-    G = config.bh_gravity_G if config.bh_gravity_G > 0 else config.gravity_G
-    magnitude = G * bh_mass / distance_sq
-    direction = diff / distance
-
-    # Thermal escape: high temperature nodes resist BH capture
-    escape_factor = 1.0 / (1.0 + temperature_i * config.thermal_escape_scale)
-
-    return (magnitude * direction * escape_factor).astype(np.float32)
-
-
 def bh_factor(mass: float, theta: float, sigma: float) -> float:
     """Phase M Stage 1 — continuous mass-threshold BH activation.
 

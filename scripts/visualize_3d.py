@@ -35,7 +35,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from gaottt.config import GaOTTTConfig
-from gaottt.core.gravity import compute_virtual_position
+from gaottt.core.gravity import bh_factor, compute_virtual_position
 from gaottt.index.faiss_index import FaissIndex
 from gaottt.store.sqlite_store import SqliteStore
 
@@ -138,64 +138,33 @@ async def load_data(config: GaOTTTConfig):
     return vectors, ids, state_map, doc_map, edges, displacements, velocities, cooccurrence_neighbors
 
 
-def compute_bh_centroids_3d(
+def compute_mass_bh_nodes(
     ids: list[str],
-    coords_3d: np.ndarray,
-    cooccurrence_neighbors: dict[str, dict[str, float]],
     masses: np.ndarray,
     config: GaOTTTConfig,
-) -> list[dict]:
-    """Compute BH centroid positions in 3D space for visualization.
+) -> list[tuple[int, float]]:
+    """Phase M Stage 1 — return ``[(node_index, bh_factor), ...]`` for every
+    node whose mass crosses the BH attractor threshold.
 
-    Returns list of {position, bh_mass, member_count, member_ids} for significant BHs.
-    Deduplicates nearby centroids to avoid clutter.
+    Replaces the legacy ``compute_bh_centroids_3d`` (co-occurrence centroid
+    averaging) — a BH is now literally a heavy node, not an emergent
+    cluster centroid. ``bh_factor(mass, θ, σ) = tanh((mass-θ)/σ)``, clamped
+    to 0 below ``θ - 2σ``. Returns an empty list when the new attractor is
+    disabled or no node has accumulated enough mass yet.
     """
-    id_to_idx = {nid: i for i, nid in enumerate(ids)}
-    seen_centroids: list[dict] = []
-
-    for i, node_id in enumerate(ids):
-        neighbors = cooccurrence_neighbors.get(node_id, {})
-        if not neighbors:
+    if not config.mass_bh_enabled:
+        return []
+    cutoff = config.mass_bh_theta - 2.0 * config.mass_bh_sigma
+    out: list[tuple[int, float]] = []
+    for i, _nid in enumerate(ids):
+        m = float(masses[i])
+        if m <= cutoff:
             continue
-
-        total_weight = 0.0
-        centroid = np.zeros(3, dtype=np.float64)
-        member_ids = []
-        for neighbor_id, weight in neighbors.items():
-            j = id_to_idx.get(neighbor_id)
-            if j is None:
-                continue
-            centroid += weight * coords_3d[j].astype(np.float64)
-            total_weight += weight
-            member_ids.append(neighbor_id)
-
-        if total_weight < 5.0:  # skip weak clusters
+        f = bh_factor(m, config.mass_bh_theta, config.mass_bh_sigma)
+        if f <= 0.0:
             continue
-
-        centroid /= total_weight
-        bh_mass = config.bh_mass_scale * math.log(1.0 + total_weight)
-
-        # Deduplicate: skip if too close to an existing centroid
-        too_close = False
-        for existing in seen_centroids:
-            if np.linalg.norm(centroid - existing["position"]) < 0.5:
-                # Merge: keep the heavier one
-                if bh_mass > existing["bh_mass"]:
-                    existing["position"] = centroid
-                    existing["bh_mass"] = bh_mass
-                    existing["total_weight"] = total_weight
-                too_close = True
-                break
-
-        if not too_close:
-            seen_centroids.append({
-                "position": centroid,
-                "bh_mass": bh_mass,
-                "total_weight": total_weight,
-                "member_count": len(member_ids),
-            })
-
-    return seen_centroids
+        out.append((i, f))
+    return out
 
 
 def build_virtual_vectors(vectors, ids, displacements, state_map):
@@ -431,49 +400,55 @@ def add_nodes_to_figure(
                 hoverinfo="skip", showlegend=False,
             ))
 
-    # Co-occurrence Black Holes (cluster centroids)
-    if cooccurrence_neighbors is not None and config is not None:
-        bh_list = compute_bh_centroids_3d(ids, coords_3d, cooccurrence_neighbors, masses, config)
+    # Phase M Stage 1 — Mass-based Black Holes (literal: a node IS a BH iff
+    # its mass crossed the threshold). Replaces the legacy co-occurrence
+    # centroid BH. ``cooccurrence_neighbors`` is still accepted for
+    # call-site compatibility but is no longer used to compute BHs — edges
+    # remain in the filament rendering above.
+    if config is not None:
+        bh_list = compute_mass_bh_nodes(ids, masses, config)
         if bh_list:
-            bh_x = [bh["position"][0] for bh in bh_list]
-            bh_y = [bh["position"][1] for bh in bh_list]
-            bh_z = [bh["position"][2] for bh in bh_list]
-            bh_sizes = [3.0 + 6.0 * min(1.0, bh["bh_mass"] / 3.0) for bh in bh_list]
+            bh_x = [coords_3d[i, 0] for i, _ in bh_list]
+            bh_y = [coords_3d[i, 1] for i, _ in bh_list]
+            bh_z = [coords_3d[i, 2] for i, _ in bh_list]
+            # Marker size: 5 + 8 * bh_factor (range ~5 just above θ-2σ → ~13 deep in attractor regime).
+            bh_sizes = [5.0 + 8.0 * f for f in (b[1] for b in bh_list)]
             bh_texts = [
-                f"<b>Black Hole</b><br>"
-                f"BH mass: {bh['bh_mass']:.2f}<br>"
-                f"Total edge weight: {bh['total_weight']:.0f}<br>"
-                f"Members: {bh['member_count']}"
-                for bh in bh_list
+                f"<b>Mass-BH</b><br>"
+                f"node id: {ids[i][:8]}..<br>"
+                f"mass: {masses[i]:.2f}<br>"
+                f"bh_factor: {f:.3f}<br>"
+                f"(θ={config.mass_bh_theta}, σ={config.mass_bh_sigma})"
+                for i, f in bh_list
             ]
             _add(go.Scatter3d(
                 x=bh_x, y=bh_y, z=bh_z,
                 mode="markers",
                 marker=dict(
                     size=bh_sizes,
-                    color="rgba(120,50,200,0.8)",
+                    color="rgba(180,80,220,0.85)",
                     symbol="diamond",
                 ),
                 text=bh_texts, hoverinfo="text",
-                name=f"Black Holes ({len(bh_list)})",
+                name=f"Mass-BH ({len(bh_list)})",
             ))
 
-            # BH gravity wells (faint rings around each BH)
+            # Gravity wells around each mass-BH, radius scaled by bh_factor.
             data_extent = max(
                 np.ptp(coords_3d[:, 0]), np.ptp(coords_3d[:, 1]), np.ptp(coords_3d[:, 2])
             ) if len(coords_3d) > 0 else 1.0
             n_pts = 24
             theta = np.linspace(0, 2 * np.pi, n_pts)
-            for bh in bh_list:
-                radius = min(bh["bh_mass"] * data_extent * 0.015, data_extent * 0.06)
-                cx, cy, cz = bh["position"]
-                alpha = min(0.2, 0.05 + bh["bh_mass"] * 0.03)
+            for i, f in bh_list:
+                radius = min(f * data_extent * 0.05, data_extent * 0.06)
+                cx, cy, cz = coords_3d[i]
+                alpha = min(0.25, 0.08 + f * 0.18)
                 _add(go.Scatter3d(
                     x=(cx + radius * np.cos(theta)).tolist(),
                     y=(cy + radius * np.sin(theta)).tolist(),
                     z=np.full(n_pts, cz).tolist(),
                     mode="lines",
-                    line=dict(color=f"rgba(120,50,200,{alpha:.2f})", width=1.5),
+                    line=dict(color=f"rgba(180,80,220,{alpha:.2f})", width=1.5),
                     hoverinfo="skip", showlegend=False,
                 ))
 
@@ -528,7 +503,7 @@ def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
     fig.add_annotation(
         text=(
             "Size=Mass | Color=Temperature (M赤→A/B青白) | "
-            "Cyan=Velocity | Gold=Gravity radius | Purple◆=Black Holes"
+            "Cyan=Velocity | Gold=Gravity radius | Purple◆=Mass-BH (mass>θ-2σ)"
         ),
         xref="paper", yref="paper", x=0.5, y=-0.03,
         showarrow=False, font=dict(size=11, color="#666666"),
@@ -644,10 +619,15 @@ def main():
     vectors, ids, state_map, doc_map, edges, displacements, velocities, cooc_neighbors = asyncio.run(load_data(config))
     displaced_count = sum(1 for d in displacements.values() if np.linalg.norm(d) > 0.001)
     moving_count = sum(1 for v in velocities.values() if np.linalg.norm(v) > 0.001)
-    bh_nodes = sum(1 for nid in ids if nid in cooc_neighbors and sum(cooc_neighbors[nid].values()) >= 5)
+    # Phase M — count nodes whose mass crosses the BH attractor threshold.
+    bh_cutoff = config.mass_bh_theta - 2.0 * config.mass_bh_sigma
+    bh_nodes = sum(
+        1 for nid in ids
+        if nid in state_map and state_map[nid].mass > bh_cutoff
+    )
     print(f"  {len(ids)} stars, {len(edges)} filaments, "
           f"{displaced_count} displaced, {moving_count} moving, "
-          f"{bh_nodes} nodes with BH")
+          f"{bh_nodes} mass-BH nodes (mass>{bh_cutoff:.1f})")
 
     if args.sample > 0 and args.sample < len(ids):
         print(f"  Sampling {args.sample} stars...")
