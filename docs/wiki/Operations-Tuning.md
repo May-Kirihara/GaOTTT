@@ -76,7 +76,7 @@
 | パラメータ | 既定 | 影響 |
 |---|---|---|
 | wave_initial_k | 3 | seed top-k |
-| wave_max_depth | 2 | 再帰最大深度 |
+| wave_max_depth | 3 | 再帰最大深度 (Phase M follow-up 2026-05-13 で 2→3。1 recall で touch される displacement 範囲が ~20-50 → ~60-150 nodes に拡大、per-recall latency +20-30%。`wave_attenuation=0.5` で第 3 段以降は force<0.001 で自動 filter) |
 | wave_attenuation | 0.7 | 深度ごとの減衰係数 |
 | wave_mass_scale | 1.5 | mass 依存 top-k のスケール |
 | wave_k_with_filter | 1000 | `recall(source_filter=...)` 指定時の seed top-k（dense corpus で sparse class を救済、Phase H Stage 2 で 200→500、2026-05-12 本番 23k DB 検証で 500→1000 引き上げ） |
@@ -152,8 +152,8 @@ quiet node を idle 時間に synthetic recall で再活性化し、co-occurrenc
 | パラメータ | 既定 | 影響 | 上げると | 下げると |
 |---|---|---|---|---|
 | dream_enabled | `True` | Phase G G.2 の全体 ON/OFF | — | 夢ループ無し（Stage 1 のみ） |
-| dream_interval_seconds | 60.0 | 夢 tick 周期 | CPU 占有率↓、quiet 救済が遅い | 早く quiet が育つが CPU↑ |
-| dream_batch_size | 5 | 1 tick で再活性化する quiet node 数 | 多数同時に育つ | レイテンシ少、深く育つ |
+| dream_interval_seconds | 10.0 | 夢 tick 周期 (Phase M follow-up 2026-05-13 で 60→10。background work で hot path 不影響、6 tick/min × batch で 24k 全件カバーが ~3-5 min に短縮) | CPU 占有率↓、quiet 救済が遅い | 早く quiet が育つが CPU↑ |
+| dream_batch_size | 50 | 1 tick で再活性化する quiet node 数 (Phase M follow-up 2026-05-13 で 5→50、各 synthetic recall が wave で 60-150 nodes に伝播するので分散効果は ×10 以上) | 多数同時に育つ | レイテンシ少、深く育つ |
 | dream_mass_ceiling | 1.5 | quiet と判定する mass 上限 | 高 mass まで再活性化 | 真に育っていないノードのみ救済 |
 | dream_min_idle_seconds | 300.0 | 最終 access からこれ以上経った node のみ対象 | 多くが対象になる | 本当に休眠中のもののみ |
 | dream_top_k | 10 | 各 synthetic recall の top_k | 広く co-occurrence | 焦点絞った re-activation |

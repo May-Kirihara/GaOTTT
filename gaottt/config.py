@@ -226,7 +226,14 @@ class GaOTTTConfig:
 
     # Gravity wave propagation
     wave_initial_k: int = 3            # Initial FAISS top-k for seed nodes
-    wave_max_depth: int = 2            # Maximum recursion depth
+    # Phase M follow-up (2026-05-13): depth 2 → 3 to widen the displacement
+    # update scope per recall (from ~20-50 nodes to ~60-150). Wave force
+    # attenuation (`wave_attenuation`) still bounds the reach — depth 3
+    # third-frontier nodes receive ~0.25 of seed force, deeper nodes drop
+    # below the 0.001 force floor and are filtered automatically. Per-recall
+    # latency cost +20-30% (mostly the extra per-frontier neighbor lookup).
+    # Set to 2 to restore Phase L Stage 1 behaviour.
+    wave_max_depth: int = 3            # Maximum recursion depth
     wave_base_k: int = 2              # Minimum neighbors per node
     wave_mass_scale: float = 2.0       # Mass-to-top-k scaling factor
     wave_max_node_k: int = 10          # Maximum neighbors per node
@@ -403,8 +410,14 @@ class GaOTTTConfig:
     # the single bound-to-orbit moment, dream is gradual tidal capture
     # spread across idle wall-clock.
     dream_enabled: bool = True
-    dream_interval_seconds: float = 60.0   # tick cadence; 0 disables loop
-    dream_batch_size: int = 5              # quiet nodes revisited per tick
+    # Phase M follow-up (2026-05-13): broaden the dream loop so it touches
+    # ~300 source nodes/min (50 per tick × 6 ticks/min) instead of 5/min.
+    # Each synthetic recall wave-reaches ~60-150 additional nodes, so full
+    # 24k-corpus coverage drops from "weeks" to ~3-5 minutes of background
+    # activity. Pure background work — no impact on user-facing recall
+    # latency. Set interval=60s + batch=5 to restore Phase L Stage 1 cadence.
+    dream_interval_seconds: float = 10.0   # tick cadence; 0 disables loop
+    dream_batch_size: int = 50             # quiet nodes revisited per tick
     dream_mass_ceiling: float = 1.5        # only nodes with mass below this
     dream_min_idle_seconds: float = 300.0  # only nodes idle this long
     dream_top_k: int = 10                  # top_k for the synthetic recall
