@@ -36,6 +36,16 @@ class CacheLayer:
         # query). ``tags_by_id[node_id]`` = list of tag strings as written
         # in documents.metadata.tags.
         self.tags_by_id: dict[str, list[str]] = {}
+        # Phase M Stage 1 — Mass conservation: per-node structural identifiers
+        # used to detect "self-force" co-occurrence (same source document,
+        # same supernova cohort). Mirrored from documents.metadata.
+        # original_id_by_id[nid]: id of the source document/object the node
+        #   was chunked from (single-doc remember uses node_id itself, file
+        #   chunks share the file's stable id, csv rows use the csv id).
+        # cohort_id_by_id[nid]: id of the supernova cohort the node was born
+        #   in (set on every Phase K batch; absent for singleton remember).
+        self.original_id_by_id: dict[str, str] = {}
+        self.cohort_id_by_id: dict[str, str] = {}
         self.dirty_nodes: set[str] = set()
         self.dirty_edges: set[tuple[str, str]] = set()
         self.dirty_displacements: set[str] = set()
@@ -187,6 +197,25 @@ class CacheLayer:
     def get_tags(self, node_id: str) -> list[str]:
         return self.tags_by_id.get(node_id, [])
 
+    # --- Cohort / original lookup (Phase M Stage 1) ---
+
+    def get_original(self, node_id: str) -> str | None:
+        """Stable id of the document/object the node was chunked from. None
+        when absent — callers must treat this as "no self-force linkage"."""
+        return self.original_id_by_id.get(node_id)
+
+    def set_original(self, node_id: str, original_id: str) -> None:
+        if original_id:
+            self.original_id_by_id[node_id] = original_id
+
+    def get_cohort(self, node_id: str) -> str | None:
+        """Supernova cohort id, or None for singleton remember."""
+        return self.cohort_id_by_id.get(node_id)
+
+    def set_cohort(self, node_id: str, cohort_id: str) -> None:
+        if cohort_id:
+            self.cohort_id_by_id[node_id] = cohort_id
+
     def find_ids_by_tag_filter(self, tag_substrings: list[str]) -> set[str]:
         """OR-match: return ids whose tag list contains any string that
         contains any of the requested substrings (substring match per
@@ -235,6 +264,16 @@ class CacheLayer:
             nid: tags for nid, tags in tags_map.items() if nid not in archived_ids
         }
 
+        # Phase M Stage 1 — mass-conservation identifiers.
+        original_map = await store.get_all_originals()
+        self.original_id_by_id = {
+            nid: oid for nid, oid in original_map.items() if nid not in archived_ids
+        }
+        cohort_map = await store.get_all_cohorts()
+        self.cohort_id_by_id = {
+            nid: cid for nid, cid in cohort_map.items() if nid not in archived_ids
+        }
+
         # Phase J Stage 1: mirror directed edges into the in-memory cache.
         # Skip edges that touch archived nodes so the sync recall path never
         # traverses zombie connections.
@@ -271,6 +310,8 @@ class CacheLayer:
         self.velocity_cache.pop(node_id, None)
         self.source_by_id.pop(node_id, None)
         self.tags_by_id.pop(node_id, None)
+        self.original_id_by_id.pop(node_id, None)
+        self.cohort_id_by_id.pop(node_id, None)
         self.dirty_nodes.discard(node_id)
         self.dirty_displacements.discard(node_id)
         self.dirty_velocities.discard(node_id)

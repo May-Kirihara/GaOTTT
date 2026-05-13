@@ -309,6 +309,15 @@ class PrefetchStatusResponse(BaseModel):
     pool: dict[str, Any]
 
 
+class ResetMassesRequest(BaseModel):
+    value: float = Field(default=1.0, ge=0.0)
+
+
+class ResetMassesResponse(BaseModel):
+    nodes_reset: int
+    value: float
+
+
 # --- Ingest service ---
 
 class IngestRequest(BaseModel):

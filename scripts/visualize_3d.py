@@ -35,7 +35,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from gaottt.config import GaOTTTConfig
-from gaottt.core.gravity import compute_virtual_position
+from gaottt.core.gravity import bh_factor, compute_virtual_position
 from gaottt.index.faiss_index import FaissIndex
 from gaottt.store.sqlite_store import SqliteStore
 
@@ -99,6 +99,134 @@ def reduce_to_3d(vectors: np.ndarray, method: str = "pca") -> np.ndarray:
         return PCA(n_components=3).fit_transform(vectors)
 
 
+def sphere_wrap(coords_3d: np.ndarray) -> np.ndarray:
+    """Project 3D coords onto the unit sphere (L2-normalize each row).
+
+    The embedding space is the unit hypersphere S^767 — every vector RURI
+    emits is unit-norm and the physics operates on that surface. Plotting
+    PCA/UMAP output as a flat Euclidean cloud makes the unit-sphere
+    constraint invisible; this normalization puts the visual back on the
+    geometry the simulation actually runs on. Numerically lossy by design
+    (radial information is collapsed) — the viz is for intuition, not
+    measurement.
+    """
+    norms = np.linalg.norm(coords_3d, axis=1, keepdims=True)
+    norms = np.where(norms < 1e-9, 1.0, norms)
+    return (coords_3d / norms).astype(np.float32)
+
+
+def _wireframe_sphere_traces(
+    n_lat: int = 8,
+    n_lon: int = 12,
+    n_pts: int = 60,
+    color: str = "rgba(70,100,160,0.10)",
+) -> list:
+    """Faint lat/lon wireframe for the unit sphere — visual reference so
+    the sphere-wrapped node cloud reads as "on a globe" instead of "an
+    arbitrary ball of points". Returns a list of plotly traces ready to
+    add to a figure."""
+    traces = []
+    # Latitude rings (parallels): each at constant z, circle in xy-plane
+    for i in range(1, n_lat):
+        phi = math.pi * i / n_lat - math.pi / 2.0   # [-π/2, π/2]
+        z = math.sin(phi)
+        r = math.cos(phi)
+        theta = np.linspace(0, 2 * math.pi, n_pts)
+        traces.append(go.Scatter3d(
+            x=(r * np.cos(theta)).tolist(),
+            y=(r * np.sin(theta)).tolist(),
+            z=[z] * n_pts,
+            mode="lines",
+            line=dict(color=color, width=1),
+            hoverinfo="skip", showlegend=False,
+        ))
+    # Longitude rings (meridians): each in a plane rotated about the z-axis
+    for j in range(n_lon):
+        lam = 2 * math.pi * j / n_lon
+        phi = np.linspace(-math.pi / 2, math.pi / 2, n_pts)
+        cx = np.cos(phi) * math.cos(lam)
+        cy = np.cos(phi) * math.sin(lam)
+        cz = np.sin(phi)
+        traces.append(go.Scatter3d(
+            x=cx.tolist(), y=cy.tolist(), z=cz.tolist(),
+            mode="lines",
+            line=dict(color=color, width=1),
+            hoverinfo="skip", showlegend=False,
+        ))
+    return traces
+
+
+def add_wireframe_sphere(fig, row=None, col=None) -> None:
+    """Insert the unit-sphere wireframe into ``fig`` (or a subplot of it)."""
+    for trace in _wireframe_sphere_traces():
+        if row is not None:
+            fig.add_trace(trace, row=row, col=col)
+        else:
+            fig.add_trace(trace)
+
+
+def slerp_arc(
+    p1: np.ndarray,
+    p2: np.ndarray,
+    n_pts: int = 10,
+) -> np.ndarray:
+    """Great-circle arc between two unit-sphere points via spherical linear
+    interpolation. Returns ``(n_pts, 3)`` array of points along the
+    geodesic from p1 to p2.
+
+    Edge cases:
+      * p1 ≈ p2 → straight line (the arc degenerates)
+      * p1 ≈ -p2 → infinite great circles exist; we fall back to a chord
+        through the origin (rare in practice for embedding clusters)
+    """
+    dot = float(np.clip(np.dot(p1, p2), -1.0, 1.0))
+    # Near-identical or antipodal: degenerate, use linear interpolation.
+    if abs(dot) > 0.9999:
+        ts = np.linspace(0.0, 1.0, n_pts)
+        return np.stack([(1 - t) * p1 + t * p2 for t in ts]).astype(np.float32)
+    theta = math.acos(dot)
+    sin_theta = math.sin(theta)
+    ts = np.linspace(0.0, 1.0, n_pts)
+    out = np.empty((n_pts, 3), dtype=np.float32)
+    for k, t in enumerate(ts):
+        a = math.sin((1.0 - t) * theta) / sin_theta
+        b = math.sin(t * theta) / sin_theta
+        out[k] = a * p1 + b * p2
+    return out
+
+
+def tangent_geodesic(
+    p: np.ndarray,
+    v: np.ndarray,
+    n_pts: int = 8,
+) -> np.ndarray | None:
+    """Geodesic segment from ``p`` along the tangent projection of ``v``.
+
+    The velocity vector ``v`` lives in ambient 3D (PCA-projected from 768D).
+    On a unit sphere the physical motion is along the tangent component
+    ``v_t = v - (v·p)·p``; the geodesic is the great circle in the plane
+    spanned by ``p`` and ``v_t``, traversed at angular speed ``|v_t|``.
+    Position at time t: ``cos(t·ω) p + sin(t·ω) v_t/|v_t|`` where
+    ``ω = |v_t|`` (taken as radians, matching the convention of the flat
+    arrow where the tip lands at ``p + v``).
+
+    Returns ``None`` if the tangent component is too small to draw
+    (purely radial velocity, which can't survive the sphere constraint).
+    """
+    dot = float(np.dot(v, p))
+    v_t = v - dot * p
+    omega = float(np.linalg.norm(v_t))
+    if omega < 1e-6:
+        return None
+    v_t_hat = v_t / omega
+    ts = np.linspace(0.0, 1.0, n_pts)
+    out = np.empty((n_pts, 3), dtype=np.float32)
+    for k, t in enumerate(ts):
+        ang = t * omega
+        out[k] = math.cos(ang) * p + math.sin(ang) * v_t_hat
+    return out
+
+
 async def load_data(config: GaOTTTConfig):
     faiss_index = FaissIndex(dimension=config.embedding_dim)
     faiss_index.load(config.faiss_index_path)
@@ -138,64 +266,33 @@ async def load_data(config: GaOTTTConfig):
     return vectors, ids, state_map, doc_map, edges, displacements, velocities, cooccurrence_neighbors
 
 
-def compute_bh_centroids_3d(
+def compute_mass_bh_nodes(
     ids: list[str],
-    coords_3d: np.ndarray,
-    cooccurrence_neighbors: dict[str, dict[str, float]],
     masses: np.ndarray,
     config: GaOTTTConfig,
-) -> list[dict]:
-    """Compute BH centroid positions in 3D space for visualization.
+) -> list[tuple[int, float]]:
+    """Phase M Stage 1 — return ``[(node_index, bh_factor), ...]`` for every
+    node whose mass crosses the BH attractor threshold.
 
-    Returns list of {position, bh_mass, member_count, member_ids} for significant BHs.
-    Deduplicates nearby centroids to avoid clutter.
+    Replaces the legacy ``compute_bh_centroids_3d`` (co-occurrence centroid
+    averaging) — a BH is now literally a heavy node, not an emergent
+    cluster centroid. ``bh_factor(mass, θ, σ) = tanh((mass-θ)/σ)``, clamped
+    to 0 below ``θ - 2σ``. Returns an empty list when the new attractor is
+    disabled or no node has accumulated enough mass yet.
     """
-    id_to_idx = {nid: i for i, nid in enumerate(ids)}
-    seen_centroids: list[dict] = []
-
-    for i, node_id in enumerate(ids):
-        neighbors = cooccurrence_neighbors.get(node_id, {})
-        if not neighbors:
+    if not config.mass_bh_enabled:
+        return []
+    cutoff = config.mass_bh_theta - 2.0 * config.mass_bh_sigma
+    out: list[tuple[int, float]] = []
+    for i, _nid in enumerate(ids):
+        m = float(masses[i])
+        if m <= cutoff:
             continue
-
-        total_weight = 0.0
-        centroid = np.zeros(3, dtype=np.float64)
-        member_ids = []
-        for neighbor_id, weight in neighbors.items():
-            j = id_to_idx.get(neighbor_id)
-            if j is None:
-                continue
-            centroid += weight * coords_3d[j].astype(np.float64)
-            total_weight += weight
-            member_ids.append(neighbor_id)
-
-        if total_weight < 5.0:  # skip weak clusters
+        f = bh_factor(m, config.mass_bh_theta, config.mass_bh_sigma)
+        if f <= 0.0:
             continue
-
-        centroid /= total_weight
-        bh_mass = config.bh_mass_scale * math.log(1.0 + total_weight)
-
-        # Deduplicate: skip if too close to an existing centroid
-        too_close = False
-        for existing in seen_centroids:
-            if np.linalg.norm(centroid - existing["position"]) < 0.5:
-                # Merge: keep the heavier one
-                if bh_mass > existing["bh_mass"]:
-                    existing["position"] = centroid
-                    existing["bh_mass"] = bh_mass
-                    existing["total_weight"] = total_weight
-                too_close = True
-                break
-
-        if not too_close:
-            seen_centroids.append({
-                "position": centroid,
-                "bh_mass": bh_mass,
-                "total_weight": total_weight,
-                "member_count": len(member_ids),
-            })
-
-    return seen_centroids
+        out.append((i, f))
+    return out
 
 
 def build_virtual_vectors(vectors, ids, displacements, state_map):
@@ -346,9 +443,24 @@ SPACE_SCENE = dict(
 def add_nodes_to_figure(
     fig, coords_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
     hover_texts, sources, edges, velocities_3d=None, config=None,
-    cooccurrence_neighbors=None, row=None, col=None,
+    cooccurrence_neighbors=None, row=None, col=None, wireframe: bool = True,
+    curves: bool = True,
+    filament_pts: int = 10,
+    velocity_pts: int = 8,
 ):
-    """Add stellar nodes, filaments, velocity arrows, gravity spheres, and BH centroids."""
+    """Add stellar nodes, filaments, velocity arrows, gravity spheres, and BH centroids.
+
+    ``wireframe=True`` (default) draws a faint unit-sphere reference grid
+    behind everything — assumes ``coords_3d`` is already on / near the
+    unit sphere (see ``sphere_wrap``). Set False for legacy flat-3D view.
+
+    ``curves=True`` (default in sphere mode) renders filaments as
+    great-circle arcs and velocity arrows as tangent-projected geodesic
+    segments — surface-of-sphere geometry instead of straight chords
+    through the interior. Set False (``--straight-lines`` from the CLI)
+    to fall back to chord rendering, which is cheaper but lies about
+    the unit-sphere constraint.
+    """
 
     def _add(trace):
         if row is not None:
@@ -356,13 +468,29 @@ def add_nodes_to_figure(
         else:
             fig.add_trace(trace)
 
-    # Edges as faint filaments
+    if wireframe:
+        add_wireframe_sphere(fig, row=row, col=col)
+
+    # Edges as faint filaments — curves on the sphere when curves=True,
+    # chords through the interior otherwise. Each filament contributes
+    # filament_pts (curve) or 2 (chord) points; None terminators break
+    # segments inside one trace.
     if edges:
         id_to_idx = {nid: i for i, nid in enumerate(ids)}
         ex, ey, ez = [], [], []
         for edge in edges:
-            if edge.src in id_to_idx and edge.dst in id_to_idx:
-                i, j = id_to_idx[edge.src], id_to_idx[edge.dst]
+            if edge.src not in id_to_idx or edge.dst not in id_to_idx:
+                continue
+            i, j = id_to_idx[edge.src], id_to_idx[edge.dst]
+            if curves:
+                arc = slerp_arc(coords_3d[i], coords_3d[j], n_pts=filament_pts)
+                ex.extend(arc[:, 0].tolist())
+                ex.append(None)
+                ey.extend(arc[:, 1].tolist())
+                ey.append(None)
+                ez.extend(arc[:, 2].tolist())
+                ez.append(None)
+            else:
                 ex.extend([coords_3d[i, 0], coords_3d[j, 0], None])
                 ey.extend([coords_3d[i, 1], coords_3d[j, 1], None])
                 ez.extend([coords_3d[i, 2], coords_3d[j, 2], None])
@@ -373,7 +501,10 @@ def add_nodes_to_figure(
                 hoverinfo="skip", name="Filaments", showlegend=True,
             ))
 
-    # Velocity arrows: length = actual next-step displacement in 3D
+    # Velocity arrows — tangent-projected great-circle walks in sphere
+    # mode (physical: the node IS on the sphere, so its next-step
+    # position is along a great circle in the tangent direction), or
+    # straight chord ``p → p+v`` otherwise.
     if velocities_3d is not None:
         ax, ay, az = [], [], []
 
@@ -381,9 +512,20 @@ def add_nodes_to_figure(
             if vel_norms[i] < 0.001:
                 continue
             v = velocities_3d[i]  # already projected to 3D, dt=1 so this IS the next displacement
-            ax.extend([coords_3d[i, 0], coords_3d[i, 0] + v[0], None])
-            ay.extend([coords_3d[i, 1], coords_3d[i, 1] + v[1], None])
-            az.extend([coords_3d[i, 2], coords_3d[i, 2] + v[2], None])
+            if curves:
+                geo = tangent_geodesic(coords_3d[i], v, n_pts=velocity_pts)
+                if geo is None:
+                    continue
+                ax.extend(geo[:, 0].tolist())
+                ax.append(None)
+                ay.extend(geo[:, 1].tolist())
+                ay.append(None)
+                az.extend(geo[:, 2].tolist())
+                az.append(None)
+            else:
+                ax.extend([coords_3d[i, 0], coords_3d[i, 0] + v[0], None])
+                ay.extend([coords_3d[i, 1], coords_3d[i, 1] + v[1], None])
+                az.extend([coords_3d[i, 2], coords_3d[i, 2] + v[2], None])
 
         if ax:
             _add(go.Scatter3d(
@@ -431,49 +573,55 @@ def add_nodes_to_figure(
                 hoverinfo="skip", showlegend=False,
             ))
 
-    # Co-occurrence Black Holes (cluster centroids)
-    if cooccurrence_neighbors is not None and config is not None:
-        bh_list = compute_bh_centroids_3d(ids, coords_3d, cooccurrence_neighbors, masses, config)
+    # Phase M Stage 1 — Mass-based Black Holes (literal: a node IS a BH iff
+    # its mass crossed the threshold). Replaces the legacy co-occurrence
+    # centroid BH. ``cooccurrence_neighbors`` is still accepted for
+    # call-site compatibility but is no longer used to compute BHs — edges
+    # remain in the filament rendering above.
+    if config is not None:
+        bh_list = compute_mass_bh_nodes(ids, masses, config)
         if bh_list:
-            bh_x = [bh["position"][0] for bh in bh_list]
-            bh_y = [bh["position"][1] for bh in bh_list]
-            bh_z = [bh["position"][2] for bh in bh_list]
-            bh_sizes = [3.0 + 6.0 * min(1.0, bh["bh_mass"] / 3.0) for bh in bh_list]
+            bh_x = [coords_3d[i, 0] for i, _ in bh_list]
+            bh_y = [coords_3d[i, 1] for i, _ in bh_list]
+            bh_z = [coords_3d[i, 2] for i, _ in bh_list]
+            # Marker size: 5 + 8 * bh_factor (range ~5 just above θ-2σ → ~13 deep in attractor regime).
+            bh_sizes = [5.0 + 8.0 * f for f in (b[1] for b in bh_list)]
             bh_texts = [
-                f"<b>Black Hole</b><br>"
-                f"BH mass: {bh['bh_mass']:.2f}<br>"
-                f"Total edge weight: {bh['total_weight']:.0f}<br>"
-                f"Members: {bh['member_count']}"
-                for bh in bh_list
+                f"<b>Mass-BH</b><br>"
+                f"node id: {ids[i][:8]}..<br>"
+                f"mass: {masses[i]:.2f}<br>"
+                f"bh_factor: {f:.3f}<br>"
+                f"(θ={config.mass_bh_theta}, σ={config.mass_bh_sigma})"
+                for i, f in bh_list
             ]
             _add(go.Scatter3d(
                 x=bh_x, y=bh_y, z=bh_z,
                 mode="markers",
                 marker=dict(
                     size=bh_sizes,
-                    color="rgba(120,50,200,0.8)",
+                    color="rgba(180,80,220,0.85)",
                     symbol="diamond",
                 ),
                 text=bh_texts, hoverinfo="text",
-                name=f"Black Holes ({len(bh_list)})",
+                name=f"Mass-BH ({len(bh_list)})",
             ))
 
-            # BH gravity wells (faint rings around each BH)
+            # Gravity wells around each mass-BH, radius scaled by bh_factor.
             data_extent = max(
                 np.ptp(coords_3d[:, 0]), np.ptp(coords_3d[:, 1]), np.ptp(coords_3d[:, 2])
             ) if len(coords_3d) > 0 else 1.0
             n_pts = 24
             theta = np.linspace(0, 2 * np.pi, n_pts)
-            for bh in bh_list:
-                radius = min(bh["bh_mass"] * data_extent * 0.015, data_extent * 0.06)
-                cx, cy, cz = bh["position"]
-                alpha = min(0.2, 0.05 + bh["bh_mass"] * 0.03)
+            for i, f in bh_list:
+                radius = min(f * data_extent * 0.05, data_extent * 0.06)
+                cx, cy, cz = coords_3d[i]
+                alpha = min(0.25, 0.08 + f * 0.18)
                 _add(go.Scatter3d(
                     x=(cx + radius * np.cos(theta)).tolist(),
                     y=(cy + radius * np.sin(theta)).tolist(),
                     z=np.full(n_pts, cz).tolist(),
                     mode="lines",
-                    line=dict(color=f"rgba(120,50,200,{alpha:.2f})", width=1.5),
+                    line=dict(color=f"rgba(180,80,220,{alpha:.2f})", width=1.5),
                     hoverinfo="skip", showlegend=False,
                 ))
 
@@ -494,14 +642,16 @@ def add_nodes_to_figure(
 
 
 def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
-                        cooccurrence_neighbors=None, title_suffix=""):
+                        cooccurrence_neighbors=None, title_suffix="",
+                        wireframe: bool = True, curves: bool = True):
     masses, temperatures, decays, disp_norms, vel_norms, hover_texts, sources = props
 
     fig = go.Figure()
     add_nodes_to_figure(
         fig, coords_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
         hover_texts, sources, edges, velocities_3d=velocities_3d, config=config,
-        cooccurrence_neighbors=cooccurrence_neighbors,
+        cooccurrence_neighbors=cooccurrence_neighbors, wireframe=wireframe,
+        curves=curves,
     )
 
     displaced = sum(1 for d in disp_norms if d > 0.001)
@@ -528,7 +678,7 @@ def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
     fig.add_annotation(
         text=(
             "Size=Mass | Color=Temperature (M赤→A/B青白) | "
-            "Cyan=Velocity | Gold=Gravity radius | Purple◆=Black Holes"
+            "Cyan=Velocity | Gold=Gravity radius | Purple◆=Mass-BH (mass>θ-2σ)"
         ),
         xref="paper", yref="paper", x=0.5, y=-0.03,
         showarrow=False, font=dict(size=11, color="#666666"),
@@ -537,7 +687,8 @@ def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
 
 
 def build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, velocities_3d, config,
-                            cooccurrence_neighbors=None):
+                            cooccurrence_neighbors=None,
+                            wireframe: bool = True, curves: bool = True):
     masses, temperatures, decays, disp_norms, vel_norms, hover_texts, sources = props
 
     fig = make_subplots(
@@ -551,12 +702,14 @@ def build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, velocities_3
 
     add_nodes_to_figure(
         fig, orig_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
-        hover_texts, sources, edges, row=1, col=1,
+        hover_texts, sources, edges, row=1, col=1, wireframe=wireframe,
+        curves=curves,
     )
     add_nodes_to_figure(
         fig, virtual_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
         hover_texts, sources, edges, velocities_3d=velocities_3d, config=config,
         cooccurrence_neighbors=cooccurrence_neighbors, row=1, col=2,
+        wireframe=wireframe, curves=curves,
     )
 
     displaced = sum(1 for d in disp_norms if d > 0.001)
@@ -633,6 +786,21 @@ def main():
         "--compare", action="store_true",
         help="(deprecated alias for --position-space compare)",
     )
+    parser.add_argument(
+        "--flat", action="store_true",
+        help="Skip the unit-sphere wrap and wireframe background — render "
+             "the PCA/UMAP output as an unbounded 3D cloud. Useful for "
+             "inspecting absolute distances; default is the sphere view "
+             "since the embedding space is itself the unit hypersphere.",
+    )
+    parser.add_argument(
+        "--straight-lines", action="store_true",
+        help="In sphere mode, draw filaments as chords and velocity arrows "
+             "as straight ``p+v`` segments instead of great-circle arcs / "
+             "tangent geodesics. Cuts ~10x off the trace point count and "
+             "speeds up the initial HTML load; loses the visual ‘motion is "
+             "on the sphere surface’ metaphor. Implied by --flat.",
+    )
     args = parser.parse_args()
 
     if args.compare:
@@ -644,10 +812,15 @@ def main():
     vectors, ids, state_map, doc_map, edges, displacements, velocities, cooc_neighbors = asyncio.run(load_data(config))
     displaced_count = sum(1 for d in displacements.values() if np.linalg.norm(d) > 0.001)
     moving_count = sum(1 for v in velocities.values() if np.linalg.norm(v) > 0.001)
-    bh_nodes = sum(1 for nid in ids if nid in cooc_neighbors and sum(cooc_neighbors[nid].values()) >= 5)
+    # Phase M — count nodes whose mass crosses the BH attractor threshold.
+    bh_cutoff = config.mass_bh_theta - 2.0 * config.mass_bh_sigma
+    bh_nodes = sum(
+        1 for nid in ids
+        if nid in state_map and state_map[nid].mass > bh_cutoff
+    )
     print(f"  {len(ids)} stars, {len(edges)} filaments, "
           f"{displaced_count} displaced, {moving_count} moving, "
-          f"{bh_nodes} nodes with BH")
+          f"{bh_nodes} mass-BH nodes (mass>{bh_cutoff:.1f})")
 
     if args.sample > 0 and args.sample < len(ids):
         print(f"  Sampling {args.sample} stars...")
@@ -692,6 +865,16 @@ def main():
         print("Building virtual positions (raw + displacement)...")
         return build_virtual_vectors(vectors, ids, displacements, state_map), "compute"
 
+    use_sphere = not args.flat
+    # Curves only make sense inside the sphere world — --flat implies straight.
+    use_curves = use_sphere and not args.straight_lines
+    if use_sphere:
+        mode = "geodesic curves" if use_curves else "straight chords"
+        print(
+            f"Sphere-wrap: ON ({mode}). Pass --flat for unbounded 3D, "
+            "--straight-lines for chord rendering inside sphere mode."
+        )
+
     if args.position_space == "compare":
         virtual_vectors, vsrc = _build_virtual()
 
@@ -712,9 +895,14 @@ def main():
 
         vel_3d = project_velocities_to_3d(ids, velocities, vectors, args.method, pca_components)
 
+        if use_sphere:
+            orig_3d = sphere_wrap(orig_3d)
+            virtual_3d = sphere_wrap(virtual_3d)
+
         print(f"Building cosmic comparison (virtual source: {vsrc})...")
         fig = build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, vel_3d, config,
-                                      cooccurrence_neighbors=cooc_neighbors)
+                                      cooccurrence_neighbors=cooc_neighbors,
+                                      wireframe=use_sphere, curves=use_curves)
 
     elif args.position_space == "raw":
         print(f"Reducing raw embedding to 3D ({args.method.upper()})...")
@@ -729,9 +917,14 @@ def main():
 
         vel_3d = project_velocities_to_3d(ids, velocities, vectors, args.method, pca_components)
 
+        if use_sphere:
+            coords_3d = sphere_wrap(coords_3d)
+
         print("Building cosmic view...")
         fig = build_single_figure(coords_3d, ids, props, edges, vel_3d, config,
-                                  cooccurrence_neighbors=cooc_neighbors, title_suffix="— Raw Space")
+                                  cooccurrence_neighbors=cooc_neighbors,
+                                  title_suffix="— Raw Space",
+                                  wireframe=use_sphere, curves=use_curves)
 
     else:  # virtual
         virtual_vectors, vsrc = _build_virtual()
@@ -748,10 +941,15 @@ def main():
 
         vel_3d = project_velocities_to_3d(ids, velocities, vectors, args.method, pca_components)
 
+        if use_sphere:
+            coords_3d = sphere_wrap(coords_3d)
+
         suffix = f"— Virtual Space ({vsrc})"
         print(f"Building cosmic view ({suffix.strip(' —')})...")
         fig = build_single_figure(coords_3d, ids, props, edges, vel_3d, config,
-                                  cooccurrence_neighbors=cooc_neighbors, title_suffix=suffix)
+                                  cooccurrence_neighbors=cooc_neighbors,
+                                  title_suffix=suffix,
+                                  wireframe=use_sphere, curves=use_curves)
 
     print(f"Saving to {args.output}...")
     fig.write_html(args.output, include_plotlyjs=True)

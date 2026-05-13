@@ -1,9 +1,0 @@
-{                                                                                                                                                    
-    "mcpServers": {
-      "gaottt": {
-        "command": "/mnt/holyland/Project/GaOTTT/.venv/bin/python",
-        "args": ["-m", "gaottt.server.mcp_server"],
-        "cwd": "/mnt/holyland/Project/GaOTTT"
-      }
-    }
-  }

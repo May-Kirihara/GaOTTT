@@ -67,6 +67,8 @@ from gaottt.core.types import (
     RelationsResponse,
     RememberRequest,
     RememberResponse,
+    ResetMassesRequest,
+    ResetMassesResponse,
     ResetResponse,
     RestoreRequest,
     RestoreResponse,
@@ -270,6 +272,15 @@ async def reset_state():
     engine = _get_engine()
     nodes_reset, edges_removed = await engine.reset()
     return ResetResponse(nodes_reset=nodes_reset, edges_removed=edges_removed)
+
+
+# --- Phase M Stage 1: maintainer-only mass reset ---
+# Not exposed on MCP — see services.maintenance.reset_masses docstring.
+
+@app.post("/admin/reset_masses", response_model=ResetMassesResponse)
+async def admin_reset_masses(request: ResetMassesRequest):
+    engine = _get_engine()
+    return await maintenance_service.reset_masses(engine, value=request.value)
 
 
 # -----------------------------------------------------------------------

@@ -54,13 +54,98 @@ Swagger UI: http://localhost:8000/docs
 
 LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../../SKILL.md)。
 
-```bash
-# stdio (Claude Code / Claude Desktop)
-.venv/bin/python -m gaottt.server.mcp_server
+### 起動モード — default は **proxy** (auto-spawn + relay)
 
-# SSE (リモートクライアント)
-.venv/bin/python -m gaottt.server.mcp_server --transport sse --port 8001
+```bash
+# (1) proxy (DEFAULT) — agent ごとに subprocess を spawn するが、
+#     その subprocess は軽量 stdio shim で、初回起動時に detached な
+#     HTTP backend を spawn し、以降は relay として動作する。N agents
+#     all share 1 backend、agent 終了で shim も死ぬが backend は idle
+#     timeout (default 5 分) まで生存して再利用される
+.venv/bin/python -m gaottt.server.mcp_server
+# → stdio を喋りつつ 127.0.0.1:7878 の HTTP backend を内部利用
+
+# (2) streamable-http — HTTP backend を直接起動する。systemd 等で
+#     明示常駐させたい場合用
+.venv/bin/python -m gaottt.server.mcp_server --transport streamable-http --port 7878
+# → http://127.0.0.1:7878/mcp に接続
+
+# (3) SSE (旧 HTTP transport; 互換目的)
+.venv/bin/python -m gaottt.server.mcp_server --transport sse --port 7878
+# → http://127.0.0.1:7878/sse
+
+# (4) stdio (legacy — agent 内に engine をフル ロード、shim 経由しない)
+.venv/bin/python -m gaottt.server.mcp_server --transport stdio
 ```
+
+| Mode | Per-agent Process | Backend Process | RAM 消費 | 推奨用途 |
+|---|---|---|---|---|
+| **proxy** (default) | 軽量 shim (~50 MB) | 1 (auto-spawn, idle で self-shutdown) | ~3-4 GB (合計、N agents で増えない) | **personal multi-agent 環境の標準** — `.mcp.json` 変更不要 |
+| streamable-http | (なし) | 1 (常駐、systemd 等で管理) | ~3-4 GB | systemd / 24/7 backend を明示管理したい場合 |
+| sse | 同上 | 同上 | 同上 | 古い MCP client の fallback |
+| stdio | フル engine (~3-4 GB) | (なし) | ~3-4 GB × N | 単独 client、CI、開発 debug |
+
+### Cold-war dead-man-switch (proxy + backend)
+
+```
+agent (Claude Code / opencode / ...)
+  ↓ stdio
+gaottt mcp proxy (shim)  ← 軽量、agent ごとに 1 つ
+  ↓ HTTP (streamable-http MCP)
+gaottt http backend  ← 1 process、全 shim で共有
+  │
+  ├─ idle watchdog (--idle-timeout 300 default)
+  │   └─ 最後の MCP request から 300 秒経つと cache flush + self-shutdown
+  │
+  └─ shim 側からの ping (--ping-interval 60 default)
+      └─ agent が idle でも 60 秒ごとに backend.last_activity を更新
+```
+
+冷戦の核発射シーケンスと同型: 各 silo (shim) が周期的に key を回し続ける限り operator (backend) は活動継続、全 silo が key を回さなくなったら一定時間後に stand down。
+
+| パラメータ | default | 意味 |
+|---|---|---|
+| `--idle-timeout` (backend) | 300 sec | 無音許容時間。経過後に backend が自分から終了。`0` で無効化 (永久生存) |
+| `--ping-interval` (proxy) | 60 sec | 各 shim が backend に打つ heartbeat 周期 (default では idle-timeout の 1/5) |
+
+### Ping は agent の操作とは独立した background task
+
+ここが mental model として重要な点: **shim 内の `_ping_loop` は `asyncio.create_task` で起動した独立 task** で、stdio relay と並列に実行され、agent が `recall` 等を投げているかどうかとは無関係に `--ping-interval` 秒ごとに backend へ ping を飛ばし続ける。つまり「**Agent が idle = backend が死ぬ**」ではなく「**全 agent process が close した = backend が死ぬ**」が正しい判定:
+
+| 状態 | shim の ping | backend `last_activity` | backend |
+|---|---|---|---|
+| Agent 起動中、recall 全くしない | 60 秒ごとに飛ぶ | 60 秒ごと更新 | **生存** |
+| Agent 起動中、頻繁に recall | recall + ping 両方 | 連続更新 | 生存 |
+| Agent **idle で 5 分放置** | 飛び続ける | 更新され続ける | **生存** (idle ≠ death) |
+| Agent close (Claude Code 終了) | shim 死 → ping 停止 | 最後の ping から計時 | 5 分後 SIGTERM |
+| Agent 複数、1 つだけ close | 残り agent の shim が ping 継続 | 連続更新 | 生存 |
+| 全 agent close | 全 ping 停止 | 5 分後 timeout | SIGTERM |
+
+つまり「Claude Code を開いている間は何時間でも backend は生存」「全 agent を完全に閉じてから 5 分」が backend の lifecycle。
+
+### Restart cost と memory cost の trade-off
+
+| パターン | Backend 再起動頻度 | 常時 RAM コスト |
+|---|---|---|
+| `--idle-timeout 300` (default) | 全 agent close → 5 分後に終了。次回起動で proxy が ~30s で respawn | Agent open 時のみ ~3-4 GB |
+| `--idle-timeout 0` | **永久生存**、明示 kill するまで動き続ける | 常時 ~3-4 GB |
+| systemd 常駐 | 同上 (systemd が auto-restart 管理) | 常時 ~3-4 GB |
+
+「日に数回 Claude Code を完全終了する派」は default のままが省 RAM、「Claude Code 終了でも backend は残しときたい派」は `--idle-timeout 0` を `.mcp.json` の args に追加:
+
+```json
+{
+  "mcpServers": {
+    "gaottt": {
+      "command": "/path/to/GaOTTT/.venv/bin/python",
+      "args": ["-m", "gaottt.server.mcp_server", "--idle-timeout", "0"],
+      "cwd": "/path/to/GaOTTT"
+    }
+  }
+}
+```
+
+(shim 側には `--idle-timeout 0` は無関係だが、spawn する backend にそのまま forward されるので結果として backend が永久生存になる。)
 
 公開ツール（25 個）:
 - 基本: `remember` / `recall` / `explore` / `reflect` / `ingest`
@@ -73,7 +158,9 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
 
 ## Claude Code への登録
 
-`.mcp.json` （リポジトリルート）:
+**推奨**: proxy mode を使うので `.mcp.json` の設定は単純な stdio subprocess を残せる (default が proxy になったので config は変えなくて良い)。
+
+`.mcp.json`（リポジトリルート）:
 
 ```json
 {
@@ -87,7 +174,46 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
 }
 ```
 
+これだけで:
+- Claude Code 起動時 → shim subprocess spawn (軽量、~1s)
+- shim が backend の有無を check → 居なければ detached spawn して engine load (~30s) を待つ
+- 以降 stdio↔HTTP relay
+- Claude Code 終了 → shim 死、backend は idle 5 分後に self-shutdown (Claude Code がすぐ再起動するなら backend は再利用される)
+
+### 旧 stdio mode (full engine in subprocess)
+
+意図的に proxy を bypass したい場合 (debug / CI):
+
+```json
+{
+  "mcpServers": {
+    "gaottt": {
+      "command": "/path/to/GaOTTT/.venv/bin/python",
+      "args": ["-m", "gaottt.server.mcp_server", "--transport", "stdio"],
+      "cwd": "/path/to/GaOTTT"
+    }
+  }
+}
+```
+
+### 明示的 HTTP backend (systemd) 経由
+
+systemd で常駐 backend を管理する場合:
+
+```json
+{
+  "mcpServers": {
+    "gaottt": {
+      "type": "http",
+      "url": "http://127.0.0.1:7878/mcp"
+    }
+  }
+}
+```
+
 ## OpenCode への登録
+
+**推奨**: proxy mode 経由 (上の Claude Code と同様、config 変更不要)
 
 `opencode.json`:
 
@@ -105,6 +231,62 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
   }
 }
 ```
+
+### 明示的 HTTP backend 経由
+
+```json
+{
+  "mcp": {
+    "gaottt": {
+      "type": "remote",
+      "url": "http://127.0.0.1:7878/mcp"
+    }
+  }
+}
+```
+
+## 旧 stdio multi-process setup からの移行手順
+
+これまで複数 agent が個別に full engine を spawn していた環境からの切り替え:
+
+1. **既存の stdio MCP server を全部 kill**: `pkill -f 'gaottt.server.mcp_server'`
+2. **`.mcp.json` / `opencode.json` は変更不要** — proxy mode が default なので既存の `command` based config がそのまま動く
+3. **agent (Claude Code / opencode) を再起動** — 起動時に proxy が backend を spawn する (~30s)
+4. **動作確認**:
+   - `lsof -i :7878` で backend が listening していること
+   - `ps aux | grep mcp_server` で `--transport streamable-http` が 1 process だけあること
+   - Claude Code の `/mcp` で `gaottt` が `connected`
+
+## systemd で backend を明示常駐させたい場合
+
+proxy mode の auto-spawn を使わず、backend を OS service として管理:
+
+```bash
+# ~/.config/systemd/user/gaottt-mcp.service
+cat > ~/.config/systemd/user/gaottt-mcp.service <<'EOF'
+[Unit]
+Description=GaOTTT MCP Server (streamable-http, shared)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/GaOTTT
+ExecStart=/path/to/GaOTTT/.venv/bin/python -m gaottt.server.mcp_server --transport streamable-http --port 7878 --idle-timeout 0
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now gaottt-mcp.service
+systemctl --user status gaottt-mcp.service
+```
+
+`--idle-timeout 0` で idle 終了を無効化 (systemd 管理下では意味がない)。ログ確認: `journalctl --user -u gaottt-mcp.service -f`。
+
+この場合は agent config を `type: http` + URL に書き換える (上の「明示的 HTTP backend」セクション)。
 
 ## モデルダウンロード
 

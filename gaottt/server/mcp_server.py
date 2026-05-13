@@ -4,11 +4,20 @@ Provides gravitational displacement-powered memory for AI agents.
 Phase R4 will reframe the philosophy as "TTT framework that happens to look like RAG".
 
 Usage:
-    # stdio (Claude Code / Claude Desktop)
+    # stdio (legacy — every agent spawns its own subprocess and a full engine)
     python -m gaottt.server.mcp_server
 
-    # SSE (remote clients)
-    python -m gaottt.server.mcp_server --transport sse --port 8001
+    # streamable-HTTP (recommended — one long-lived process, N clients
+    # connect over HTTP. Avoids the per-agent ×N RAM cost and the
+    # bidirectional cache-overwrite trap)
+    python -m gaottt.server.mcp_server --transport streamable-http --port 7878
+
+    # SSE (older HTTP transport; supported but streamable-http is preferred)
+    python -m gaottt.server.mcp_server --transport sse --port 7878
+
+Clients (with --transport streamable-http) point at
+``http://127.0.0.1:7878/mcp``. See Operations-Server-Setup.md for the
+.mcp.json / opencode.json snippets and a systemd unit example.
 """
 
 from __future__ import annotations
@@ -875,26 +884,182 @@ async def explore_connections(topic_a: str, topic_b: str) -> str:
 # Entry point
 # -----------------------------------------------------------------------
 
-def main():
-    import sys
-    transport = "stdio"
-    port = 8001
-    args = sys.argv[1:]
-    i = 0
-    while i < len(args):
-        if args[i] == "--transport" and i + 1 < len(args):
-            transport = args[i + 1]
-            i += 2
-        elif args[i] == "--port" and i + 1 < len(args):
-            port = int(args[i + 1])
-            i += 2
-        else:
-            i += 1
+def _install_idle_watcher(idle_timeout: float) -> None:
+    """Track last HTTP activity and gracefully shut down the backend when
+    idle for longer than ``idle_timeout`` seconds.
 
-    if transport == "sse":
-        mcp.run(transport="sse", port=port)
-    else:
+    Implementation: monkey-patch ``mcp.streamable_http_app`` /
+    ``mcp.sse_app`` so the Starlette app FastMCP returns gets an
+    ``ActivityMiddleware`` injected. The middleware refreshes
+    ``last_activity`` on every HTTP request (covering MCP tool calls,
+    MCP protocol pings, session lifecycle, everything across the wire).
+    A background asyncio task started on first activity periodically
+    checks the idle window and SIGTERMs the process when exceeded,
+    after flushing the engine cache.
+
+    Earlier attempts at wrapping ``Server._handle_request`` /
+    ``Server._handle_message`` directly on the server instance failed
+    in the streamable-http path — anyio's task-group dispatch captures
+    method references in a way that bypassed the instance overrides
+    for those two methods. Starlette middleware sits at the HTTP layer
+    above MCP, well clear of that issue.
+    """
+    import signal
+    import time
+
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    state: dict[str, float | bool] = {
+        "last_activity": time.monotonic(),
+        "watchdog_started": False,
+    }
+
+    async def watchdog() -> None:
+        check_every = max(5.0, idle_timeout / 10.0)
+        while True:
+            await asyncio.sleep(check_every)
+            idle_for = time.monotonic() - state["last_activity"]  # type: ignore[operator]
+            if idle_for <= idle_timeout:
+                continue
+            logger.info(
+                "Idle for %.1fs (> %ss timeout) — shutting down backend. "
+                "Next client request will respawn it.",
+                idle_for, int(idle_timeout),
+            )
+            # Graceful cache flush so dirty displacement / velocity /
+            # mass updates don't vanish on idle shutdown.
+            global _engine
+            if _engine is not None:
+                try:
+                    await _engine.cache.flush_to_store(_engine.store)
+                    logger.info("Final cache flush complete")
+                except Exception:  # noqa: BLE001
+                    logger.exception("Final cache flush failed; exiting anyway")
+            # SIGTERM lets uvicorn run its shutdown hooks; OS reaps us
+            # if they don't fire fast enough.
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+
+    class ActivityMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            if not state["watchdog_started"]:
+                state["watchdog_started"] = True
+                asyncio.get_event_loop().create_task(watchdog())
+                logger.info("Idle watchdog started (timeout=%ss)", int(idle_timeout))
+            state["last_activity"] = time.monotonic()
+            return await call_next(request)
+
+    # Wrap the app factory so the middleware is installed every time
+    # FastMCP rebuilds the Starlette app (FastMCP caches, so this
+    # normally runs once on the first transport.run call).
+    original_streamable = mcp.streamable_http_app
+    original_sse = mcp.sse_app
+
+    def patched_streamable():
+        app = original_streamable()
+        app.add_middleware(ActivityMiddleware)
+        return app
+
+    def patched_sse(mount_path=None):
+        app = original_sse(mount_path)
+        app.add_middleware(ActivityMiddleware)
+        return app
+
+    mcp.streamable_http_app = patched_streamable  # type: ignore[method-assign]
+    mcp.sse_app = patched_sse  # type: ignore[method-assign]
+    logger.info("Idle watcher installed (timeout=%ss)", int(idle_timeout))
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="gaottt.server.mcp_server",
+        description=(
+            "GaOTTT MCP server. Default `proxy` mode auto-spawns a shared "
+            "HTTP backend (or connects to one) and relays stdio↔HTTP — "
+            "any number of agents can configure stdio in their .mcp.json "
+            "and they all share a single engine. Other transports: "
+            "`stdio` (legacy single-process), `streamable-http`/`sse` "
+            "(explicit backend, e.g. when running under systemd)."
+        ),
+    )
+    parser.add_argument(
+        "--transport",
+        choices=("proxy", "stdio", "streamable-http", "sse"),
+        default="proxy",
+        help=(
+            "MCP transport. proxy (default) = stdio shim that auto-spawns "
+            "+ relays to a shared HTTP backend. stdio = legacy, each agent "
+            "loads its own engine. streamable-http / sse = HTTP backend "
+            "only (use with a process manager). All four use the same "
+            "tool surface."
+        ),
+    )
+    parser.add_argument(
+        "--host", default="127.0.0.1",
+        help=(
+            "Bind address for HTTP backend (also used by proxy mode to "
+            "find / spawn the backend). 127.0.0.1 = localhost only. Use "
+            "0.0.0.0 only if you've configured your own auth — no auth "
+            "is built in."
+        ),
+    )
+    parser.add_argument(
+        "--port", type=int, default=7878,
+        help="Backend port. Default 7878 (mnemonic: NSNS).",
+    )
+    parser.add_argument(
+        "--idle-timeout", type=float, default=300.0,
+        help=(
+            "Backend self-shutdown threshold in seconds — if no MCP "
+            "request (tool call, ping, or any other) arrives for this "
+            "long, the backend flushes cache and exits. Next client "
+            "request will respawn it. Default 300 (5 minutes). "
+            "Only used by the backend (streamable-http / sse / when "
+            "spawned by proxy mode)."
+        ),
+    )
+    parser.add_argument(
+        "--ping-interval", type=float, default=60.0,
+        help=(
+            "Proxy mode: seconds between heartbeat pings sent to the "
+            "backend. Must be comfortably below --idle-timeout so a "
+            "single slow round-trip doesn't trip the watchdog. "
+            "Default 60."
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.transport == "stdio":
         mcp.run(transport="stdio")
+        return
+
+    if args.transport == "proxy":
+        from gaottt.server.mcp_proxy import run_proxy
+        asyncio.run(run_proxy(
+            host=args.host,
+            port=args.port,
+            idle_timeout=args.idle_timeout,
+            ping_interval=args.ping_interval,
+        ))
+        return
+
+    # HTTP backend modes — set host/port + install idle watcher, then run.
+    mcp.settings.host = args.host
+    mcp.settings.port = args.port
+
+    if args.idle_timeout > 0:
+        _install_idle_watcher(args.idle_timeout)
+
+    if args.transport == "streamable-http":
+        url = f"http://{args.host}:{args.port}{mcp.settings.streamable_http_path}"
+        logger.info("Starting GaOTTT MCP backend (streamable-http) at %s", url)
+        mcp.run(transport="streamable-http")
+    else:  # sse
+        url = f"http://{args.host}:{args.port}{mcp.settings.sse_path}"
+        logger.info("Starting GaOTTT MCP backend (sse) at %s", url)
+        mcp.run(transport="sse")
 
 
 if __name__ == "__main__":

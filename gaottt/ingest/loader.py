@@ -92,6 +92,11 @@ def _ingest_markdown(path: Path, source: str, chunk_size: int) -> list[dict]:
         for i, chunk in enumerate(chunks):
             meta = {
                 "source": source,
+                # Phase M Stage 1 — every chunk of the same file shares this
+                # original_id so the self-force filter in the mass update
+                # recognises them as "internal trade" and does not let them
+                # inflate each other's mass.
+                "original_id": str(path),
                 "file_path": str(path),
                 "file_name": path.name,
                 "title": title,
@@ -120,6 +125,7 @@ def _ingest_plaintext(path: Path, source: str, chunk_size: int) -> list[dict]:
     for i, chunk in enumerate(chunks):
         meta = {
             "source": source,
+            "original_id": str(path),  # Phase M Stage 1 — see _ingest_markdown
             "file_path": str(path),
             "file_name": path.name,
         }
@@ -151,12 +157,25 @@ def _ingest_csv(path: Path, source: str, chunk_size: int) -> list[dict]:
         if content_col is None:
             content_col = reader.fieldnames[0]
 
-        for row in reader:
+        # Phase M Stage 1 — derive a per-row original_id so chunks of the
+        # same CSV row group together; rows themselves stay independent.
+        # Prefer a user-supplied "id" column, fall back to "<path>#<row>".
+        id_col = "id" if "id" in reader.fieldnames else None
+
+        for row_idx, row in enumerate(reader):
             text = row.get(content_col, "").strip()
             if not text:
                 continue
 
-            meta = {"source": source, "file_path": str(path), "file_name": path.name}
+            original_id = (
+                row[id_col] if id_col and row.get(id_col) else f"{path}#{row_idx}"
+            )
+            meta = {
+                "source": source,
+                "original_id": original_id,
+                "file_path": str(path),
+                "file_name": path.name,
+            }
             # Include other columns as metadata
             for col in reader.fieldnames:
                 if col != content_col and row.get(col):

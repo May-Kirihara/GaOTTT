@@ -82,6 +82,12 @@ class Migration:
     needs_apply / apply / verify are async callables taking (engine, config).
     needs_apply returns (bool, reason_str). apply returns notes_str. verify
     returns (ok, reason_str).
+
+    ``critical=True`` flags a destructive / irreversible step (e.g., bulk
+    state reset that loses accumulated history). The wizard pauses for an
+    interactive confirmation before applying critical steps; safe steps
+    are applied automatically. ``warning`` is the multi-line text shown
+    in that confirmation prompt — concrete side effects, not philosophy.
     """
 
     version: str
@@ -90,6 +96,8 @@ class Migration:
     needs_apply: Callable[..., Awaitable[tuple[bool, str]]]
     apply: Callable[..., Awaitable[str]]
     verify: Callable[..., Awaitable[tuple[bool, str]]]
+    critical: bool = False
+    warning: str = ""
 
 
 # ---------------------------------------------------------------------
@@ -143,6 +151,38 @@ def _top_k_heavy_neighbors(engine, vec, k, pool_size, exclude_id):
 
 
 async def _m001_needs_apply(engine, config):
+    # Phase M Stage 1 (2026-05-13): on Phase M code the retroactive Phase G
+    # priming approach is superseded by M002 (clear residue) + M003 (mass
+    # reset) + M004 (cosmic-bang ignition). Running M001 alongside these
+    # would re-bias displacement toward residual heavy nodes, partially
+    # re-creating the BH clusters M002 was meant to clear. Two guards:
+    #   (1) skip when Phase M is the deployed code (fresh installs)
+    #   (2) skip when M002 is already in the ledger (mid-rollout)
+    if config.mass_conservation_enabled:
+        return False, (
+            "running on Phase M code (mass_conservation_enabled=True); "
+            "Phase G retroactive priming superseded by M002/M003/M004"
+        )
+    db_path = config.db_path
+    try:
+        ledger_conn = sqlite3.connect(db_path)
+        try:
+            cur = ledger_conn.execute(
+                "SELECT 1 FROM _migrations WHERE version = ?", ("M002",)
+            )
+            m002_applied = cur.fetchone() is not None
+        finally:
+            ledger_conn.close()
+    except sqlite3.OperationalError:
+        m002_applied = False
+    if m002_applied:
+        return False, (
+            "M002 (Phase M BH residue cleanup) already applied — Phase G "
+            "re-priming would re-bias displacement toward residual heavy "
+            "nodes. Skipping; the new physics expects a clean displacement "
+            "state until natural recall accretion fills it back in."
+        )
+
     total, zero = _zero_displacement_stats(engine)
     if total == 0:
         return False, "DB has no active nodes — nothing to prime"
@@ -249,11 +289,351 @@ M001 = Migration(
 
 
 # ---------------------------------------------------------------------
+# M002 — Phase M Stage 1: legacy co-occurrence BH residue cleanup
+# ---------------------------------------------------------------------
+# The old ``compute_bh_acceleration`` term pulled each node toward the
+# weighted centroid of its co-occurrence neighbors every recall step.
+# That force lived in ``compute_acceleration`` 第 3 項 and was integrated
+# into displacement / velocity through ``update_orbital_state``. Phase M
+# replaced the term with a mass-threshold BH (dormant until ``mass >
+# θ-2σ``), but the **runtime residue** — displacement and velocity that
+# accumulated under the old pull — stays in the DB until something wipes
+# it. M002 wipes it.
+
+M002_RESIDUE_TRIGGER = 0.05      # mean(|d|) above this → residue is non-trivial
+M002_VERIFY_THRESHOLD = 0.001    # mean(|d|) below this after apply → success
+
+
+def _displacement_stats(engine) -> tuple[int, float, float]:
+    """Return (active_count, mean_norm, max_norm) over active nodes' displacement."""
+    total = 0
+    sum_norm = 0.0
+    max_norm = 0.0
+    for state in engine.cache.get_all_nodes():
+        if state.is_archived:
+            continue
+        total += 1
+        disp = engine.cache.get_displacement(state.id)
+        if disp is None:
+            continue
+        n = float(np.linalg.norm(disp))
+        sum_norm += n
+        if n > max_norm:
+            max_norm = n
+    mean_norm = sum_norm / total if total else 0.0
+    return total, mean_norm, max_norm
+
+
+async def _m002_needs_apply(engine, config):
+    total, mean_norm, max_norm = _displacement_stats(engine)
+    if total == 0:
+        return False, "DB has no active nodes — nothing to clean"
+    if mean_norm > M002_RESIDUE_TRIGGER:
+        return True, (
+            f"mean |displacement| = {mean_norm:.3f} across {total} nodes "
+            f"(max {max_norm:.2f}) — legacy BH residue present"
+        )
+    return False, (
+        f"mean |displacement| = {mean_norm:.3f} across {total} nodes "
+        f"(max {max_norm:.2f}) — already below threshold {M002_RESIDUE_TRIGGER}"
+    )
+
+
+async def _m002_apply(engine, config):
+    t0 = time.time()
+    affected = await engine.reset_orbital_state()
+    elapsed = time.time() - t0
+    return (
+        f"cleared displacement + velocity on {affected} node rows "
+        f"({elapsed:.1f}s); virtual FAISS marked dirty for rebuild on next save"
+    )
+
+
+async def _m002_verify(engine, config):
+    total, mean_norm, max_norm = _displacement_stats(engine)
+    if mean_norm < M002_VERIFY_THRESHOLD:
+        return True, (
+            f"mean |displacement| = {mean_norm:.4f} (< {M002_VERIFY_THRESHOLD}); "
+            f"residue cleaned"
+        )
+    return False, (
+        f"mean |displacement| = {mean_norm:.4f} (≥ {M002_VERIFY_THRESHOLD}); "
+        f"reset did not take effect"
+    )
+
+
+M002 = Migration(
+    version="M002",
+    name="phase-m-bh-residue-cleanup",
+    description=(
+        "Zero displacement + velocity on every active node, wiping the runtime "
+        "residue of the legacy co-occurrence BH (which pulled nodes toward "
+        "neighbor centroids before Phase M replaced it with the mass-threshold "
+        "BH). Mass is left untouched — see M003 for that."
+    ),
+    critical=True,
+    warning=(
+        "DESTRUCTIVE — clears Phase G genesis kicks and Phase I/J query-attraction\n"
+        "  displacement along with the legacy BH residue (the three are intertwined\n"
+        "  in the same displacement vector and cannot be separated post-hoc).\n"
+        "  Virtual FAISS will rebuild from raw embeddings on the next save tick.\n"
+        "  Recommended once when rolling Phase M Stage 1 out on a DB that ran\n"
+        "  under the old co-occurrence BH physics."
+    ),
+    needs_apply=_m002_needs_apply,
+    apply=_m002_apply,
+    verify=_m002_verify,
+)
+
+
+# ---------------------------------------------------------------------
+# M003 — Phase M Stage 1: mass reset
+# ---------------------------------------------------------------------
+# Pre-Phase-M masses were inflated by chunk-internal co-occurrence (one
+# file = 91 chunks pumped each other's mass via "internal trade"). Phase M
+# Stage 1 stops that loop but does not retroactively deflate. M003 sets
+# every node's mass back to 1.0 so accretion under the new rule starts
+# from a clean baseline.
+
+M003_VERIFY_TOLERANCE = 1e-6
+
+
+def _mass_stats(engine) -> tuple[int, float, float]:
+    """Return (active_count, max_mass, mean_mass)."""
+    total = 0
+    sum_mass = 0.0
+    max_mass = 0.0
+    for state in engine.cache.get_all_nodes():
+        if state.is_archived:
+            continue
+        total += 1
+        sum_mass += state.mass
+        if state.mass > max_mass:
+            max_mass = state.mass
+    mean = sum_mass / total if total else 0.0
+    return total, max_mass, mean
+
+
+async def _m003_needs_apply(engine, config):
+    """Phase M Stage 1 mass reset is a one-time rollout step that applies to
+    **every** user upgrading across Phase M, not a state-driven cleanup.
+
+    Threshold-based auto-detect would silently SKIP for users whose DB
+    looks "clean" by some numeric measure even when the user actually
+    wants the reset (e.g., they want to start fresh under the new rule
+    even though some manual partial reset has flattened the peaks).
+    Instead, this migration is always reported as PENDING and the wizard
+    presents it to the user with the current state in the description —
+    the user decides. The ledger still suppresses re-asks once applied.
+    """
+    total, max_mass, mean = _mass_stats(engine)
+    if total == 0:
+        return False, "DB has no active nodes — nothing to reset"
+    return True, (
+        f"current state: max mass = {max_mass:.2f}, mean = {mean:.2f} "
+        f"across {total} nodes — wizard will ask whether to apply Phase M "
+        f"Stage 1 one-time mass reset"
+    )
+
+
+async def _m003_apply(engine, config):
+    t0 = time.time()
+    affected = await engine.reset_masses(1.0)
+    elapsed = time.time() - t0
+    return f"reset mass to 1.0 on {affected} node rows ({elapsed:.1f}s)"
+
+
+async def _m003_verify(engine, config):
+    total, max_mass, mean = _mass_stats(engine)
+    if abs(max_mass - 1.0) < M003_VERIFY_TOLERANCE and abs(mean - 1.0) < M003_VERIFY_TOLERANCE:
+        return True, f"max mass = {max_mass:.4f}, mean = {mean:.4f} (≈ 1.0)"
+    return False, (
+        f"max mass = {max_mass:.4f}, mean = {mean:.4f} — reset did not take"
+    )
+
+
+M003 = Migration(
+    version="M003",
+    name="phase-m-mass-reset",
+    description=(
+        "Reset every active node's mass to 1.0, wiping the chunk-internal "
+        "co-occurrence inflation accumulated under pre-Phase-M physics "
+        "(observed: 1 file = ~91 chunks pumping each other's mass via "
+        "'internal trade'). Phase M Stage 1 stops the inflation loop but "
+        "does not retroactively deflate — that's what this step does."
+    ),
+    critical=True,
+    warning=(
+        "DESTRUCTIVE — Phase L acceptance baseline (Surface 7/7 / strict 6/7)\n"
+        "  was achieved with the inflated mass distribution. Immediately after\n"
+        "  reset the retrieval geometry regresses transiently while new mass\n"
+        "  re-accumulates under the 'external pull only' rule. Plan §6.2\n"
+        "  predicts 1-2 weeks of natural recall before the new mass gradient\n"
+        "  is observable. Mass distribution becomes uniform mass=1.0; for\n"
+        "  retrieval scoring this means mass_boost = α·log(2) for everyone\n"
+        "  (no differentiation) until the new gradient forms."
+    ),
+    needs_apply=_m003_needs_apply,
+    apply=_m003_apply,
+    verify=_m003_verify,
+)
+
+
+# ---------------------------------------------------------------------
+# M004 — Phase M Stage 1: corpus-scale cosmic-bang ignition
+# ---------------------------------------------------------------------
+# After M002 zeros velocity, the cosmos is at thermal equilibrium with no
+# momentum — Newton's 1st law keeps everything stationary unless recall
+# events inject query-attraction kicks, and those kicks are bounded /
+# directional. New-batch indexing has the Phase K supernova mechanic to
+# seed motion at birth (``compute_supernova_velocities`` writes an outward
+# velocity from the cohort centroid), but existing nodes that pre-date
+# Phase K — or whose velocity was wiped by M002 — never get that kick.
+#
+# M004 treats the entire active corpus as one giant supernova event:
+# reuse ``compute_supernova_velocities`` with all active node embeddings
+# as the "cohort" and the corpus centroid as the explosion epicenter.
+# Velocities are *added* to whatever already exists in the cache so
+# natural query-attraction accumulation since M002 is preserved.
+
+M004_TRIGGER_FRACTION = 0.5      # >X% of active nodes at v≈0 → PENDING
+M004_VELOCITY_TOLERANCE = 1e-6
+M004_VERIFY_FRACTION = 0.5       # require ≥X% non-zero velocity after apply
+
+
+def _velocity_stats(engine) -> tuple[int, int]:
+    """Return (active_count, zero_velocity_count)."""
+    total = 0
+    zero = 0
+    for state in engine.cache.get_all_nodes():
+        if state.is_archived:
+            continue
+        total += 1
+        v = engine.cache.get_velocity(state.id)
+        if v is None or float(np.linalg.norm(v)) < M004_VELOCITY_TOLERANCE:
+            zero += 1
+    return total, zero
+
+
+async def _m004_needs_apply(engine, config):
+    total, zero = _velocity_stats(engine)
+    if total == 0:
+        return False, "DB has no active nodes — nothing to ignite"
+    frac = zero / total
+    msg = (
+        f"{zero}/{total} ({frac:.0%}) active nodes have velocity ≈ 0 "
+        f"(α={config.supernova_velocity_alpha}, "
+        f"clamp={config.orbital_max_velocity})"
+    )
+    if frac > M004_TRIGGER_FRACTION:
+        return True, msg
+    return False, msg + " — corpus already has kinetic energy"
+
+
+async def _m004_apply(engine, config):
+    """Apply Phase K supernova velocity to the whole corpus at once.
+
+    Treat all active nodes as a single supernova event:
+      * centroid = mean of all active embeddings
+      * v = α × (emb - centroid), clamped to orbital_max_velocity
+    Velocities are added to existing cache values (preserves any
+    accumulation since M002), then clamped again so the final magnitude
+    never exceeds orbital_max_velocity.
+    """
+    from gaottt.core.supernova import compute_supernova_velocities
+
+    active_ids = [s.id for s in engine.cache.get_all_nodes() if not s.is_archived]
+    if not active_ids:
+        return "no active nodes"
+
+    vec_map = engine.faiss_index.get_vectors(active_ids)
+    valid_ids = [nid for nid in active_ids if nid in vec_map]
+    if not valid_ids:
+        return "no embeddings in FAISS — try `compact(rebuild_faiss=True)` first"
+
+    embeddings = np.stack([vec_map[nid] for nid in valid_ids])
+
+    t0 = time.time()
+    velocities = compute_supernova_velocities(valid_ids, embeddings, config)
+    if not velocities:
+        return (
+            "supernova returned no velocities — check supernova_enabled / "
+            f"supernova_velocity_alpha={config.supernova_velocity_alpha} / "
+            f"supernova_min_cohort_size={config.supernova_min_cohort_size}"
+        )
+
+    n_seeded = 0
+    for nid, v_supernova in velocities.items():
+        existing = engine.cache.get_velocity(nid)
+        if existing is None:
+            combined = v_supernova
+        else:
+            combined = (existing + v_supernova).astype(np.float32)
+        combined = clamp_vector(combined, config.orbital_max_velocity)
+        engine.cache.set_velocity(nid, combined)
+        n_seeded += 1
+
+    await engine.cache.flush_to_store(engine.store)
+    elapsed = time.time() - t0
+    return (
+        f"ignited corpus-scale supernova on {n_seeded}/{len(valid_ids)} "
+        f"nodes (centroid + α={config.supernova_velocity_alpha} × radial, "
+        f"clamped to {config.orbital_max_velocity}) in {elapsed:.1f}s"
+    )
+
+
+async def _m004_verify(engine, config):
+    total, zero = _velocity_stats(engine)
+    moving = total - zero
+    frac = moving / total if total else 0.0
+    if frac >= M004_VERIFY_FRACTION:
+        return True, (
+            f"{moving}/{total} ({frac:.0%}) nodes have non-zero velocity "
+            f"— corpus is in motion"
+        )
+    return False, (
+        f"{moving}/{total} ({frac:.0%}) nodes moving — ignition did not "
+        f"reach the required {M004_VERIFY_FRACTION:.0%} threshold"
+    )
+
+
+M004 = Migration(
+    version="M004",
+    name="phase-m-cosmic-bang",
+    description=(
+        "Treat the entire active corpus as a single Phase K supernova event: "
+        "seed every node with an outward velocity from the corpus centroid "
+        "(``α × (emb - centroid)``, clamped to ``orbital_max_velocity``). "
+        "Mirrors what new-batch indexing already does — without this, "
+        "existing zero-velocity nodes stay frozen and emergent orbital "
+        "dynamics never start. Run after M002 zeros velocity."
+    ),
+    critical=True,
+    warning=(
+        "Writes velocity on every active node. Existing velocity is\n"
+        "  *added to* (not overwritten) the supernova kick, then re-clamped\n"
+        "  to ``orbital_max_velocity``. Most nodes end up at or near the\n"
+        "  velocity clamp — equivalent to seeding the cosmos with a uniform\n"
+        "  thermal temperature. Once applied, the system has kinetic energy\n"
+        "  to support Hooke / friction equilibrium, orbital dynamics, and\n"
+        "  comet-like trajectories. Without this, the corpus stays at rest\n"
+        "  forever and creative emergence is starved for momentum."
+    ),
+    needs_apply=_m004_needs_apply,
+    apply=_m004_apply,
+    verify=_m004_verify,
+)
+
+
+# ---------------------------------------------------------------------
 # Registry (add new migrations here, in order)
 # ---------------------------------------------------------------------
 
 MIGRATIONS: list[Migration] = [
     M001,
+    M002,
+    M003,
+    M004,
 ]
 
 
@@ -349,30 +729,85 @@ def _render_plan(
     """Print a human-readable status table.
 
     pending_detected: list of (migration, needs_apply, reason).
+    Critical migrations are marked with ``!`` so the user knows the
+    wizard will pause for confirmation on them.
     """
     print(f"GaOTTT migration plan for {db_path}")
     print("=" * 78)
-    print(f"{'VER':5}  {'NAME':24}  STATUS    DETAIL")
+    print(f"{'VER':5}  {'NAME':30}  STATUS    DETAIL")
     print("-" * 78)
     for m in MIGRATIONS:
+        name_label = f"{m.name}{' !' if m.critical else ''}"
         if m.version in applied:
             ts, notes = applied[m.version]
             ts_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
-            print(f"{m.version:5}  {m.name:24}  APPLIED   {ts_str}")
+            print(f"{m.version:5}  {name_label:30}  APPLIED   {ts_str}")
             if notes:
-                print(f"{'':5}  {'':24}            {notes}")
+                print(f"{'':5}  {'':30}            {notes}")
         else:
             needed, reason = next(
                 ((nd, rs) for mm, nd, rs in pending_detected if mm.version == m.version),
                 (None, ""),
             )
             if needed is True:
-                print(f"{m.version:5}  {m.name:24}  PENDING   {reason}")
+                tag = "PENDING!" if m.critical else "PENDING "
+                print(f"{m.version:5}  {name_label:30}  {tag}  {reason}")
             elif needed is False:
-                print(f"{m.version:5}  {m.name:24}  SKIP      {reason}")
+                print(f"{m.version:5}  {name_label:30}  SKIP      {reason}")
             else:
-                print(f"{m.version:5}  {m.name:24}  UNKNOWN   (detection failed)")
+                print(f"{m.version:5}  {name_label:30}  UNKNOWN   (detection failed)")
     print("=" * 78)
+    if any(m.critical for m in MIGRATIONS):
+        print("  `!` marks CRITICAL / destructive migrations — wizard pauses for")
+        print("      confirmation on these unless `--yes` is passed.\n")
+
+
+# =====================================================================
+# Wizard helpers
+# =====================================================================
+
+def _confirm_critical(m: Migration, reason: str = "") -> bool:
+    """Prompt the user about a critical migration. Returns True to apply.
+
+    ``reason`` is the per-run state info from ``needs_apply``; surfaced in
+    the prompt so the user can see "your DB currently looks like X" next
+    to the generic warning text.
+
+    When stdin is not a TTY (CI / piped input), refuse and tell the user
+    to pass ``--yes`` explicitly — silently auto-applying a destructive
+    step in a non-interactive context is the worst-case behaviour.
+    """
+    if not sys.stdin.isatty():
+        print(
+            f"  [{m.version}] CRITICAL step but stdin is not a TTY. "
+            "Pass --yes to apply without prompting, --skip-critical to skip.",
+            file=sys.stderr,
+        )
+        return False
+
+    print()
+    print(f"  ⚠️  [{m.version}] {m.name}  (CRITICAL / DESTRUCTIVE)")
+    print()
+    # Indent the warning block by 6 spaces for visual separation.
+    if m.warning:
+        for line in m.warning.splitlines():
+            print(f"      {line}")
+        print()
+    print(f"      Description: {m.description}")
+    if reason:
+        print(f"      Current DB: {reason}")
+    print()
+    while True:
+        try:
+            answer = input(f"  Apply [{m.version}]? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if answer in ("", "n", "no"):
+            return False
+        if answer in ("y", "yes"):
+            return True
+        print("  Please answer 'y' or 'n'.")
 
 
 # =====================================================================
@@ -467,6 +902,7 @@ async def main_async(args: argparse.Namespace) -> int:
 
             applied_now = 0
             failed = 0
+            skipped_critical = 0
             for m, needed, reason in pending_detected:
                 if args.step and args.step != m.version:
                     continue
@@ -477,6 +913,24 @@ async def main_async(args: argparse.Namespace) -> int:
                     print(f"[{m.version}] {m.name}: SKIP — detect error: {reason}")
                     failed += 1
                     continue
+                # Wizard: critical migrations require confirmation unless
+                # the user passed --yes (auto-accept) or --skip-critical
+                # (auto-decline). Non-critical migrations are applied
+                # automatically — that's the whole point of the wizard.
+                if m.critical:
+                    if args.skip_critical:
+                        print(
+                            f"[{m.version}] {m.name}: SKIP — critical, "
+                            f"--skip-critical passed ({reason})"
+                        )
+                        skipped_critical += 1
+                        continue
+                    if not args.yes:
+                        print(f"[{m.version}] {m.name}: PENDING — {reason}")
+                        if not _confirm_critical(m, reason=reason):
+                            print(f"[{m.version}] declined by user — skipping")
+                            skipped_critical += 1
+                            continue
                 print(f"[{m.version}] {m.name}: APPLYING — {reason}")
                 t0 = time.time()
                 try:
@@ -503,12 +957,22 @@ async def main_async(args: argparse.Namespace) -> int:
                     failed += 1
 
             print("\n=== Result ===")
-            print(f"  applied: {applied_now}   failed: {failed}")
+            print(
+                f"  applied: {applied_now}   failed: {failed}   "
+                f"skipped (critical): {skipped_critical}"
+            )
             if applied_now > 0:
                 print("\nNext steps:")
                 print("  1. Restart MCP server so new physics takes effect.")
                 print("  2. Optional smoke check:")
                 print("       .venv/bin/python scripts/mcp_smoke.py")
+            if skipped_critical > 0:
+                print(
+                    "\nNote: some critical migrations were skipped. Re-run with\n"
+                    "       scripts/migrate.py --apply\n"
+                    "       (and answer 'y' at the prompt) or with --yes\n"
+                    "       to apply them later. They stay PENDING until applied."
+                )
             return 1 if failed > 0 else 0
         finally:
             ledger.close()
@@ -551,7 +1015,22 @@ def main() -> None:
              "neither MCP server nor REST server can flush stale cache to "
              "this DB (see Architecture-Overview.md).",
     )
+    parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Accept critical/destructive migrations without an interactive "
+             "prompt. Required when stdin is not a TTY (CI / piped). Use "
+             "carefully — equivalent to answering 'y' to every confirmation.",
+    )
+    parser.add_argument(
+        "--skip-critical", action="store_true",
+        help="Skip critical/destructive migrations even if they are pending. "
+             "Non-critical migrations are still applied. Useful for staged "
+             "rollouts where you want to land the safe steps now and revisit "
+             "destructive ones manually.",
+    )
     args = parser.parse_args()
+    if args.yes and args.skip_critical:
+        parser.error("--yes and --skip-critical are mutually exclusive")
     try:
         rc = asyncio.run(main_async(args))
     except KeyboardInterrupt:

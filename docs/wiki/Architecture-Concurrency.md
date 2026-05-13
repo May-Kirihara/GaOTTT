@@ -73,6 +73,7 @@ async def _virtual_faiss_save_loop(self) -> None:
 対処:
 - 一時的な bulk 書き換え（Stage 0 priming 等）の前に、他の MCP server プロセスを `kill` して flush ループを止める。書き込み完了後に再起動。
 - 段階的に運用したい場合は、書き換え対象 node の `last_access` を更新するなど、**通常の write-behind tick で自然に dirty になる経路** を経由する。
+- **構造的解** (2026-05-13): MCP を **streamable-http transport で 1 process だけ常駐** させ、複数 agent (Claude Code / opencode / 他) はその HTTP server に接続して engine を共有する。これで cache 自体が単一になり、bidirectional overwrite の前提が消える。詳細: [Operations — Server Setup](Operations-Server-Setup.md)「起動モード」。stdio mode は legacy として残るが multi-agent 環境では非推奨。
 
 ### Dream loop（Phase G — Stage 2）
 
@@ -83,6 +84,7 @@ async def _virtual_faiss_save_loop(self) -> None:
 - 例外は loop 内で握りつぶし、次 tick で retry
 - `dream_enabled=False` または `dream_interval_seconds=0` で完全 skip
 - マルチプロセス: 各プロセスが独自の dream loop を持つ。同じ DB に対して複数プロセスが synthetic recall を撃つ → mass 加算が二重に進む可能性は理論上あるが、`return_count` は更新しないので saturation は乱れず、運用上の影響は小さい
+- **streamable-http mode** ([Operations — Server Setup](Operations-Server-Setup.md)) では server が 1 process なので dream loop も 1 つだけ、重複起動の心配なし。stdio + 複数 agent の場合のみ多重 dream に注意 (2026-05-13 follow-up: `await asyncio.sleep(0)` を candidates 間に挿入したので foreground starvation は解消、多重 dream でも recall は応答する)
 
 詳細: [Plans — Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md)、[Architecture — Gravity Model](Architecture-Gravity-Model.md) の「夢による継続的な軌道捕獲」節
 

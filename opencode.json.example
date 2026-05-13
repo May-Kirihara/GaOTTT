@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "gaottt": {
+      "type": "local",
+      "command": [
+        "/Path/To/GaOTTT/.venv/bin/python",
+        "-m",
+        "gaottt.server.mcp_server"
+      ],
+      "enabled": true,
+      "timeout": 30000
+    }
+  }
+}
