@@ -165,6 +165,68 @@ def add_wireframe_sphere(fig, row=None, col=None) -> None:
             fig.add_trace(trace)
 
 
+def slerp_arc(
+    p1: np.ndarray,
+    p2: np.ndarray,
+    n_pts: int = 10,
+) -> np.ndarray:
+    """Great-circle arc between two unit-sphere points via spherical linear
+    interpolation. Returns ``(n_pts, 3)`` array of points along the
+    geodesic from p1 to p2.
+
+    Edge cases:
+      * p1 ≈ p2 → straight line (the arc degenerates)
+      * p1 ≈ -p2 → infinite great circles exist; we fall back to a chord
+        through the origin (rare in practice for embedding clusters)
+    """
+    dot = float(np.clip(np.dot(p1, p2), -1.0, 1.0))
+    # Near-identical or antipodal: degenerate, use linear interpolation.
+    if abs(dot) > 0.9999:
+        ts = np.linspace(0.0, 1.0, n_pts)
+        return np.stack([(1 - t) * p1 + t * p2 for t in ts]).astype(np.float32)
+    theta = math.acos(dot)
+    sin_theta = math.sin(theta)
+    ts = np.linspace(0.0, 1.0, n_pts)
+    out = np.empty((n_pts, 3), dtype=np.float32)
+    for k, t in enumerate(ts):
+        a = math.sin((1.0 - t) * theta) / sin_theta
+        b = math.sin(t * theta) / sin_theta
+        out[k] = a * p1 + b * p2
+    return out
+
+
+def tangent_geodesic(
+    p: np.ndarray,
+    v: np.ndarray,
+    n_pts: int = 8,
+) -> np.ndarray | None:
+    """Geodesic segment from ``p`` along the tangent projection of ``v``.
+
+    The velocity vector ``v`` lives in ambient 3D (PCA-projected from 768D).
+    On a unit sphere the physical motion is along the tangent component
+    ``v_t = v - (v·p)·p``; the geodesic is the great circle in the plane
+    spanned by ``p`` and ``v_t``, traversed at angular speed ``|v_t|``.
+    Position at time t: ``cos(t·ω) p + sin(t·ω) v_t/|v_t|`` where
+    ``ω = |v_t|`` (taken as radians, matching the convention of the flat
+    arrow where the tip lands at ``p + v``).
+
+    Returns ``None`` if the tangent component is too small to draw
+    (purely radial velocity, which can't survive the sphere constraint).
+    """
+    dot = float(np.dot(v, p))
+    v_t = v - dot * p
+    omega = float(np.linalg.norm(v_t))
+    if omega < 1e-6:
+        return None
+    v_t_hat = v_t / omega
+    ts = np.linspace(0.0, 1.0, n_pts)
+    out = np.empty((n_pts, 3), dtype=np.float32)
+    for k, t in enumerate(ts):
+        ang = t * omega
+        out[k] = math.cos(ang) * p + math.sin(ang) * v_t_hat
+    return out
+
+
 async def load_data(config: GaOTTTConfig):
     faiss_index = FaissIndex(dimension=config.embedding_dim)
     faiss_index.load(config.faiss_index_path)
@@ -382,12 +444,22 @@ def add_nodes_to_figure(
     fig, coords_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
     hover_texts, sources, edges, velocities_3d=None, config=None,
     cooccurrence_neighbors=None, row=None, col=None, wireframe: bool = True,
+    curves: bool = True,
+    filament_pts: int = 10,
+    velocity_pts: int = 8,
 ):
     """Add stellar nodes, filaments, velocity arrows, gravity spheres, and BH centroids.
 
     ``wireframe=True`` (default) draws a faint unit-sphere reference grid
     behind everything — assumes ``coords_3d`` is already on / near the
     unit sphere (see ``sphere_wrap``). Set False for legacy flat-3D view.
+
+    ``curves=True`` (default in sphere mode) renders filaments as
+    great-circle arcs and velocity arrows as tangent-projected geodesic
+    segments — surface-of-sphere geometry instead of straight chords
+    through the interior. Set False (``--straight-lines`` from the CLI)
+    to fall back to chord rendering, which is cheaper but lies about
+    the unit-sphere constraint.
     """
 
     def _add(trace):
@@ -399,13 +471,26 @@ def add_nodes_to_figure(
     if wireframe:
         add_wireframe_sphere(fig, row=row, col=col)
 
-    # Edges as faint filaments
+    # Edges as faint filaments — curves on the sphere when curves=True,
+    # chords through the interior otherwise. Each filament contributes
+    # filament_pts (curve) or 2 (chord) points; None terminators break
+    # segments inside one trace.
     if edges:
         id_to_idx = {nid: i for i, nid in enumerate(ids)}
         ex, ey, ez = [], [], []
         for edge in edges:
-            if edge.src in id_to_idx and edge.dst in id_to_idx:
-                i, j = id_to_idx[edge.src], id_to_idx[edge.dst]
+            if edge.src not in id_to_idx or edge.dst not in id_to_idx:
+                continue
+            i, j = id_to_idx[edge.src], id_to_idx[edge.dst]
+            if curves:
+                arc = slerp_arc(coords_3d[i], coords_3d[j], n_pts=filament_pts)
+                ex.extend(arc[:, 0].tolist())
+                ex.append(None)
+                ey.extend(arc[:, 1].tolist())
+                ey.append(None)
+                ez.extend(arc[:, 2].tolist())
+                ez.append(None)
+            else:
                 ex.extend([coords_3d[i, 0], coords_3d[j, 0], None])
                 ey.extend([coords_3d[i, 1], coords_3d[j, 1], None])
                 ez.extend([coords_3d[i, 2], coords_3d[j, 2], None])
@@ -416,7 +501,10 @@ def add_nodes_to_figure(
                 hoverinfo="skip", name="Filaments", showlegend=True,
             ))
 
-    # Velocity arrows: length = actual next-step displacement in 3D
+    # Velocity arrows — tangent-projected great-circle walks in sphere
+    # mode (physical: the node IS on the sphere, so its next-step
+    # position is along a great circle in the tangent direction), or
+    # straight chord ``p → p+v`` otherwise.
     if velocities_3d is not None:
         ax, ay, az = [], [], []
 
@@ -424,9 +512,20 @@ def add_nodes_to_figure(
             if vel_norms[i] < 0.001:
                 continue
             v = velocities_3d[i]  # already projected to 3D, dt=1 so this IS the next displacement
-            ax.extend([coords_3d[i, 0], coords_3d[i, 0] + v[0], None])
-            ay.extend([coords_3d[i, 1], coords_3d[i, 1] + v[1], None])
-            az.extend([coords_3d[i, 2], coords_3d[i, 2] + v[2], None])
+            if curves:
+                geo = tangent_geodesic(coords_3d[i], v, n_pts=velocity_pts)
+                if geo is None:
+                    continue
+                ax.extend(geo[:, 0].tolist())
+                ax.append(None)
+                ay.extend(geo[:, 1].tolist())
+                ay.append(None)
+                az.extend(geo[:, 2].tolist())
+                az.append(None)
+            else:
+                ax.extend([coords_3d[i, 0], coords_3d[i, 0] + v[0], None])
+                ay.extend([coords_3d[i, 1], coords_3d[i, 1] + v[1], None])
+                az.extend([coords_3d[i, 2], coords_3d[i, 2] + v[2], None])
 
         if ax:
             _add(go.Scatter3d(
@@ -544,7 +643,7 @@ def add_nodes_to_figure(
 
 def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
                         cooccurrence_neighbors=None, title_suffix="",
-                        wireframe: bool = True):
+                        wireframe: bool = True, curves: bool = True):
     masses, temperatures, decays, disp_norms, vel_norms, hover_texts, sources = props
 
     fig = go.Figure()
@@ -552,6 +651,7 @@ def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
         fig, coords_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
         hover_texts, sources, edges, velocities_3d=velocities_3d, config=config,
         cooccurrence_neighbors=cooccurrence_neighbors, wireframe=wireframe,
+        curves=curves,
     )
 
     displaced = sum(1 for d in disp_norms if d > 0.001)
@@ -587,7 +687,8 @@ def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
 
 
 def build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, velocities_3d, config,
-                            cooccurrence_neighbors=None, wireframe: bool = True):
+                            cooccurrence_neighbors=None,
+                            wireframe: bool = True, curves: bool = True):
     masses, temperatures, decays, disp_norms, vel_norms, hover_texts, sources = props
 
     fig = make_subplots(
@@ -602,12 +703,13 @@ def build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, velocities_3
     add_nodes_to_figure(
         fig, orig_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
         hover_texts, sources, edges, row=1, col=1, wireframe=wireframe,
+        curves=curves,
     )
     add_nodes_to_figure(
         fig, virtual_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
         hover_texts, sources, edges, velocities_3d=velocities_3d, config=config,
         cooccurrence_neighbors=cooccurrence_neighbors, row=1, col=2,
-        wireframe=wireframe,
+        wireframe=wireframe, curves=curves,
     )
 
     displaced = sum(1 for d in disp_norms if d > 0.001)
@@ -691,6 +793,14 @@ def main():
              "inspecting absolute distances; default is the sphere view "
              "since the embedding space is itself the unit hypersphere.",
     )
+    parser.add_argument(
+        "--straight-lines", action="store_true",
+        help="In sphere mode, draw filaments as chords and velocity arrows "
+             "as straight ``p+v`` segments instead of great-circle arcs / "
+             "tangent geodesics. Cuts ~10x off the trace point count and "
+             "speeds up the initial HTML load; loses the visual ‘motion is "
+             "on the sphere surface’ metaphor. Implied by --flat.",
+    )
     args = parser.parse_args()
 
     if args.compare:
@@ -756,8 +866,14 @@ def main():
         return build_virtual_vectors(vectors, ids, displacements, state_map), "compute"
 
     use_sphere = not args.flat
+    # Curves only make sense inside the sphere world — --flat implies straight.
+    use_curves = use_sphere and not args.straight_lines
     if use_sphere:
-        print("Sphere-wrap: ON (3D coords projected to unit sphere). Pass --flat to disable.")
+        mode = "geodesic curves" if use_curves else "straight chords"
+        print(
+            f"Sphere-wrap: ON ({mode}). Pass --flat for unbounded 3D, "
+            "--straight-lines for chord rendering inside sphere mode."
+        )
 
     if args.position_space == "compare":
         virtual_vectors, vsrc = _build_virtual()
@@ -786,7 +902,7 @@ def main():
         print(f"Building cosmic comparison (virtual source: {vsrc})...")
         fig = build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, vel_3d, config,
                                       cooccurrence_neighbors=cooc_neighbors,
-                                      wireframe=use_sphere)
+                                      wireframe=use_sphere, curves=use_curves)
 
     elif args.position_space == "raw":
         print(f"Reducing raw embedding to 3D ({args.method.upper()})...")
@@ -808,7 +924,7 @@ def main():
         fig = build_single_figure(coords_3d, ids, props, edges, vel_3d, config,
                                   cooccurrence_neighbors=cooc_neighbors,
                                   title_suffix="— Raw Space",
-                                  wireframe=use_sphere)
+                                  wireframe=use_sphere, curves=use_curves)
 
     else:  # virtual
         virtual_vectors, vsrc = _build_virtual()
@@ -833,7 +949,7 @@ def main():
         fig = build_single_figure(coords_3d, ids, props, edges, vel_3d, config,
                                   cooccurrence_neighbors=cooc_neighbors,
                                   title_suffix=suffix,
-                                  wireframe=use_sphere)
+                                  wireframe=use_sphere, curves=use_curves)
 
     print(f"Saving to {args.output}...")
     fig.write_html(args.output, include_plotlyjs=True)
