@@ -151,13 +151,18 @@ def _top_k_heavy_neighbors(engine, vec, k, pool_size, exclude_id):
 
 
 async def _m001_needs_apply(engine, config):
-    # Phase M Stage 1 interaction (2026-05-13): M002 deliberately zeros
-    # displacement to give the new physics a clean slate. Without this
-    # guard, M001 would see "100% zero displacement → re-prime everyone"
-    # and write displacement biased toward residual mass-heavy nodes,
-    # partially re-creating BH-like clusters that M002 was meant to clear.
-    # When M002 is in the ledger, M001's "Phase G legacy priming needed"
-    # assumption no longer holds — the displacement zeroing is intentional.
+    # Phase M Stage 1 (2026-05-13): on Phase M code the retroactive Phase G
+    # priming approach is superseded by M002 (clear residue) + M003 (mass
+    # reset) + M004 (cosmic-bang ignition). Running M001 alongside these
+    # would re-bias displacement toward residual heavy nodes, partially
+    # re-creating the BH clusters M002 was meant to clear. Two guards:
+    #   (1) skip when Phase M is the deployed code (fresh installs)
+    #   (2) skip when M002 is already in the ledger (mid-rollout)
+    if config.mass_conservation_enabled:
+        return False, (
+            "running on Phase M code (mass_conservation_enabled=True); "
+            "Phase G retroactive priming superseded by M002/M003/M004"
+        )
     db_path = config.db_path
     try:
         ledger_conn = sqlite3.connect(db_path)
@@ -475,6 +480,152 @@ M003 = Migration(
 
 
 # ---------------------------------------------------------------------
+# M004 — Phase M Stage 1: corpus-scale cosmic-bang ignition
+# ---------------------------------------------------------------------
+# After M002 zeros velocity, the cosmos is at thermal equilibrium with no
+# momentum — Newton's 1st law keeps everything stationary unless recall
+# events inject query-attraction kicks, and those kicks are bounded /
+# directional. New-batch indexing has the Phase K supernova mechanic to
+# seed motion at birth (``compute_supernova_velocities`` writes an outward
+# velocity from the cohort centroid), but existing nodes that pre-date
+# Phase K — or whose velocity was wiped by M002 — never get that kick.
+#
+# M004 treats the entire active corpus as one giant supernova event:
+# reuse ``compute_supernova_velocities`` with all active node embeddings
+# as the "cohort" and the corpus centroid as the explosion epicenter.
+# Velocities are *added* to whatever already exists in the cache so
+# natural query-attraction accumulation since M002 is preserved.
+
+M004_TRIGGER_FRACTION = 0.5      # >X% of active nodes at v≈0 → PENDING
+M004_VELOCITY_TOLERANCE = 1e-6
+M004_VERIFY_FRACTION = 0.5       # require ≥X% non-zero velocity after apply
+
+
+def _velocity_stats(engine) -> tuple[int, int]:
+    """Return (active_count, zero_velocity_count)."""
+    total = 0
+    zero = 0
+    for state in engine.cache.get_all_nodes():
+        if state.is_archived:
+            continue
+        total += 1
+        v = engine.cache.get_velocity(state.id)
+        if v is None or float(np.linalg.norm(v)) < M004_VELOCITY_TOLERANCE:
+            zero += 1
+    return total, zero
+
+
+async def _m004_needs_apply(engine, config):
+    total, zero = _velocity_stats(engine)
+    if total == 0:
+        return False, "DB has no active nodes — nothing to ignite"
+    frac = zero / total
+    msg = (
+        f"{zero}/{total} ({frac:.0%}) active nodes have velocity ≈ 0 "
+        f"(α={config.supernova_velocity_alpha}, "
+        f"clamp={config.orbital_max_velocity})"
+    )
+    if frac > M004_TRIGGER_FRACTION:
+        return True, msg
+    return False, msg + " — corpus already has kinetic energy"
+
+
+async def _m004_apply(engine, config):
+    """Apply Phase K supernova velocity to the whole corpus at once.
+
+    Treat all active nodes as a single supernova event:
+      * centroid = mean of all active embeddings
+      * v = α × (emb - centroid), clamped to orbital_max_velocity
+    Velocities are added to existing cache values (preserves any
+    accumulation since M002), then clamped again so the final magnitude
+    never exceeds orbital_max_velocity.
+    """
+    from gaottt.core.supernova import compute_supernova_velocities
+
+    active_ids = [s.id for s in engine.cache.get_all_nodes() if not s.is_archived]
+    if not active_ids:
+        return "no active nodes"
+
+    vec_map = engine.faiss_index.get_vectors(active_ids)
+    valid_ids = [nid for nid in active_ids if nid in vec_map]
+    if not valid_ids:
+        return "no embeddings in FAISS — try `compact(rebuild_faiss=True)` first"
+
+    embeddings = np.stack([vec_map[nid] for nid in valid_ids])
+
+    t0 = time.time()
+    velocities = compute_supernova_velocities(valid_ids, embeddings, config)
+    if not velocities:
+        return (
+            "supernova returned no velocities — check supernova_enabled / "
+            f"supernova_velocity_alpha={config.supernova_velocity_alpha} / "
+            f"supernova_min_cohort_size={config.supernova_min_cohort_size}"
+        )
+
+    n_seeded = 0
+    for nid, v_supernova in velocities.items():
+        existing = engine.cache.get_velocity(nid)
+        if existing is None:
+            combined = v_supernova
+        else:
+            combined = (existing + v_supernova).astype(np.float32)
+        combined = clamp_vector(combined, config.orbital_max_velocity)
+        engine.cache.set_velocity(nid, combined)
+        n_seeded += 1
+
+    await engine.cache.flush_to_store(engine.store)
+    elapsed = time.time() - t0
+    return (
+        f"ignited corpus-scale supernova on {n_seeded}/{len(valid_ids)} "
+        f"nodes (centroid + α={config.supernova_velocity_alpha} × radial, "
+        f"clamped to {config.orbital_max_velocity}) in {elapsed:.1f}s"
+    )
+
+
+async def _m004_verify(engine, config):
+    total, zero = _velocity_stats(engine)
+    moving = total - zero
+    frac = moving / total if total else 0.0
+    if frac >= M004_VERIFY_FRACTION:
+        return True, (
+            f"{moving}/{total} ({frac:.0%}) nodes have non-zero velocity "
+            f"— corpus is in motion"
+        )
+    return False, (
+        f"{moving}/{total} ({frac:.0%}) nodes moving — ignition did not "
+        f"reach the required {M004_VERIFY_FRACTION:.0%} threshold"
+    )
+
+
+M004 = Migration(
+    version="M004",
+    name="phase-m-cosmic-bang",
+    description=(
+        "Treat the entire active corpus as a single Phase K supernova event: "
+        "seed every node with an outward velocity from the corpus centroid "
+        "(``α × (emb - centroid)``, clamped to ``orbital_max_velocity``). "
+        "Mirrors what new-batch indexing already does — without this, "
+        "existing zero-velocity nodes stay frozen and emergent orbital "
+        "dynamics never start. Run after M002 zeros velocity."
+    ),
+    critical=True,
+    warning=(
+        "Writes velocity on every active node. Existing velocity is\n"
+        "  *added to* (not overwritten) the supernova kick, then re-clamped\n"
+        "  to ``orbital_max_velocity``. Most nodes end up at or near the\n"
+        "  velocity clamp — equivalent to seeding the cosmos with a uniform\n"
+        "  thermal temperature. Once applied, the system has kinetic energy\n"
+        "  to support Hooke / friction equilibrium, orbital dynamics, and\n"
+        "  comet-like trajectories. Without this, the corpus stays at rest\n"
+        "  forever and creative emergence is starved for momentum."
+    ),
+    needs_apply=_m004_needs_apply,
+    apply=_m004_apply,
+    verify=_m004_verify,
+)
+
+
+# ---------------------------------------------------------------------
 # Registry (add new migrations here, in order)
 # ---------------------------------------------------------------------
 
@@ -482,6 +633,7 @@ MIGRATIONS: list[Migration] = [
     M001,
     M002,
     M003,
+    M004,
 ]
 
 
