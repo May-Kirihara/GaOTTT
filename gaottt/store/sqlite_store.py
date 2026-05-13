@@ -198,6 +198,49 @@ class SqliteStore(StoreBase):
         rows = await cursor.fetchall()
         return {row[0]: row[1] for row in rows if row[1] is not None}
 
+    async def get_all_originals(self) -> dict[str, str]:
+        """Bulk fetch {id: original_id} via SQLite's JSON1 extension.
+
+        Phase M Stage 1: used at cache load to populate
+        ``cache.original_id_by_id`` so the self-force check in the mass-update
+        path can skip same-document co-occurrence contributions without
+        per-node store fetches.
+
+        ``COALESCE(metadata.original_id, metadata.file_path)`` so existing
+        ingested books — which set ``file_path`` but not ``original_id`` —
+        are covered without a DB migration. Same-file chunks therefore share
+        the file path as their group key, which is what the Phase M inflation
+        analysis (1 file = 91 chunks) needs to detect.
+        """
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT id, "
+            "COALESCE("
+            "json_extract(metadata, '$.original_id'), "
+            "json_extract(metadata, '$.file_path')"
+            ") "
+            "FROM documents WHERE metadata IS NOT NULL"
+        )
+        rows = await cursor.fetchall()
+        return {row[0]: row[1] for row in rows if row[1] is not None}
+
+    async def get_all_cohorts(self) -> dict[str, str]:
+        """Bulk fetch {id: metadata.cohort_id} via SQLite's JSON1 extension.
+
+        Phase M Stage 1: cohort_id is assigned per supernova batch in
+        ``engine._apply_supernova_cohort`` so all nodes born in the same
+        Phase K event share it. Loaded into ``cache.cohort_id_by_id`` at
+        startup for the self-force check.
+        """
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT id, json_extract(metadata, '$.cohort_id') "
+            "FROM documents WHERE metadata IS NOT NULL "
+            "AND json_extract(metadata, '$.cohort_id') IS NOT NULL"
+        )
+        rows = await cursor.fetchall()
+        return {row[0]: row[1] for row in rows if row[1] is not None}
+
     async def get_all_tags(self) -> dict[str, list[str]]:
         """Bulk fetch {id: list of tag strings} via SQLite's JSON1 extension.
 
@@ -404,6 +447,22 @@ class SqliteStore(StoreBase):
         async for row in cursor:
             result[row[0]] = np.frombuffer(row[1], dtype=np.float32).copy()
         return result
+
+    async def reset_masses(self, value: float = 1.0) -> int:
+        """Phase M Stage 1 — reset every node's mass without disturbing the
+        rest of the dynamic state.
+
+        Used as a maintainer operation when the underlying mass-accumulation
+        rule changes (e.g., switching on ``mass_conservation_enabled``) so
+        the new rule observes a clean slate. Returns the number of nodes
+        updated.
+        """
+        assert self._conn is not None
+        await self._conn.execute("UPDATE nodes SET mass = ?", (value,))
+        cursor = await self._conn.execute("SELECT COUNT(*) FROM nodes")
+        row = await cursor.fetchone()
+        await self._conn.commit()
+        return row[0] if row else 0
 
     async def reset_dynamic_state(self) -> tuple[int, int]:
         assert self._conn is not None

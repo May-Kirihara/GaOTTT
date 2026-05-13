@@ -92,6 +92,7 @@ ReDoc: http://localhost:8000/redoc
 | GET | `/node/{id}` | ノード状態の直接参照 |
 | GET | `/graph` | 共起グラフ確認 |
 | POST | `/reset` | 全動的状態リセット（**REST 専用**、MCP からは呼べない） |
+| POST | `/admin/reset_masses` | Phase M Stage 1 maintainer-only — mass のみ既定 1.0 にリセット（**REST 専用**、MCP からは呼べない） |
 
 ---
 
@@ -443,6 +444,16 @@ Phase A の古いエンドポイント。`/recall` のサブセット（source_f
 **リセット対象**: mass, temperature, sim_history, last_access, displacement, velocity, expires_at, is_archived, merge*, emotion_weight, certainty, last_verified_at, 共起グラフ全エッジ, directed_edges 全件
 
 **保持**: ドキュメント本文, metadata, embedding, FAISS インデックス
+
+### POST /admin/reset_masses
+
+Phase M Stage 1 maintainer-only — **mass のみ** を `value`（既定 1.0）にリセット。displacement / velocity / edges / cohort_id / source など他の動的状態は触らない。MCP 非露出（LLM 用途なし）。
+
+**リクエスト**: `{"value": 1.0}`（省略時 1.0）
+
+**レスポンス**: `{"nodes_reset": 23012, "value": 1.0}`
+
+**用途**: Mass Conservation 規則 (`mass_conservation_enabled=True`) を本番 DB にロールアウトする時の一回限り操作。旧規則下で蓄積した chunk 内輪取引 inflation を一度ゼロにしてから新規則で観察する。**走らせる前に他 MCP / REST プロセスを停止し DB backup を取ること**（write-behind 上書き罠）。詳細: [Plans — Phase M](Plans-Phase-M-Mass-Conservation.md) §11.2 / CLI: `scripts/reset_masses.py --apply`。
 
 ---
 

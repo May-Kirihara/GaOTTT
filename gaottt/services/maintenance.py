@@ -8,6 +8,7 @@ from gaottt.core.types import (
     MergeResponse,
     PrefetchResponse,
     PrefetchStatusResponse,
+    ResetMassesResponse,
 )
 
 
@@ -78,3 +79,17 @@ def prefetch(
 def prefetch_status(engine: GaOTTTEngine) -> PrefetchStatusResponse:
     status = engine.prefetch_status()
     return PrefetchStatusResponse(cache=status["cache"], pool=status["pool"])
+
+
+async def reset_masses(
+    engine: GaOTTTEngine,
+    value: float = 1.0,
+) -> ResetMassesResponse:
+    """Phase M Stage 1 — maintainer-only mass reset.
+
+    Intentionally absent from the MCP surface: bulk mass overwrite is
+    destructive and there is no LLM-driven use case. REST exposes it
+    under ``/admin/`` mirroring how ``/reset`` is gated.
+    """
+    affected = await engine.reset_masses(value)
+    return ResetMassesResponse(nodes_reset=affected, value=value)

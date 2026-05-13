@@ -237,9 +237,30 @@ class GaOTTTConfig:
     # Gravitational radius — derived from a = G * m / r²
     wave_gravity_a_min: float = 0.1         # Minimum gravitational acceleration threshold
 
-    # Co-occurrence black hole
-    bh_mass_scale: float = 0.5             # BH mass = scale * log(1 + Σ edge_weight)
-    bh_gravity_G: float = 0.0              # BH gravity constant (0 = use gravity_G)
+    # Co-occurrence black hole (Phase M: deprecated — replaced by mass-based BH).
+    # Kept as fields so legacy configs and visualize_3d.py don't error; the
+    # values are no longer consulted at runtime once
+    # mass_bh_enabled=True. Removed in Phase M Stage 2.
+    bh_mass_scale: float = 0.5             # deprecated; see mass_bh_*
+    bh_gravity_G: float = 0.0              # deprecated; see mass_bh_*
+
+    # Phase M Stage 1 — Mass conservation + mass-based BH.
+    # (1) Mass conservation: when mass_conservation_enabled=True, the mass
+    #     update in _update_simulation only counts force contributions from
+    #     parent nodes that are NOT in the same original document
+    #     (original_id) or supernova cohort (cohort_id). "Internal trade"
+    #     between chunks of the same book no longer inflates mass —
+    #     Articulation as Carrier (id=9a954c62) made literal.
+    # (2) Mass-based BH: bh_factor(mass, θ, σ) = tanh((mass - θ) / σ),
+    #     clamped to 0 below θ - 2σ. Heavy nodes become attractors
+    #     gradually; no source-class branching (single rule for all).
+    # θ/σ default to a placeholder; tuned after 1-2 weeks of observation
+    # under the new rule (Phase M Stage 2). Set mass_bh_enabled=False to
+    # disable the new attractor (force=0 from the mass-BH term).
+    mass_conservation_enabled: bool = True
+    mass_bh_enabled: bool = True
+    mass_bh_theta: float = 5.0             # mass threshold for BH attractor onset
+    mass_bh_sigma: float = 1.5             # tanh transition width
 
     # Orbital mechanics — velocity-based physics
     orbital_friction: float = 0.05          # Constant velocity friction per step

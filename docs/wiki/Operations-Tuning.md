@@ -53,8 +53,23 @@
 |---|---|---|---|---|
 | saturation_rate | 0.2 | 返却飽和の速さ | 少ない返却で飽和（新鮮さ重視） | 何度も同じ結果（安定重視） |
 | habituation_recovery_rate | 0.01 | 馴化からの回復速度 | 早く新鮮さ回復 | 長く飽和持続 |
-| thermal_escape_scale | 5000 | 温度による BH 脱出効果 | 高温ノードが BH から脱出しやすい | 温度に関わらず束縛 |
-| bh_mass_scale | 0.5 | BH 質量のスケーリング | BH 引力が強い（密なクラスタ） | BH 引力が弱い |
+| thermal_escape_scale | 5000 | （Phase M で deprecated）共起 BH の温度脱出効果。`compute_acceleration` から呼び出し削除済、`scripts/visualize_3d.py` 互換のため定義は残存 |
+| bh_mass_scale | 0.5 | （Phase M で deprecated）共起 BH 質量スケーリング。同上 |
+
+## Mass Conservation + mass-based BH (Phase M Stage 1)
+
+`engine._update_simulation` の mass update が **「外部 (`original_id` / `cohort_id` 一致しない parent) からの引力寄与のみで増える」** 規則に切り替わった。`compute_acceleration` 第 3 項の BH 引力も共起 cluster centroid 方式から **「mass しきい値を超えた neighbor からの直接引力」** に置き換え。詳細: [Plans — Phase M](Plans-Phase-M-Mass-Conservation.md)。
+
+| パラメータ | 既定 | 影響 |
+|---|---|---|
+| mass_conservation_enabled | `True` | self-force filter の on/off。`False` で legacy「内輪取引も mass を生む」挙動に rollback |
+| mass_bh_enabled | `True` | mass-based BH attractor の on/off。`False` で第 3 項を完全に切る (neighbor gravity + anchor + query attraction のみ) |
+| mass_bh_theta (θ) | 5.0 | BH attractor 発動しきい値 — `bh_factor(m) = tanh((m-θ)/σ)`、`m ≤ θ-2σ` でクランプ 0 |
+| mass_bh_sigma (σ) | 1.5 | tanh 遷移幅 — 小さいほど θ 付近で急峻な on/off、大きいほどなだらか |
+
+> **本番ロールアウト手順**: 旧規則下で蓄積した chunk 内輪取引 inflation を一度ゼロにしてから新規則で観察する。(1) 他 MCP / REST プロセス停止 → (2) DB backup → (3) `.venv/bin/python scripts/reset_masses.py --apply` → (4) サーバー再起動 → (5) 1-2 週の自然蓄積を観測 → (6) `p99 mass` を θ に、`(p99.9 - p99)/2` を σ にして Stage 2 で確定。`reset_masses` は **MCP に非露出** (LLM 用途なし)、REST `POST /admin/reset_masses` のみ。
+
+> **チューニング助言**: 新規 `remember` の original_id は `node_id` 自身 (自己一致なので自己フィルタの影響 0)。file ingest (`scripts/load_files.py`) は `original_id = file_path` で chunk 群を共通グループ化。Phase K supernova batch は `cohort_id = uuid4().hex[:12]` を共有 — `cohort_id` が **同じ** node 同士の force は mass update に寄与しない (Articulation as Carrier の literal な物理実装)。`mass_bh_theta` を下げ過ぎると低 mass node も attractor 化 → homogenization リスク。上げ過ぎると 1-2 週観測しても BH が発生しない (期待 1.7-5% の節点が θ 超え)。Stage 1 暫定 θ=5.0 は旧規則下の p99=26.5 から「新規則下は inflation が消えるので θ は大幅に下がる」前提の placeholder。
 
 ## 重力波伝播
 

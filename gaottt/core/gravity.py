@@ -69,14 +69,15 @@ def compute_bh_acceleration(
     all_positions: dict[str, np.ndarray],
     config: GaOTTTConfig,
 ) -> np.ndarray:
-    """Compute gravitational acceleration from co-occurrence cluster black hole.
+    """Phase M Stage 1 — deprecated co-occurrence BH (no longer called by
+    ``compute_acceleration``). Kept here so ``scripts/visualize_3d.py``
+    and other inspection tooling still import cleanly; removed in
+    Phase M Stage 2.
 
-    The BH is located at the weighted centroid of co-occurrence neighbors.
-    Its mass is proportional to log(1 + total_edge_weight).
-
-    Two dampening mechanisms:
-    - Presentation saturation: neighbors returned often to LLM contribute less to BH mass
-    - Thermal escape: high-temperature nodes resist BH capture
+    Original behaviour: gravitational acceleration toward the weighted
+    centroid of co-occurrence neighbors. BH mass = ``bh_mass_scale *
+    log(1 + Σ edge_weight)`` with presentation-saturation and thermal-
+    escape damping.
     """
     neighbors = cache.get_neighbors(node_id)
     if not neighbors:
@@ -116,6 +117,58 @@ def compute_bh_acceleration(
     return (magnitude * direction * escape_factor).astype(np.float32)
 
 
+def bh_factor(mass: float, theta: float, sigma: float) -> float:
+    """Phase M Stage 1 — continuous mass-threshold BH activation.
+
+    Returns a value in ``[0, 1)`` that grows with how far ``mass`` exceeds
+    the threshold ``theta``. Clamped to 0 below ``theta - 2*sigma`` so
+    typical young nodes contribute nothing; rises through ``tanh`` so the
+    onset is gradual instead of a step (no sudden "now it's a BH" cliff).
+
+    ``sigma`` controls the transition width. ``sigma <= 0`` collapses to a
+    hard step at ``theta``, preserved as a degenerate case rather than
+    raising — production never sets it that way.
+    """
+    if sigma <= 0.0:
+        return 1.0 if mass > theta else 0.0
+    if mass <= theta - 2.0 * sigma:
+        return 0.0
+    return math.tanh((mass - theta) / sigma)
+
+
+def compute_mass_bh_acceleration(
+    pos_i: np.ndarray,
+    neighbors: list[tuple[np.ndarray, float]],
+    config: GaOTTTConfig,
+) -> np.ndarray:
+    """Phase M Stage 1 — gravitational pull from mass-threshold attractors.
+
+    Replaces the Phase B/H co-occurrence BH. Each reached neighbor
+    contributes ``G * m_j * bh_factor(m_j) / (r² + ε)`` along
+    ``direction(i→j)``. Light neighbors give 0 via ``bh_factor`` — only
+    nodes that have crossed the mass threshold act as BH-style attractors.
+    No source-class branching: the single rule is "mass alone decides".
+
+    Set ``config.mass_bh_enabled=False`` to skip this term entirely.
+    """
+    acc = np.zeros_like(pos_i)
+    if not config.mass_bh_enabled:
+        return acc
+    theta = config.mass_bh_theta
+    sigma = config.mass_bh_sigma
+    for pos_j, mass_j in neighbors:
+        factor = bh_factor(mass_j, theta, sigma)
+        if factor <= 0.0:
+            continue
+        diff = pos_j - pos_i
+        distance_sq = float(np.dot(diff, diff)) + config.gravity_epsilon
+        distance = math.sqrt(distance_sq)
+        magnitude = config.gravity_G * mass_j * factor / distance_sq
+        direction = diff / distance
+        acc = acc + magnitude * direction
+    return acc.astype(np.float32)
+
+
 def compute_acceleration(
     pos_i: np.ndarray,
     original_pos_i: np.ndarray,
@@ -134,7 +187,10 @@ def compute_acceleration(
     Four components:
     1. Neighbor gravity: a = Σ_j [ G * m_j / (r² + ε) * direction(i→j) ]
     2. Anchor restoring force: a = -k * displacement (Hooke's law)
-    3. Co-occurrence BH gravity: attraction toward cluster centroid
+    3. Mass-threshold BH gravity (Phase M Stage 1): heavier-than-θ
+       neighbors pull harder via ``bh_factor(m_j) = tanh((m_j-θ)/σ)``,
+       clamped to 0 below ``θ - 2σ``. Replaces the Phase B co-occurrence
+       BH — single mass-based rule, no source-class branching.
     4. Query attraction (Phase I Stage 2 + Stage 3 mass-gating):
        a = (α · score · gate / m_i) · (q - pos), gate = tanh(m_i / θ)
        Transient mass-damped force toward the query embedding. Acts as the
@@ -162,11 +218,11 @@ def compute_acceleration(
     # 2. Anchor restoring force (Hooke's law)
     acc = acc - config.orbital_anchor_strength * displacement_i
 
-    # 3. Co-occurrence black hole gravity (with saturation + thermal escape)
-    if node_id is not None and cache is not None and all_positions is not None:
-        node_state = cache.get_node(node_id)
-        temp_i = node_state.temperature if node_state else 0.0
-        acc = acc + compute_bh_acceleration(pos_i, node_id, temp_i, cache, all_positions, config)
+    # 3. Mass-threshold BH gravity (Phase M Stage 1).
+    # node_id/cache/all_positions are unused now (they powered the old
+    # co-occurrence BH centroid). Parameters kept for back-compat — call
+    # sites need not change. The pull comes purely from neighbor mass.
+    acc = acc + compute_mass_bh_acceleration(pos_i, neighbors, config)
 
     # 4. Query attraction (Phase I Stage 2 + Stage 3 mass-gating)
     if (
@@ -563,6 +619,40 @@ def _inject_into_pool(
     return pool
 
 
+# Sentinel parent-id for forces that did not originate from another reached
+# node (seed entry, injected-id force-include). Used as a key in the
+# per-parent attribution map returned via ``out_attribution`` — the
+# self-force filter in the mass-update path treats this sentinel as
+# "definitely external" (it represents the query itself / the caller's
+# explicit ask, never a sibling in the same document or cohort).
+SEED_PARENT_ID = "__seed__"
+
+
+def is_self_force_by_id(cache: "CacheLayer", a_id: str, b_id: str) -> bool:
+    """Phase M Stage 1 — self-force detection.
+
+    Returns True iff the co-occurrence force between nodes ``a_id`` and
+    ``b_id`` is "internal trade" within the same source document or
+    supernova cohort, in which case the mass update treats the contribution
+    as already-absorbed (no new external mass). Same-id is also self.
+
+    Single rule for all source classes: only the structural identifiers
+    (``original_id`` / ``cohort_id``) are inspected. There is no
+    ``source`` branching — that is the design invariant Phase M preserves.
+    """
+    if a_id == b_id:
+        return True
+    orig_a = cache.get_original(a_id)
+    orig_b = cache.get_original(b_id)
+    if orig_a and orig_b and orig_a == orig_b:
+        return True
+    coh_a = cache.get_cohort(a_id)
+    coh_b = cache.get_cohort(b_id)
+    if coh_a and coh_b and coh_a == coh_b:
+        return True
+    return False
+
+
 def propagate_gravity_wave(
     query_vector: np.ndarray,
     faiss_index: "FaissIndex",
@@ -576,6 +666,7 @@ def propagate_gravity_wave(
     injected_ids: set[str] | None = None,
     query_text: str | None = None,
     bm25_index: "BM25Index | None" = None,
+    out_attribution: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, float]:
     """Propagate gravity wave recursively through embedding space.
 
@@ -759,8 +850,21 @@ def propagate_gravity_wave(
     reached: dict[str, float] = {}
     frontier: list[tuple[str, float]] = [(nid, 1.0) for nid, _ in seeds]
 
+    # Phase M Stage 1 — per-parent force attribution. Populated only when
+    # the caller passes ``out_attribution`` (engine.query does, internal
+    # callers like tests skip it). ``SEED_PARENT_ID`` keys forces that did
+    # not come from another wave node (seeds and forced injection at the
+    # tail). The mass-update path in engine._update_simulation sums these
+    # contributions while skipping ``is_self_force_by_id`` matches.
+    track_attribution = out_attribution is not None
+
     for nid, force in frontier:
         reached[nid] = max(reached.get(nid, 0.0), force)
+        if track_attribution:
+            out_attribution.setdefault(nid, {})[SEED_PARENT_ID] = max(
+                out_attribution.get(nid, {}).get(SEED_PARENT_ID, 0.0),
+                force,
+            )
 
     # Phase H Stage 5 — Neighbor search index selection. The "star"
     # in this model is the virtual position (raw + cached displacement),
@@ -801,6 +905,9 @@ def propagate_gravity_wave(
                 old_force = reached.get(neighbor_id, 0.0)
                 new_force = old_force + child_force
                 reached[neighbor_id] = new_force
+                if track_attribution:
+                    attribs = out_attribution.setdefault(neighbor_id, {})
+                    attribs[node_id] = attribs.get(node_id, 0.0) + child_force
 
                 if old_force == 0.0:
                     next_frontier.append((neighbor_id, child_force))
@@ -815,5 +922,7 @@ def propagate_gravity_wave(
         for nid in injected_ids:
             if nid not in reached:
                 reached[nid] = 1.0
+                if track_attribution:
+                    out_attribution.setdefault(nid, {})[SEED_PARENT_ID] = 1.0
 
     return reached

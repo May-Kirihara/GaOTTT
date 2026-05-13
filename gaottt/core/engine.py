@@ -12,8 +12,10 @@ from gaottt.config import GaOTTTConfig
 from gaottt.core.clustering import Cluster, cluster_by_similarity, find_merge_candidates
 from gaottt.core.collision import MergeOutcome, merge_pair, pick_survivor
 from gaottt.core.gravity import (
+    SEED_PARENT_ID,
     compute_gravity_kick,
     compute_virtual_position,
+    is_self_force_by_id,
     propagate_gravity_wave,
     update_orbital_state,
 )
@@ -350,6 +352,34 @@ class GaOTTTEngine:
         metadatas = [d.get("metadata") for d in docs_to_index]
         ids = [str(uuid.uuid4()) for _ in docs_to_index]
 
+        # Phase M Stage 1 — stamp structural identifiers on metadata before
+        # we hand it to the store, so the self-force filter has something
+        # to inspect on every node.
+        #   * ``original_id``: defaults to the node's own id (single
+        #     remember acts as its own "document"). If the caller already
+        #     supplied one — or provided ``file_path`` from a chunking
+        #     ingest path — we honour that, so all chunks of the same
+        #     file share the same original_id and stop inflating each
+        #     other's mass.
+        #   * ``cohort_id``: assigned only when this batch is going to
+        #     trigger a Phase K supernova (cohort size ≥ threshold). All
+        #     nodes in the cohort share the same id; singleton remembers
+        #     stay absent so they never self-cancel by accident.
+        cohort_id: str | None = None
+        if (
+            self.config.supernova_enabled
+            and len(ids) >= self.config.supernova_min_cohort_size
+        ):
+            cohort_id = uuid.uuid4().hex[:12]
+
+        for i, doc_id in enumerate(ids):
+            meta = metadatas[i] or {}
+            if "original_id" not in meta:
+                meta["original_id"] = meta.get("file_path") or doc_id
+            if cohort_id is not None:
+                meta["cohort_id"] = cohort_id
+            metadatas[i] = meta
+
         vectors = self.embedder.encode_documents(contents)
         self.faiss_index.add(vectors, ids)
         if self.virtual_faiss_index is not None:
@@ -387,6 +417,16 @@ class GaOTTTEngine:
             tags = meta.get("tags")
             if isinstance(tags, list):
                 self.cache.set_tags(doc_id, [t for t in tags if isinstance(t, str)])
+            # Phase M Stage 1: mirror structural identifiers — the
+            # self-force filter in the wave-driven mass update consults
+            # the cache, not the store, so we have to populate it now
+            # instead of waiting for the next restart.
+            original_id = meta.get("original_id")
+            if isinstance(original_id, str) and original_id:
+                self.cache.set_original(doc_id, original_id)
+            cohort_meta = meta.get("cohort_id")
+            if isinstance(cohort_meta, str) and cohort_meta:
+                self.cache.set_cohort(doc_id, cohort_meta)
             docs_for_store.append({
                 "id": doc_id,
                 "content": contents[i],
@@ -607,7 +647,11 @@ class GaOTTTEngine:
             if not injected_ids:
                 injected_ids = None
 
-        # Step 1: Gravity wave propagation — recursive neighbor expansion
+        # Step 1: Gravity wave propagation — recursive neighbor expansion.
+        # Phase M Stage 1: capture per-parent force attribution so the
+        # mass-update path can filter same-document / same-cohort
+        # "internal trade" contributions (Mass Conservation rule).
+        wave_attribution: dict[str, dict[str, float]] = {}
         reached = propagate_gravity_wave(
             query_vec, self.faiss_index, self.cache, self.config,
             wave_k=wave_k, wave_depth=wave_depth,
@@ -617,6 +661,7 @@ class GaOTTTEngine:
             injected_ids=injected_ids,
             query_text=text,
             bm25_index=self.bm25_index,
+            out_attribution=wave_attribution,
         )
 
         if not reached:
@@ -808,9 +853,12 @@ class GaOTTTEngine:
         # Step 6: Simulation update — ALL reached nodes.
         # Phase I Stage 2: pass the query vector + wave scores so the orbital
         # step can apply the query-attraction term to reached nodes.
+        # Phase M Stage 1: pass per-parent attribution so the mass update can
+        # apply the self-force (Mass Conservation) filter.
         self._update_simulation(
             all_reached_ids, reached, original_embs, now,
             query_anchor=query_vec_flat,
+            wave_attribution=wave_attribution,
         )
         self._update_cooccurrence(result_ids)
 
@@ -823,6 +871,7 @@ class GaOTTTEngine:
         original_embs: dict[str, np.ndarray],
         now: float,
         query_anchor: np.ndarray | None = None,
+        wave_attribution: dict[str, dict[str, float]] | None = None,
     ) -> None:
         """Update gravity simulation for ALL wave-reached nodes.
 
@@ -841,8 +890,33 @@ class GaOTTTEngine:
 
             force = reached.get(node_id, 0.0)
 
-            # Mass update scaled by force
-            state.mass += self.config.eta * force * (1.0 - state.mass / self.config.m_max)
+            # Phase M Stage 1 — Mass conservation filter. Sum only the
+            # parent contributions that came from *outside* this node's
+            # source document and supernova cohort. Same-original /
+            # same-cohort co-occurrence is "internal trade" — Articulation
+            # as Carrier (id=9a954c62) requires an external referrer to
+            # generate mass. ``SEED_PARENT_ID`` (the query itself) and
+            # absent attribution (legacy callers, no wave_attribution
+            # passed) fall back to full ``force``.
+            if (
+                self.config.mass_conservation_enabled
+                and wave_attribution is not None
+            ):
+                contributions = wave_attribution.get(node_id, {})
+                if contributions:
+                    mass_force = 0.0
+                    for parent_id, contrib in contributions.items():
+                        if parent_id == SEED_PARENT_ID:
+                            mass_force += contrib
+                        elif not is_self_force_by_id(self.cache, node_id, parent_id):
+                            mass_force += contrib
+                else:
+                    mass_force = force
+            else:
+                mass_force = force
+
+            # Mass update scaled by external (non-self) force only.
+            state.mass += self.config.eta * mass_force * (1.0 - state.mass / self.config.m_max)
 
             # Sim history ring buffer
             state.sim_history.append(force)
@@ -1433,6 +1507,31 @@ class GaOTTTEngine:
             return
         self.bm25_index.reset()
         await self._build_bm25_from_store()
+
+    # --- Phase M Stage 1: Mass-only reset ---
+
+    async def reset_masses(self, value: float = 1.0) -> int:
+        """Reset every node's mass to ``value`` (default 1.0), keeping
+        displacement / velocity / edges / cohort_id / source intact.
+
+        This is the maintainer hook for rolling out Phase M Stage 1 on a
+        live database that accumulated mass under the old "internal trade"
+        rule: switch the flag on, kill other connected processes, run
+        ``reset_masses()``, restart. The new rule then accretes mass from
+        a clean baseline.
+
+        Flushes any pending cache writes first so they don't clobber the
+        reset, performs the SQL update, then mirrors the new value into the
+        in-memory cache and invalidates the prefetch cache (mass change
+        invalidates every cached recall ranking).
+        """
+        await self.cache.flush_to_store(self.store)
+        affected = await self.store.reset_masses(value)
+        for state in self.cache.node_cache.values():
+            state.mass = value
+        self.prefetch_cache.invalidate()
+        logger.info("Mass reset: %d nodes set to mass=%s", affected, value)
+        return affected
 
     # --- US5: State Reset ---
 
