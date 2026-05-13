@@ -99,6 +99,72 @@ def reduce_to_3d(vectors: np.ndarray, method: str = "pca") -> np.ndarray:
         return PCA(n_components=3).fit_transform(vectors)
 
 
+def sphere_wrap(coords_3d: np.ndarray) -> np.ndarray:
+    """Project 3D coords onto the unit sphere (L2-normalize each row).
+
+    The embedding space is the unit hypersphere S^767 — every vector RURI
+    emits is unit-norm and the physics operates on that surface. Plotting
+    PCA/UMAP output as a flat Euclidean cloud makes the unit-sphere
+    constraint invisible; this normalization puts the visual back on the
+    geometry the simulation actually runs on. Numerically lossy by design
+    (radial information is collapsed) — the viz is for intuition, not
+    measurement.
+    """
+    norms = np.linalg.norm(coords_3d, axis=1, keepdims=True)
+    norms = np.where(norms < 1e-9, 1.0, norms)
+    return (coords_3d / norms).astype(np.float32)
+
+
+def _wireframe_sphere_traces(
+    n_lat: int = 8,
+    n_lon: int = 12,
+    n_pts: int = 60,
+    color: str = "rgba(70,100,160,0.10)",
+) -> list:
+    """Faint lat/lon wireframe for the unit sphere — visual reference so
+    the sphere-wrapped node cloud reads as "on a globe" instead of "an
+    arbitrary ball of points". Returns a list of plotly traces ready to
+    add to a figure."""
+    traces = []
+    # Latitude rings (parallels): each at constant z, circle in xy-plane
+    for i in range(1, n_lat):
+        phi = math.pi * i / n_lat - math.pi / 2.0   # [-π/2, π/2]
+        z = math.sin(phi)
+        r = math.cos(phi)
+        theta = np.linspace(0, 2 * math.pi, n_pts)
+        traces.append(go.Scatter3d(
+            x=(r * np.cos(theta)).tolist(),
+            y=(r * np.sin(theta)).tolist(),
+            z=[z] * n_pts,
+            mode="lines",
+            line=dict(color=color, width=1),
+            hoverinfo="skip", showlegend=False,
+        ))
+    # Longitude rings (meridians): each in a plane rotated about the z-axis
+    for j in range(n_lon):
+        lam = 2 * math.pi * j / n_lon
+        phi = np.linspace(-math.pi / 2, math.pi / 2, n_pts)
+        cx = np.cos(phi) * math.cos(lam)
+        cy = np.cos(phi) * math.sin(lam)
+        cz = np.sin(phi)
+        traces.append(go.Scatter3d(
+            x=cx.tolist(), y=cy.tolist(), z=cz.tolist(),
+            mode="lines",
+            line=dict(color=color, width=1),
+            hoverinfo="skip", showlegend=False,
+        ))
+    return traces
+
+
+def add_wireframe_sphere(fig, row=None, col=None) -> None:
+    """Insert the unit-sphere wireframe into ``fig`` (or a subplot of it)."""
+    for trace in _wireframe_sphere_traces():
+        if row is not None:
+            fig.add_trace(trace, row=row, col=col)
+        else:
+            fig.add_trace(trace)
+
+
 async def load_data(config: GaOTTTConfig):
     faiss_index = FaissIndex(dimension=config.embedding_dim)
     faiss_index.load(config.faiss_index_path)
@@ -315,15 +381,23 @@ SPACE_SCENE = dict(
 def add_nodes_to_figure(
     fig, coords_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
     hover_texts, sources, edges, velocities_3d=None, config=None,
-    cooccurrence_neighbors=None, row=None, col=None,
+    cooccurrence_neighbors=None, row=None, col=None, wireframe: bool = True,
 ):
-    """Add stellar nodes, filaments, velocity arrows, gravity spheres, and BH centroids."""
+    """Add stellar nodes, filaments, velocity arrows, gravity spheres, and BH centroids.
+
+    ``wireframe=True`` (default) draws a faint unit-sphere reference grid
+    behind everything — assumes ``coords_3d`` is already on / near the
+    unit sphere (see ``sphere_wrap``). Set False for legacy flat-3D view.
+    """
 
     def _add(trace):
         if row is not None:
             fig.add_trace(trace, row=row, col=col)
         else:
             fig.add_trace(trace)
+
+    if wireframe:
+        add_wireframe_sphere(fig, row=row, col=col)
 
     # Edges as faint filaments
     if edges:
@@ -469,14 +543,15 @@ def add_nodes_to_figure(
 
 
 def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
-                        cooccurrence_neighbors=None, title_suffix=""):
+                        cooccurrence_neighbors=None, title_suffix="",
+                        wireframe: bool = True):
     masses, temperatures, decays, disp_norms, vel_norms, hover_texts, sources = props
 
     fig = go.Figure()
     add_nodes_to_figure(
         fig, coords_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
         hover_texts, sources, edges, velocities_3d=velocities_3d, config=config,
-        cooccurrence_neighbors=cooccurrence_neighbors,
+        cooccurrence_neighbors=cooccurrence_neighbors, wireframe=wireframe,
     )
 
     displaced = sum(1 for d in disp_norms if d > 0.001)
@@ -512,7 +587,7 @@ def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
 
 
 def build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, velocities_3d, config,
-                            cooccurrence_neighbors=None):
+                            cooccurrence_neighbors=None, wireframe: bool = True):
     masses, temperatures, decays, disp_norms, vel_norms, hover_texts, sources = props
 
     fig = make_subplots(
@@ -526,12 +601,13 @@ def build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, velocities_3
 
     add_nodes_to_figure(
         fig, orig_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
-        hover_texts, sources, edges, row=1, col=1,
+        hover_texts, sources, edges, row=1, col=1, wireframe=wireframe,
     )
     add_nodes_to_figure(
         fig, virtual_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
         hover_texts, sources, edges, velocities_3d=velocities_3d, config=config,
         cooccurrence_neighbors=cooccurrence_neighbors, row=1, col=2,
+        wireframe=wireframe,
     )
 
     displaced = sum(1 for d in disp_norms if d > 0.001)
@@ -608,6 +684,13 @@ def main():
         "--compare", action="store_true",
         help="(deprecated alias for --position-space compare)",
     )
+    parser.add_argument(
+        "--flat", action="store_true",
+        help="Skip the unit-sphere wrap and wireframe background — render "
+             "the PCA/UMAP output as an unbounded 3D cloud. Useful for "
+             "inspecting absolute distances; default is the sphere view "
+             "since the embedding space is itself the unit hypersphere.",
+    )
     args = parser.parse_args()
 
     if args.compare:
@@ -672,6 +755,10 @@ def main():
         print("Building virtual positions (raw + displacement)...")
         return build_virtual_vectors(vectors, ids, displacements, state_map), "compute"
 
+    use_sphere = not args.flat
+    if use_sphere:
+        print("Sphere-wrap: ON (3D coords projected to unit sphere). Pass --flat to disable.")
+
     if args.position_space == "compare":
         virtual_vectors, vsrc = _build_virtual()
 
@@ -692,9 +779,14 @@ def main():
 
         vel_3d = project_velocities_to_3d(ids, velocities, vectors, args.method, pca_components)
 
+        if use_sphere:
+            orig_3d = sphere_wrap(orig_3d)
+            virtual_3d = sphere_wrap(virtual_3d)
+
         print(f"Building cosmic comparison (virtual source: {vsrc})...")
         fig = build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, vel_3d, config,
-                                      cooccurrence_neighbors=cooc_neighbors)
+                                      cooccurrence_neighbors=cooc_neighbors,
+                                      wireframe=use_sphere)
 
     elif args.position_space == "raw":
         print(f"Reducing raw embedding to 3D ({args.method.upper()})...")
@@ -709,9 +801,14 @@ def main():
 
         vel_3d = project_velocities_to_3d(ids, velocities, vectors, args.method, pca_components)
 
+        if use_sphere:
+            coords_3d = sphere_wrap(coords_3d)
+
         print("Building cosmic view...")
         fig = build_single_figure(coords_3d, ids, props, edges, vel_3d, config,
-                                  cooccurrence_neighbors=cooc_neighbors, title_suffix="— Raw Space")
+                                  cooccurrence_neighbors=cooc_neighbors,
+                                  title_suffix="— Raw Space",
+                                  wireframe=use_sphere)
 
     else:  # virtual
         virtual_vectors, vsrc = _build_virtual()
@@ -728,10 +825,15 @@ def main():
 
         vel_3d = project_velocities_to_3d(ids, velocities, vectors, args.method, pca_components)
 
+        if use_sphere:
+            coords_3d = sphere_wrap(coords_3d)
+
         suffix = f"— Virtual Space ({vsrc})"
         print(f"Building cosmic view ({suffix.strip(' —')})...")
         fig = build_single_figure(coords_3d, ids, props, edges, vel_3d, config,
-                                  cooccurrence_neighbors=cooc_neighbors, title_suffix=suffix)
+                                  cooccurrence_neighbors=cooc_neighbors,
+                                  title_suffix=suffix,
+                                  wireframe=use_sphere)
 
     print(f"Saving to {args.output}...")
     fig.write_html(args.output, include_plotlyjs=True)
