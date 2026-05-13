@@ -55,6 +55,7 @@
 - [Phase J — Persona-Anchored Retrieval](Plans-Phase-J-Persona-Anchored-Retrieval.md)
 - [Phase K — Stellar Supernova Cohort](Plans-Phase-K-Stellar-Supernova-Cohort.md)
 - [Phase L — Hybrid Retrieval](Plans-Phase-L-Hybrid-Retrieval.md)
+- [Phase M — Mass Conservation](Plans-Phase-M-Mass-Conservation.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
 
 ### 🔬 Research
