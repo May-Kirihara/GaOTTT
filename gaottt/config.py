@@ -410,14 +410,18 @@ class GaOTTTConfig:
     # the single bound-to-orbit moment, dream is gradual tidal capture
     # spread across idle wall-clock.
     dream_enabled: bool = True
-    # Phase M follow-up (2026-05-13): broaden the dream loop so it touches
-    # ~300 source nodes/min (50 per tick × 6 ticks/min) instead of 5/min.
-    # Each synthetic recall wave-reaches ~60-150 additional nodes, so full
-    # 24k-corpus coverage drops from "weeks" to ~3-5 minutes of background
-    # activity. Pure background work — no impact on user-facing recall
-    # latency. Set interval=60s + batch=5 to restore Phase L Stage 1 cadence.
-    dream_interval_seconds: float = 10.0   # tick cadence; 0 disables loop
-    dream_batch_size: int = 50             # quiet nodes revisited per tick
+    # Phase M follow-up (2026-05-13): broaden the dream loop's coverage but
+    # keep per-tick load small enough that foreground MCP / REST recalls
+    # don't get starved. First-cut bump to 50 / 10s saturated the event
+    # loop on a 24k DB (2.5s contiguous CPU burst per tick, foreground
+    # MCP calls timed out), so we dial back to 10 / 30s and add an explicit
+    # ``await asyncio.sleep(0)`` between candidates in ``_dream_loop`` to
+    # yield to other tasks. Net: 20 source recalls/min × ~60-150 wave-
+    # reached → ~24k full-corpus coverage in 15-30 minutes of background
+    # work, ~2% sustained CPU, foreground recalls stay responsive.
+    # Set interval=60s + batch=5 to restore Phase L Stage 1 cadence.
+    dream_interval_seconds: float = 30.0   # tick cadence; 0 disables loop
+    dream_batch_size: int = 10             # quiet nodes revisited per tick
     dream_mass_ceiling: float = 1.5        # only nodes with mass below this
     dream_min_idle_seconds: float = 300.0  # only nodes idle this long
     dream_top_k: int = 10                  # top_k for the synthetic recall

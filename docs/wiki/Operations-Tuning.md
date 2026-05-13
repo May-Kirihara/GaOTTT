@@ -152,8 +152,8 @@ quiet node を idle 時間に synthetic recall で再活性化し、co-occurrenc
 | パラメータ | 既定 | 影響 | 上げると | 下げると |
 |---|---|---|---|---|
 | dream_enabled | `True` | Phase G G.2 の全体 ON/OFF | — | 夢ループ無し（Stage 1 のみ） |
-| dream_interval_seconds | 10.0 | 夢 tick 周期 (Phase M follow-up 2026-05-13 で 60→10。background work で hot path 不影響、6 tick/min × batch で 24k 全件カバーが ~3-5 min に短縮) | CPU 占有率↓、quiet 救済が遅い | 早く quiet が育つが CPU↑ |
-| dream_batch_size | 50 | 1 tick で再活性化する quiet node 数 (Phase M follow-up 2026-05-13 で 5→50、各 synthetic recall が wave で 60-150 nodes に伝播するので分散効果は ×10 以上) | 多数同時に育つ | レイテンシ少、深く育つ |
+| dream_interval_seconds | 30.0 | 夢 tick 周期 (Phase M follow-up 2026-05-13 で 60→10 にしたが foreground starvation が判明し 10→30 に再調整、`_dream_loop` 内で `await asyncio.sleep(0)` 挿入で per-tick yield も追加) | CPU 占有率↓、quiet 救済が遅い | 早く quiet が育つが CPU↑ |
+| dream_batch_size | 10 | 1 tick で再活性化する quiet node 数 (50 → 10 へダウン、batch 中の連続 CPU 占有 2.5s → 0.5s に短縮して foreground recall が timeout しなくなった) | 多数同時に育つ | レイテンシ少、深く育つ |
 | dream_mass_ceiling | 1.5 | quiet と判定する mass 上限 | 高 mass まで再活性化 | 真に育っていないノードのみ救済 |
 | dream_min_idle_seconds | 300.0 | 最終 access からこれ以上経った node のみ対象 | 多くが対象になる | 本当に休眠中のもののみ |
 | dream_top_k | 10 | 各 synthetic recall の top_k | 広く co-occurrence | 焦点絞った re-activation |

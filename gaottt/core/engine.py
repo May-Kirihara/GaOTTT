@@ -322,6 +322,14 @@ class GaOTTTEngine:
                         wave_k=None,
                         _is_synthetic=True,
                     )
+                    # Phase M follow-up (2026-05-13): yield to the event loop
+                    # between candidates so foreground MCP / REST recalls
+                    # aren't starved during a dream tick. ``_query_internal``
+                    # is dominated by numpy / FAISS work that doesn't release
+                    # the GIL, so without this explicit yield a batch of N
+                    # candidates runs as a single contiguous CPU burst and
+                    # makes interactive recalls time out.
+                    await asyncio.sleep(0)
             except Exception:  # noqa: BLE001
                 # A bad tick should not kill the loop. Log and try again.
                 logger.exception("Dream tick failed; will retry next cycle")
