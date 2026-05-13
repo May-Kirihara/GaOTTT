@@ -4,11 +4,20 @@ Provides gravitational displacement-powered memory for AI agents.
 Phase R4 will reframe the philosophy as "TTT framework that happens to look like RAG".
 
 Usage:
-    # stdio (Claude Code / Claude Desktop)
+    # stdio (legacy — every agent spawns its own subprocess and a full engine)
     python -m gaottt.server.mcp_server
 
-    # SSE (remote clients)
-    python -m gaottt.server.mcp_server --transport sse --port 8001
+    # streamable-HTTP (recommended — one long-lived process, N clients
+    # connect over HTTP. Avoids the per-agent ×N RAM cost and the
+    # bidirectional cache-overwrite trap)
+    python -m gaottt.server.mcp_server --transport streamable-http --port 7878
+
+    # SSE (older HTTP transport; supported but streamable-http is preferred)
+    python -m gaottt.server.mcp_server --transport sse --port 7878
+
+Clients (with --transport streamable-http) point at
+``http://127.0.0.1:7878/mcp``. See Operations-Server-Setup.md for the
+.mcp.json / opencode.json snippets and a systemd unit example.
 """
 
 from __future__ import annotations
@@ -876,25 +885,58 @@ async def explore_connections(topic_a: str, topic_b: str) -> str:
 # -----------------------------------------------------------------------
 
 def main():
-    import sys
-    transport = "stdio"
-    port = 8001
-    args = sys.argv[1:]
-    i = 0
-    while i < len(args):
-        if args[i] == "--transport" and i + 1 < len(args):
-            transport = args[i + 1]
-            i += 2
-        elif args[i] == "--port" and i + 1 < len(args):
-            port = int(args[i + 1])
-            i += 2
-        else:
-            i += 1
+    import argparse
 
-    if transport == "sse":
-        mcp.run(transport="sse", port=port)
-    else:
+    parser = argparse.ArgumentParser(
+        prog="gaottt.server.mcp_server",
+        description=(
+            "GaOTTT MCP server. Defaults to stdio (single-client). For "
+            "multi-agent setups use --transport streamable-http (or sse) "
+            "and point your .mcp.json / opencode.json at the resulting URL."
+        ),
+    )
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "streamable-http", "sse"),
+        default="stdio",
+        help=(
+            "MCP transport. stdio = legacy subprocess (one engine per "
+            "client). streamable-http (recommended for multi-agent) and "
+            "sse both serve over HTTP so multiple clients share one "
+            "engine."
+        ),
+    )
+    parser.add_argument(
+        "--host", default="127.0.0.1",
+        help=(
+            "Bind address for HTTP transports. Defaults to 127.0.0.1 "
+            "(localhost only — safe for personal use). Use 0.0.0.0 only "
+            "if you've also configured authentication; this server has "
+            "no built-in auth."
+        ),
+    )
+    parser.add_argument(
+        "--port", type=int, default=7878,
+        help="Bind port for HTTP transports. Default 7878 (mnemonic: NSNS).",
+    )
+    args = parser.parse_args()
+
+    if args.transport == "stdio":
         mcp.run(transport="stdio")
+        return
+
+    # HTTP transports — apply host/port to the FastMCP settings before run.
+    mcp.settings.host = args.host
+    mcp.settings.port = args.port
+
+    if args.transport == "streamable-http":
+        url = f"http://{args.host}:{args.port}{mcp.settings.streamable_http_path}"
+        logger.info("Starting GaOTTT MCP server (streamable-http) at %s", url)
+        mcp.run(transport="streamable-http")
+    else:  # sse
+        url = f"http://{args.host}:{args.port}{mcp.settings.sse_path}"
+        logger.info("Starting GaOTTT MCP server (sse) at %s", url)
+        mcp.run(transport="sse")
 
 
 if __name__ == "__main__":

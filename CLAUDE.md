@@ -163,6 +163,10 @@ rm -rf /tmp/gaottt-bench
 
 ## マルチプロセス / 共有 DB の罠
 
+> **推奨セットアップ** (2026-05-13): `python -m gaottt.server.mcp_server --transport streamable-http --port 7878` を 1 process だけ常駐させ、Claude Code / opencode から `http://127.0.0.1:7878/mcp` に接続。各 agent が個別 subprocess を spawn する stdio モードと違い、engine state (cache / FAISS / dream loop) が **単一**になるので以下の罠の大半は構造的に消える。systemd unit + client config の手順は [Operations — Server Setup](docs/wiki/Operations-Server-Setup.md) 「起動モード」節。stdio mode は legacy として残るが multi-agent 環境では避ける。
+
+以下は **stdio mode で 複数 agent を起動した場合** の注意事項 (legacy):
+
 GaOTTT の DB は **複数 MCP プロセスから共有される** ことがある（複数エージェント、ユーザーの並行ターミナル等）:
 
 - SQLite WAL + `PRAGMA busy_timeout = 30000`（30 秒待機）で並行 write 安全

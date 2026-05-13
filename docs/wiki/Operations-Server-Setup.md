@@ -54,13 +54,29 @@ Swagger UI: http://localhost:8000/docs
 
 LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../../SKILL.md)。
 
-```bash
-# stdio (Claude Code / Claude Desktop)
-.venv/bin/python -m gaottt.server.mcp_server
+### 起動モード — 推奨は **shared HTTP** (multi-agent 用)
 
-# SSE (リモートクライアント)
-.venv/bin/python -m gaottt.server.mcp_server --transport sse --port 8001
+```bash
+# (1) shared HTTP server — 1 process を long-lived で常駐させ、
+#     複数 agent (Claude Code / opencode / 他) が同じ engine を共有する
+.venv/bin/python -m gaottt.server.mcp_server --transport streamable-http --port 7878
+# → http://127.0.0.1:7878/mcp に接続
+
+# (2) SSE (旧 HTTP transport; 互換目的)
+.venv/bin/python -m gaottt.server.mcp_server --transport sse --port 7878
+# → http://127.0.0.1:7878/sse
+
+# (3) stdio (legacy — 1 agent ごとに subprocess を spawn、各 agent が
+#     fully独立した engine を持つ。RAM ×N、bidirectional cache
+#     overwrite trap あり)
+.venv/bin/python -m gaottt.server.mcp_server
 ```
+
+| Mode | Process 数 | RAM 消費 | Cache 整合 | 推奨用途 |
+|---|---|---|---|---|
+| **streamable-http** | 1 (常駐) | ~3-4 GB (N agent 起動でも変わらず) | ✅ 単一 cache | **multi-agent 環境の標準** |
+| sse | 1 (常駐) | 同上 | ✅ | 古い MCP client の fallback |
+| stdio | N (agent 数だけ subprocess) | ~3-4 GB × N | ⚠️ N 個の cache が race | 単独 client (legacy)、CI、開発 debug |
 
 公開ツール（25 個）:
 - 基本: `remember` / `recall` / `explore` / `reflect` / `ingest`
@@ -71,9 +87,51 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
 - F6: `prefetch` / `prefetch_status`
 - Phase D: `commit` / `start` / `complete` / `abandon` / `depend` / `declare_value` / `declare_intention` / `declare_commitment` / `inherit_persona`
 
+### systemd unit (Linux、ユーザーレベル常駐)
+
+```bash
+# ~/.config/systemd/user/gaottt-mcp.service
+cat > ~/.config/systemd/user/gaottt-mcp.service <<'EOF'
+[Unit]
+Description=GaOTTT MCP Server (streamable-http, shared)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/GaOTTT
+ExecStart=/path/to/GaOTTT/.venv/bin/python -m gaottt.server.mcp_server --transport streamable-http --port 7878
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now gaottt-mcp.service
+systemctl --user status gaottt-mcp.service
+```
+
+ログ確認: `journalctl --user -u gaottt-mcp.service -f`
+
 ## Claude Code への登録
 
-`.mcp.json` （リポジトリルート）:
+### 推奨: shared HTTP に接続 (server を別途常駐させる)
+
+`.mcp.json`（リポジトリルート）:
+
+```json
+{
+  "mcpServers": {
+    "gaottt": {
+      "type": "http",
+      "url": "http://127.0.0.1:7878/mcp"
+    }
+  }
+}
+```
+
+### Legacy: 各 agent が自分で stdio subprocess を spawn
 
 ```json
 {
@@ -89,7 +147,22 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
 
 ## OpenCode への登録
 
+### 推奨: shared HTTP
+
 `opencode.json`:
+
+```json
+{
+  "mcp": {
+    "gaottt": {
+      "type": "remote",
+      "url": "http://127.0.0.1:7878/mcp"
+    }
+  }
+}
+```
+
+### Legacy: stdio subprocess
 
 ```json
 {
@@ -105,6 +178,14 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
   }
 }
 ```
+
+## stdio → HTTP 移行手順
+
+1. **systemd unit を上記レシピで作成 + start**
+2. **動作確認**: `curl -X POST http://127.0.0.1:7878/mcp -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}'` で `{"jsonrpc":"2.0","id":1,"result":{...}}` が返れば OK
+3. **`.mcp.json` / `opencode.json` を URL ベースに書き換え**
+4. **既存の stdio subprocess は全て kill** (`pkill -f 'gaottt.server.mcp_server'`) — 古い設定で起動していた agent process を再起動すると新 URL を見るようになる
+5. Claude Code / opencode を再起動して接続確認 (`/mcp` コマンドで `gaottt` が `connected` に表示されれば成功)
 
 ## モデルダウンロード
 
