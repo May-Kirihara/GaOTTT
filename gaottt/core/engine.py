@@ -1508,6 +1508,40 @@ class GaOTTTEngine:
         self.bm25_index.reset()
         await self._build_bm25_from_store()
 
+    # --- Phase M Stage 1: orbital-state reset (legacy BH residue cleanup) ---
+
+    async def reset_orbital_state(self) -> int:
+        """Clear displacement + velocity for every node — wipes the
+        runtime residue of the legacy co-occurrence BH (which pulled
+        nodes toward neighbor centroids before Phase M replaced it with
+        the mass-threshold BH). Mass is **not** touched (see
+        ``reset_masses`` for that).
+
+        Destructive: also loses Phase G genesis kicks and Phase I/J
+        query-attraction accumulation. The maintainer migration path for
+        rolling Phase M out on a DB that ran under the old physics; not
+        a runtime operation.
+
+        Flushes any pending cache writes first, performs the SQL update,
+        then clears the in-memory caches and invalidates the prefetch
+        cache (displacement change invalidates every cached recall) plus
+        marks virtual FAISS dirty so the next save loop rebuilds it from
+        the now-zero displacement state.
+        """
+        await self.cache.flush_to_store(self.store)
+        affected = await self.store.reset_orbital_state()
+        self.cache.displacement_cache.clear()
+        self.cache.velocity_cache.clear()
+        self.cache.dirty_displacements.clear()
+        self.cache.dirty_velocities.clear()
+        self.cache.virtual_faiss_dirty = True
+        self.prefetch_cache.invalidate()
+        logger.info(
+            "Orbital state reset: %d nodes cleared (displacement + velocity)",
+            affected,
+        )
+        return affected
+
     # --- Phase M Stage 1: Mass-only reset ---
 
     async def reset_masses(self, value: float = 1.0) -> int:

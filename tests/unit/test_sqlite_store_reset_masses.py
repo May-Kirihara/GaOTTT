@@ -1,6 +1,7 @@
-"""Phase M Stage 1 — ``SqliteStore.reset_masses`` unit tests.
+"""Phase M Stage 1 — ``SqliteStore.reset_masses`` + ``reset_orbital_state``
+unit tests.
 
-Verifies the SQL update changes only the ``mass`` column and reports the
+Verifies the SQL update changes only the targeted columns and reports the
 correct row count, leaving displacement / velocity / edges / metadata
 intact (those are inspected in the integration suite).
 """
@@ -60,6 +61,63 @@ async def test_reset_masses_honors_explicit_value(store):
 async def test_reset_masses_on_empty_db_returns_zero(store):
     affected = await store.reset_masses()
     assert affected == 0
+
+
+async def test_reset_orbital_state_clears_displacement_and_velocity(store):
+    import numpy as np
+
+    await _seed(store, "n1", mass=1.0)
+    await _seed(store, "n2", mass=1.0)
+
+    # Populate displacement + velocity for both nodes.
+    d1 = np.full(8, 0.1, dtype=np.float32)
+    d2 = np.full(8, 0.2, dtype=np.float32)
+    v1 = np.full(8, 0.01, dtype=np.float32)
+    v2 = np.full(8, 0.02, dtype=np.float32)
+    await store.save_displacements({"n1": d1, "n2": d2})
+    await store.save_velocities({"n1": v1, "n2": v2})
+
+    affected = await store.reset_orbital_state()
+    assert affected == 2
+
+    disps = await store.load_displacements()
+    vels = await store.load_velocities()
+    assert disps == {}, f"expected all displacements cleared, got keys {list(disps)}"
+    assert vels == {}, f"expected all velocities cleared, got keys {list(vels)}"
+
+    # Mass + metadata stay intact.
+    states = await store.get_node_states(["n1", "n2"])
+    assert states["n1"].mass == pytest.approx(1.0)
+    assert states["n2"].mass == pytest.approx(1.0)
+
+
+async def test_reset_orbital_state_idempotent_on_empty_columns(store):
+    await _seed(store, "n1", mass=2.0)
+    # No displacement/velocity ever written.
+    affected = await store.reset_orbital_state()
+    assert affected == 1
+
+    # Mass not touched.
+    states = await store.get_node_states(["n1"])
+    assert states["n1"].mass == pytest.approx(2.0)
+
+
+async def test_reset_orbital_state_does_not_affect_edges(store):
+    import time
+
+    from gaottt.core.types import CooccurrenceEdge
+
+    await _seed(store, "n1", mass=1.0)
+    await _seed(store, "n2", mass=1.0)
+    await store.save_edges([
+        CooccurrenceEdge(src="n1", dst="n2", weight=3.0, last_update=time.time()),
+    ])
+
+    await store.reset_orbital_state()
+
+    edges = await store.get_all_edges()
+    assert len(edges) == 1
+    assert edges[0].weight == pytest.approx(3.0)
 
 
 async def test_reset_masses_leaves_other_columns_intact(store):

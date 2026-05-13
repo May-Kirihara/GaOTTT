@@ -82,6 +82,12 @@ class Migration:
     needs_apply / apply / verify are async callables taking (engine, config).
     needs_apply returns (bool, reason_str). apply returns notes_str. verify
     returns (ok, reason_str).
+
+    ``critical=True`` flags a destructive / irreversible step (e.g., bulk
+    state reset that loses accumulated history). The wizard pauses for an
+    interactive confirmation before applying critical steps; safe steps
+    are applied automatically. ``warning`` is the multi-line text shown
+    in that confirmation prompt — concrete side effects, not philosophy.
     """
 
     version: str
@@ -90,6 +96,8 @@ class Migration:
     needs_apply: Callable[..., Awaitable[tuple[bool, str]]]
     apply: Callable[..., Awaitable[str]]
     verify: Callable[..., Awaitable[tuple[bool, str]]]
+    critical: bool = False
+    warning: str = ""
 
 
 # ---------------------------------------------------------------------
@@ -249,11 +257,202 @@ M001 = Migration(
 
 
 # ---------------------------------------------------------------------
+# M002 — Phase M Stage 1: legacy co-occurrence BH residue cleanup
+# ---------------------------------------------------------------------
+# The old ``compute_bh_acceleration`` term pulled each node toward the
+# weighted centroid of its co-occurrence neighbors every recall step.
+# That force lived in ``compute_acceleration`` 第 3 項 and was integrated
+# into displacement / velocity through ``update_orbital_state``. Phase M
+# replaced the term with a mass-threshold BH (dormant until ``mass >
+# θ-2σ``), but the **runtime residue** — displacement and velocity that
+# accumulated under the old pull — stays in the DB until something wipes
+# it. M002 wipes it.
+
+M002_RESIDUE_TRIGGER = 0.05      # mean(|d|) above this → residue is non-trivial
+M002_VERIFY_THRESHOLD = 0.001    # mean(|d|) below this after apply → success
+
+
+def _displacement_stats(engine) -> tuple[int, float, float]:
+    """Return (active_count, mean_norm, max_norm) over active nodes' displacement."""
+    total = 0
+    sum_norm = 0.0
+    max_norm = 0.0
+    for state in engine.cache.get_all_nodes():
+        if state.is_archived:
+            continue
+        total += 1
+        disp = engine.cache.get_displacement(state.id)
+        if disp is None:
+            continue
+        n = float(np.linalg.norm(disp))
+        sum_norm += n
+        if n > max_norm:
+            max_norm = n
+    mean_norm = sum_norm / total if total else 0.0
+    return total, mean_norm, max_norm
+
+
+async def _m002_needs_apply(engine, config):
+    total, mean_norm, max_norm = _displacement_stats(engine)
+    if total == 0:
+        return False, "DB has no active nodes — nothing to clean"
+    if mean_norm > M002_RESIDUE_TRIGGER:
+        return True, (
+            f"mean |displacement| = {mean_norm:.3f} across {total} nodes "
+            f"(max {max_norm:.2f}) — legacy BH residue present"
+        )
+    return False, (
+        f"mean |displacement| = {mean_norm:.3f} across {total} nodes "
+        f"(max {max_norm:.2f}) — already below threshold {M002_RESIDUE_TRIGGER}"
+    )
+
+
+async def _m002_apply(engine, config):
+    t0 = time.time()
+    affected = await engine.reset_orbital_state()
+    elapsed = time.time() - t0
+    return (
+        f"cleared displacement + velocity on {affected} node rows "
+        f"({elapsed:.1f}s); virtual FAISS marked dirty for rebuild on next save"
+    )
+
+
+async def _m002_verify(engine, config):
+    total, mean_norm, max_norm = _displacement_stats(engine)
+    if mean_norm < M002_VERIFY_THRESHOLD:
+        return True, (
+            f"mean |displacement| = {mean_norm:.4f} (< {M002_VERIFY_THRESHOLD}); "
+            f"residue cleaned"
+        )
+    return False, (
+        f"mean |displacement| = {mean_norm:.4f} (≥ {M002_VERIFY_THRESHOLD}); "
+        f"reset did not take effect"
+    )
+
+
+M002 = Migration(
+    version="M002",
+    name="phase-m-bh-residue-cleanup",
+    description=(
+        "Zero displacement + velocity on every active node, wiping the runtime "
+        "residue of the legacy co-occurrence BH (which pulled nodes toward "
+        "neighbor centroids before Phase M replaced it with the mass-threshold "
+        "BH). Mass is left untouched — see M003 for that."
+    ),
+    critical=True,
+    warning=(
+        "DESTRUCTIVE — clears Phase G genesis kicks and Phase I/J query-attraction\n"
+        "  displacement along with the legacy BH residue (the three are intertwined\n"
+        "  in the same displacement vector and cannot be separated post-hoc).\n"
+        "  Virtual FAISS will rebuild from raw embeddings on the next save tick.\n"
+        "  Recommended once when rolling Phase M Stage 1 out on a DB that ran\n"
+        "  under the old co-occurrence BH physics."
+    ),
+    needs_apply=_m002_needs_apply,
+    apply=_m002_apply,
+    verify=_m002_verify,
+)
+
+
+# ---------------------------------------------------------------------
+# M003 — Phase M Stage 1: mass reset
+# ---------------------------------------------------------------------
+# Pre-Phase-M masses were inflated by chunk-internal co-occurrence (one
+# file = 91 chunks pumped each other's mass via "internal trade"). Phase M
+# Stage 1 stops that loop but does not retroactively deflate. M003 sets
+# every node's mass back to 1.0 so accretion under the new rule starts
+# from a clean baseline.
+
+# Pre-Phase-M inflation peaks were observed at max=49, p99=26 (see Plans
+# §2.1). Natural post-Phase-M growth caps far below those values, so 5.0 is
+# a clean dividing line — anything above is pre-rollout state that calls
+# for the reset, anything below is normal Phase M operation.
+M003_INFLATED_TRIGGER = 5.0
+M003_VERIFY_TOLERANCE = 1e-6
+
+
+def _mass_stats(engine) -> tuple[int, float, float]:
+    """Return (active_count, max_mass, mean_mass)."""
+    total = 0
+    sum_mass = 0.0
+    max_mass = 0.0
+    for state in engine.cache.get_all_nodes():
+        if state.is_archived:
+            continue
+        total += 1
+        sum_mass += state.mass
+        if state.mass > max_mass:
+            max_mass = state.mass
+    mean = sum_mass / total if total else 0.0
+    return total, max_mass, mean
+
+
+async def _m003_needs_apply(engine, config):
+    total, max_mass, mean = _mass_stats(engine)
+    if total == 0:
+        return False, "DB has no active nodes"
+    if max_mass > M003_INFLATED_TRIGGER:
+        return True, (
+            f"max mass = {max_mass:.2f}, mean = {mean:.2f} across {total} nodes "
+            f"— pre-Phase-M inflation still present"
+        )
+    return False, (
+        f"max mass = {max_mass:.2f}, mean = {mean:.2f} across {total} nodes "
+        f"— already at clean baseline (threshold {M003_INFLATED_TRIGGER})"
+    )
+
+
+async def _m003_apply(engine, config):
+    t0 = time.time()
+    affected = await engine.reset_masses(1.0)
+    elapsed = time.time() - t0
+    return f"reset mass to 1.0 on {affected} node rows ({elapsed:.1f}s)"
+
+
+async def _m003_verify(engine, config):
+    total, max_mass, mean = _mass_stats(engine)
+    if abs(max_mass - 1.0) < M003_VERIFY_TOLERANCE and abs(mean - 1.0) < M003_VERIFY_TOLERANCE:
+        return True, f"max mass = {max_mass:.4f}, mean = {mean:.4f} (≈ 1.0)"
+    return False, (
+        f"max mass = {max_mass:.4f}, mean = {mean:.4f} — reset did not take"
+    )
+
+
+M003 = Migration(
+    version="M003",
+    name="phase-m-mass-reset",
+    description=(
+        "Reset every active node's mass to 1.0, wiping the chunk-internal "
+        "co-occurrence inflation accumulated under pre-Phase-M physics "
+        "(observed: 1 file = ~91 chunks pumping each other's mass via "
+        "'internal trade'). Phase M Stage 1 stops the inflation loop but "
+        "does not retroactively deflate — that's what this step does."
+    ),
+    critical=True,
+    warning=(
+        "DESTRUCTIVE — Phase L acceptance baseline (Surface 7/7 / strict 6/7)\n"
+        "  was achieved with the inflated mass distribution. Immediately after\n"
+        "  reset the retrieval geometry regresses transiently while new mass\n"
+        "  re-accumulates under the 'external pull only' rule. Plan §6.2\n"
+        "  predicts 1-2 weeks of natural recall before the new mass gradient\n"
+        "  is observable. Mass distribution becomes uniform mass=1.0; for\n"
+        "  retrieval scoring this means mass_boost = α·log(2) for everyone\n"
+        "  (no differentiation) until the new gradient forms."
+    ),
+    needs_apply=_m003_needs_apply,
+    apply=_m003_apply,
+    verify=_m003_verify,
+)
+
+
+# ---------------------------------------------------------------------
 # Registry (add new migrations here, in order)
 # ---------------------------------------------------------------------
 
 MIGRATIONS: list[Migration] = [
     M001,
+    M002,
+    M003,
 ]
 
 
@@ -349,30 +548,79 @@ def _render_plan(
     """Print a human-readable status table.
 
     pending_detected: list of (migration, needs_apply, reason).
+    Critical migrations are marked with ``!`` so the user knows the
+    wizard will pause for confirmation on them.
     """
     print(f"GaOTTT migration plan for {db_path}")
     print("=" * 78)
-    print(f"{'VER':5}  {'NAME':24}  STATUS    DETAIL")
+    print(f"{'VER':5}  {'NAME':30}  STATUS    DETAIL")
     print("-" * 78)
     for m in MIGRATIONS:
+        name_label = f"{m.name}{' !' if m.critical else ''}"
         if m.version in applied:
             ts, notes = applied[m.version]
             ts_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
-            print(f"{m.version:5}  {m.name:24}  APPLIED   {ts_str}")
+            print(f"{m.version:5}  {name_label:30}  APPLIED   {ts_str}")
             if notes:
-                print(f"{'':5}  {'':24}            {notes}")
+                print(f"{'':5}  {'':30}            {notes}")
         else:
             needed, reason = next(
                 ((nd, rs) for mm, nd, rs in pending_detected if mm.version == m.version),
                 (None, ""),
             )
             if needed is True:
-                print(f"{m.version:5}  {m.name:24}  PENDING   {reason}")
+                tag = "PENDING!" if m.critical else "PENDING "
+                print(f"{m.version:5}  {name_label:30}  {tag}  {reason}")
             elif needed is False:
-                print(f"{m.version:5}  {m.name:24}  SKIP      {reason}")
+                print(f"{m.version:5}  {name_label:30}  SKIP      {reason}")
             else:
-                print(f"{m.version:5}  {m.name:24}  UNKNOWN   (detection failed)")
+                print(f"{m.version:5}  {name_label:30}  UNKNOWN   (detection failed)")
     print("=" * 78)
+    if any(m.critical for m in MIGRATIONS):
+        print("  `!` marks CRITICAL / destructive migrations — wizard pauses for")
+        print("      confirmation on these unless `--yes` is passed.\n")
+
+
+# =====================================================================
+# Wizard helpers
+# =====================================================================
+
+def _confirm_critical(m: Migration) -> bool:
+    """Prompt the user about a critical migration. Returns True to apply.
+
+    When stdin is not a TTY (CI / piped input), refuse and tell the user
+    to pass ``--yes`` explicitly — silently auto-applying a destructive
+    step in a non-interactive context is the worst-case behaviour.
+    """
+    if not sys.stdin.isatty():
+        print(
+            f"  [{m.version}] CRITICAL step but stdin is not a TTY. "
+            "Pass --yes to apply without prompting, --skip-critical to skip.",
+            file=sys.stderr,
+        )
+        return False
+
+    print()
+    print(f"  ⚠️  [{m.version}] {m.name}  (CRITICAL / DESTRUCTIVE)")
+    print()
+    # Indent the warning block by 6 spaces for visual separation.
+    if m.warning:
+        for line in m.warning.splitlines():
+            print(f"      {line}")
+        print()
+    print(f"      Description: {m.description}")
+    print()
+    while True:
+        try:
+            answer = input(f"  Apply [{m.version}]? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if answer in ("", "n", "no"):
+            return False
+        if answer in ("y", "yes"):
+            return True
+        print("  Please answer 'y' or 'n'.")
 
 
 # =====================================================================
@@ -467,6 +715,7 @@ async def main_async(args: argparse.Namespace) -> int:
 
             applied_now = 0
             failed = 0
+            skipped_critical = 0
             for m, needed, reason in pending_detected:
                 if args.step and args.step != m.version:
                     continue
@@ -477,6 +726,24 @@ async def main_async(args: argparse.Namespace) -> int:
                     print(f"[{m.version}] {m.name}: SKIP — detect error: {reason}")
                     failed += 1
                     continue
+                # Wizard: critical migrations require confirmation unless
+                # the user passed --yes (auto-accept) or --skip-critical
+                # (auto-decline). Non-critical migrations are applied
+                # automatically — that's the whole point of the wizard.
+                if m.critical:
+                    if args.skip_critical:
+                        print(
+                            f"[{m.version}] {m.name}: SKIP — critical, "
+                            f"--skip-critical passed ({reason})"
+                        )
+                        skipped_critical += 1
+                        continue
+                    if not args.yes:
+                        print(f"[{m.version}] {m.name}: PENDING — {reason}")
+                        if not _confirm_critical(m):
+                            print(f"[{m.version}] declined by user — skipping")
+                            skipped_critical += 1
+                            continue
                 print(f"[{m.version}] {m.name}: APPLYING — {reason}")
                 t0 = time.time()
                 try:
@@ -503,12 +770,22 @@ async def main_async(args: argparse.Namespace) -> int:
                     failed += 1
 
             print("\n=== Result ===")
-            print(f"  applied: {applied_now}   failed: {failed}")
+            print(
+                f"  applied: {applied_now}   failed: {failed}   "
+                f"skipped (critical): {skipped_critical}"
+            )
             if applied_now > 0:
                 print("\nNext steps:")
                 print("  1. Restart MCP server so new physics takes effect.")
                 print("  2. Optional smoke check:")
                 print("       .venv/bin/python scripts/mcp_smoke.py")
+            if skipped_critical > 0:
+                print(
+                    "\nNote: some critical migrations were skipped. Re-run with\n"
+                    "       scripts/migrate.py --apply\n"
+                    "       (and answer 'y' at the prompt) or with --yes\n"
+                    "       to apply them later. They stay PENDING until applied."
+                )
             return 1 if failed > 0 else 0
         finally:
             ledger.close()
@@ -551,7 +828,22 @@ def main() -> None:
              "neither MCP server nor REST server can flush stale cache to "
              "this DB (see Architecture-Overview.md).",
     )
+    parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Accept critical/destructive migrations without an interactive "
+             "prompt. Required when stdin is not a TTY (CI / piped). Use "
+             "carefully — equivalent to answering 'y' to every confirmation.",
+    )
+    parser.add_argument(
+        "--skip-critical", action="store_true",
+        help="Skip critical/destructive migrations even if they are pending. "
+             "Non-critical migrations are still applied. Useful for staged "
+             "rollouts where you want to land the safe steps now and revisit "
+             "destructive ones manually.",
+    )
     args = parser.parse_args()
+    if args.yes and args.skip_critical:
+        parser.error("--yes and --skip-critical are mutually exclusive")
     try:
         rc = asyncio.run(main_async(args))
     except KeyboardInterrupt:

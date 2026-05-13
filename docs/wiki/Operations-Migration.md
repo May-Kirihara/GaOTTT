@@ -39,6 +39,8 @@ ps -ef | grep gaottt   # 停止確認
 | `--apply --no-backup` | バックアップをスキップして apply（CI 環境など、外部バックアップ済みの場合） |
 | `--apply --step M001` | 特定の version だけ実行 |
 | `--apply --force` | サーバープロセス検出を無視 (推奨せず) |
+| `--apply --yes` | wizard prompt を出さず critical step を全部承認 (CI / 自動化用) |
+| `--apply --skip-critical` | critical step を全部 skip、安全な step のみ適用 |
 
 dry-run は **読み取り専用** で、プロセス検出も飛ばす。実 mutation は `--apply` 時のみ。
 
@@ -69,9 +71,52 @@ CREATE TABLE _migrations (
 
 ## 既知 migration (バージョン履歴)
 
+`!` 印は **critical / destructive** migration — wizard は confirmation prompt を出す。`--yes` で自動承認、`--skip-critical` で除外可能。
+
 | version | name | 何をするか | 必要な前提条件 |
 |---|---|---|---|
 | **M001** | phase-g-priming | 全 active node に `compute_gravity_kick` を 1 step 適用し、Phase G 以前に index された doc に initial displacement / velocity / mass を与える | `mass=1.0 / displacement=0 / velocity=0` の node が active node の 50% 以上ある場合に PENDING 判定。既存 displacement は **加算** されるので recall history は保存される |
+| **M002 !** | phase-m-bh-residue-cleanup | 全 active node の displacement + velocity を 0 にする — 旧 `compute_bh_acceleration` (Phase B/H 共起 BH) が centroid 方向へ pulling していた力の運動学的残滓を削除 | mean(\|displacement\|) > 0.05 で PENDING 判定。**Destructive** — Phase G genesis kick / Phase I/J query-attraction の displacement も同時に消える (三者は同じ displacement vector 内で分離不可能)。virtual FAISS は次の save tick で raw embedding から再構築される。Phase M Stage 1 を旧物理上の DB に rollout する時の一回限り操作 |
+| **M003 !** | phase-m-mass-reset | 全 active node の mass を 1.0 に reset — 旧規則下で蓄積した chunk 内輪取引 inflation を解消 | max mass > 5.0 で PENDING 判定 (旧物理 p99=26.5 / max=49 を考慮した dividing line)。**Destructive** — Phase L acceptance baseline の retrieval geometry を一度失う。Plan §6.2 通り 1-2 週の自然蓄積で新しい mass gradient が形成されるまで Phase L 比で transient な低調 state になる |
+
+### Wizard モード (`--apply` 既定挙動)
+
+```text
+$ scripts/migrate.py --apply
+=== Backup ===
+  Copying ~/.local/share/gaottt → ~/.local/share/gaottt.backup-20260513-150000 ...
+
+[M001] phase-g-priming: SKIP — already primed
+[M002] phase-m-bh-residue-cleanup: PENDING — mean |d|=0.274 across 24050 nodes
+
+  ⚠️  [M002] phase-m-bh-residue-cleanup  (CRITICAL / DESTRUCTIVE)
+
+      DESTRUCTIVE — clears Phase G genesis kicks and Phase I/J query-attraction
+        displacement along with the legacy BH residue (the three are intertwined
+        in the same displacement vector and cannot be separated post-hoc).
+        Virtual FAISS will rebuild from raw embeddings on the next save tick.
+        Recommended once when rolling Phase M Stage 1 out on a DB that ran
+        under the old co-occurrence BH physics.
+
+      Description: Zero displacement + velocity on every active node, ...
+
+  Apply [M002]? [y/N]: y
+[M002] APPLYING — mean |d|=0.274 across 24050 nodes ...
+[M002] OK in 0.3s — cleared displacement + velocity on 24050 node rows
+[M003] phase-m-mass-reset: SKIP — max mass = 1.98 (already at clean baseline)
+```
+
+### 自動化 (CI / scripts)
+
+stdin が TTY でない時は wizard prompt が出せないので、`--yes` (全 critical 承認) か `--skip-critical` (全 critical 除外) のどちらかを明示する。両者は mutually exclusive。
+
+```bash
+# 全部適用 (critical も含む)
+scripts/migrate.py --apply --yes
+
+# 安全な step だけ適用、destructive は手動で後追い
+scripts/migrate.py --apply --skip-critical
+```
 
 ## 新しい migration を追加する手順 (開発者向け)
 
@@ -80,8 +125,8 @@ CREATE TABLE _migrations (
 1. **検出ロジック** — DB state から「この migration が必要か」を判定する純粋な関数を書く (`async def _mXXX_needs_apply(engine, config) -> tuple[bool, str]`)。state-driven にすることで `_migrations` 台帳が消えても正しく動く
 2. **適用ロジック** — `async def _mXXX_apply(engine, config) -> str` で実際の処理。Pydantic Response も print も自由、戻り値は台帳に記録される notes 文字列
 3. **検証ロジック** — `async def _mXXX_verify(engine, config) -> tuple[bool, str]` で期待 state を確認
-4. **登録** — `scripts/migrate.py` の `MIGRATIONS` リストに `Migration(...)` を順序通りに append
-5. **ドキュメント** — このページの「既知 migration」表に行を追加
+4. **登録** — `scripts/migrate.py` の `MIGRATIONS` リストに `Migration(...)` を順序通りに append。destructive な step なら `critical=True` + `warning=...` を付ける (wizard が confirmation prompt を出す)
+5. **ドキュメント** — このページの「既知 migration」表に行を追加。`critical=True` なら version に `!` を付与
 
 `scripts/migrate.py` 自体のテストは現時点では tests/ に統合せず、手動 smoke ([`scripts/migrate.py` docstring 参照](../../scripts/migrate.py)) のみ。将来 migration が増えてきたら `tests/integration/test_migrate.py` を作る方針。
 

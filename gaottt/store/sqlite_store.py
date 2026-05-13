@@ -448,6 +448,25 @@ class SqliteStore(StoreBase):
             result[row[0]] = np.frombuffer(row[1], dtype=np.float32).copy()
         return result
 
+    async def reset_orbital_state(self) -> int:
+        """Phase M Stage 1 — clear displacement + velocity columns for every
+        node, wiping the runtime trace of the legacy co-occurrence BH
+        (which pulled nodes toward neighbor centroids via
+        ``compute_acceleration`` 第 3 項 — now replaced by mass-threshold
+        BH that is dormant until mass crosses θ).
+
+        Idempotent — re-running the SQL UPDATE on already-NULL columns is
+        a no-op. Returns the row count touched (i.e., all node rows).
+        """
+        assert self._conn is not None
+        await self._conn.execute(
+            "UPDATE nodes SET displacement = NULL, velocity = NULL"
+        )
+        cursor = await self._conn.execute("SELECT COUNT(*) FROM nodes")
+        row = await cursor.fetchone()
+        await self._conn.commit()
+        return row[0] if row else 0
+
     async def reset_masses(self, value: float = 1.0) -> int:
         """Phase M Stage 1 — reset every node's mass without disturbing the
         rest of the dynamic state.
