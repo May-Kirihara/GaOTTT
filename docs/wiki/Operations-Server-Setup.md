@@ -105,8 +105,47 @@ gaottt http backend  ← 1 process、全 shim で共有
 
 | パラメータ | default | 意味 |
 |---|---|---|
-| `--idle-timeout` (backend) | 300 sec | 無音許容時間。経過後に backend が自分から終了 |
+| `--idle-timeout` (backend) | 300 sec | 無音許容時間。経過後に backend が自分から終了。`0` で無効化 (永久生存) |
 | `--ping-interval` (proxy) | 60 sec | 各 shim が backend に打つ heartbeat 周期 (default では idle-timeout の 1/5) |
+
+### Ping は agent の操作とは独立した background task
+
+ここが mental model として重要な点: **shim 内の `_ping_loop` は `asyncio.create_task` で起動した独立 task** で、stdio relay と並列に実行され、agent が `recall` 等を投げているかどうかとは無関係に `--ping-interval` 秒ごとに backend へ ping を飛ばし続ける。つまり「**Agent が idle = backend が死ぬ**」ではなく「**全 agent process が close した = backend が死ぬ**」が正しい判定:
+
+| 状態 | shim の ping | backend `last_activity` | backend |
+|---|---|---|---|
+| Agent 起動中、recall 全くしない | 60 秒ごとに飛ぶ | 60 秒ごと更新 | **生存** |
+| Agent 起動中、頻繁に recall | recall + ping 両方 | 連続更新 | 生存 |
+| Agent **idle で 5 分放置** | 飛び続ける | 更新され続ける | **生存** (idle ≠ death) |
+| Agent close (Claude Code 終了) | shim 死 → ping 停止 | 最後の ping から計時 | 5 分後 SIGTERM |
+| Agent 複数、1 つだけ close | 残り agent の shim が ping 継続 | 連続更新 | 生存 |
+| 全 agent close | 全 ping 停止 | 5 分後 timeout | SIGTERM |
+
+つまり「Claude Code を開いている間は何時間でも backend は生存」「全 agent を完全に閉じてから 5 分」が backend の lifecycle。
+
+### Restart cost と memory cost の trade-off
+
+| パターン | Backend 再起動頻度 | 常時 RAM コスト |
+|---|---|---|
+| `--idle-timeout 300` (default) | 全 agent close → 5 分後に終了。次回起動で proxy が ~30s で respawn | Agent open 時のみ ~3-4 GB |
+| `--idle-timeout 0` | **永久生存**、明示 kill するまで動き続ける | 常時 ~3-4 GB |
+| systemd 常駐 | 同上 (systemd が auto-restart 管理) | 常時 ~3-4 GB |
+
+「日に数回 Claude Code を完全終了する派」は default のままが省 RAM、「Claude Code 終了でも backend は残しときたい派」は `--idle-timeout 0` を `.mcp.json` の args に追加:
+
+```json
+{
+  "mcpServers": {
+    "gaottt": {
+      "command": "/path/to/GaOTTT/.venv/bin/python",
+      "args": ["-m", "gaottt.server.mcp_server", "--idle-timeout", "0"],
+      "cwd": "/path/to/GaOTTT"
+    }
+  }
+}
+```
+
+(shim 側には `--idle-timeout 0` は無関係だが、spawn する backend にそのまま forward されるので結果として backend が永久生存になる。)
 
 公開ツール（25 個）:
 - 基本: `remember` / `recall` / `explore` / `reflect` / `ingest`
