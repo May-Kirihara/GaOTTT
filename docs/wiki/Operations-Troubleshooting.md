@@ -2,6 +2,25 @@
 
 既知の問題と対処。
 
+## 起動時に異常が出る — まずログを見る
+
+GaOTTT は `engine.startup()` の最後で **Stage 1 セルフ診断** (`gaottt/diagnostics/startup.py`) を自動実行します。
+3 つの代表的な事故 (FAISS 空 / 0 bytes / index ↔ SQLite ntotal 乖離) は起動直後の
+`[diagnostics:tier_a_*]` / `[diagnostics:tier_b_*]` ログで即検知されます。
+
+```
+[diagnostics:tier_a_raw_zero_bytes] raw FAISS file at /.../gaottt.faiss is 0 bytes — corrupted save, triggering rebuild
+[diagnostics:tier_a_raw_rebuilt] raw FAISS rebuilt: size=24050
+[diagnostics:tier_b_faiss_size_drift] faiss.size=15 vs SQLite active=24050 (99.9% drift > 5%) — run compact(rebuild_faiss=True)
+```
+
+- **`tier_a_raw_zero_bytes` ERROR + `tier_a_raw_rebuilt` INFO** が連続で出ればその場で復旧済み (自動 lazy rebuild)。
+- **`tier_b_*_size_drift` WARN** が出たら `compact(rebuild_faiss=True)` を一度走らせる。
+- **`tier_a_tmp_residual_cleaned` INFO** は `.tmp` 残骸 (atomic save の中断痕跡) を掃除した記録。頻発するなら kill タイミングや disk full を疑う。
+
+検知範囲は Tier A (FAISS integrity) + Tier B (FAISS↔SQLite + BM25 size 一致)。
+Stage 2 候補 (WAL audit / physics dynamics drift / JSON endpoint) と Stage 3 (migration ledger / config sanity / CLI) は別 commitment。
+
 ## クエリスコアが初回だけ極端に低い
 
 正常動作。初回クエリ時、`last_access` がインデックス時刻のため `decay = exp(-δ × 経過時間)` が非常に小さくなる。2 回目以降は decay ≈ 1.0。

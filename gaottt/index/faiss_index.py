@@ -73,6 +73,15 @@ class FaissIndex:
     def load(self, path: str) -> None:
         if not os.path.exists(path):
             return
+        # Defensive: a 0-byte file is the signature of an interrupted
+        # atomic save. faiss.read_index() raises RuntimeError on it,
+        # which would break engine.startup() before diagnostics could
+        # intervene. Skip the read and leave the index empty — the
+        # Stage 1 startup diagnostic (gaottt/diagnostics/startup.py)
+        # detects the empty state + nonzero SQLite and triggers a
+        # rebuild from the store.
+        if os.path.getsize(path) == 0:
+            return
         self._index = faiss.read_index(path)
         id_map_path = path + ".ids"
         if os.path.exists(id_map_path):

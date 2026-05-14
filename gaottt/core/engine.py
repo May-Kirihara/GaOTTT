@@ -165,6 +165,19 @@ class GaOTTTEngine:
             len(self.cache.displacement_cache),
         )
 
+        # Stage 1 startup self-diagnostics (commitment id=aaa6e7cc).
+        # Imported lazily so test fixtures that construct engines without
+        # the diagnostics module on the path don't break. Failures of
+        # individual checks are captured in the report, not raised.
+        try:
+            from gaottt.diagnostics import run_startup_checks
+            await run_startup_checks(self, self.config)
+        except Exception as e:
+            logger.warning(
+                "Startup diagnostics raised — engine remains operational: %s: %s",
+                type(e).__name__, e,
+            )
+
     async def shutdown(self) -> None:
         await self.prefetch_pool.drain(timeout=5.0)
         if self._dream_stop is not None:
