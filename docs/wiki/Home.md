@@ -47,6 +47,7 @@ REST API は [REST API Reference](REST-API-Reference.md)。
 | アップグレード時の data migration | [Operations — Migration](Operations-Migration.md) |
 | 定期メンテナンス | [Operations — Compact & Backup](Operations-Compact-And-Backup.md) |
 | ベンチマーク（本番 DB を触らずに） | [Operations — Isolated Benchmark](Operations-Isolated-Benchmark.md) |
+| 性能・品質回帰テスト (7 階層、新機能追加時に必須) | [Operations — Performance Testing](Operations-Performance-Testing.md) |
 | 詰まったとき | [Operations — Troubleshooting](Operations-Troubleshooting.md) |
 
 ### 🏗 GaOTTT を理解したい・拡張したい（開発者として）

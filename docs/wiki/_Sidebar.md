@@ -44,6 +44,7 @@
 - [Migration (upgrade)](Operations-Migration.md)
 - [Compact & Backup](Operations-Compact-And-Backup.md)
 - [Isolated Benchmark](Operations-Isolated-Benchmark.md)
+- [Performance Testing (7-tier)](Operations-Performance-Testing.md)
 - [Troubleshooting](Operations-Troubleshooting.md)
 
 ### 🗺 Plans

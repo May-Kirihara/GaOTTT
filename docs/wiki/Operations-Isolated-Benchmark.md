@@ -2,6 +2,8 @@
 
 ベンチマークを **本番 DB を触らずに** 走らせる隔離実行スクリプト。
 
+> **使い分け**: 開発時の日常的な perf 退行検知は [Operations — Performance Testing](Operations-Performance-Testing.md) (`tests/perf/` の Tier 6、StubEmbedder ベース、~7 秒で 38 tests) を先に走らせる。**実 RURI embedder + 本番に近い corpus** で確認したいとき、または latency の絶対値が CLAUDE.md "p50 < 50ms" を満たすか検証したいときに **このページの `scripts/run_benchmark_isolated.sh`** を使う。両者は補完関係。
+
 ## なぜ隔離するか
 
 通常のベンチマークは大量のクエリと記憶操作を行うため、本番 GaOTTT DB（数千〜数万件のあなた自身の記憶）を汚染する可能性がある。隔離スクリプトは `/tmp/gaottt-bench/` で完全に独立した DB を使用。
@@ -53,10 +55,15 @@ SC-005 Concurrency:    50 succeeded, 0 failed
 ## 開発フロー
 
 ```bash
-# テスト → ベンチで退行ゼロ確認
+# 1. 単体 + 統合テスト
 .venv/bin/python -m pytest tests/ -q
+
+# 2. ★ 7 階層 perf テストスイート (StubEmbedder、構造的回帰を素早く検知)
+.venv/bin/python -m pytest tests/perf/ -q
+
+# 3. このページの isolated bench (実 RURI、絶対値の確認)
 rm -rf /tmp/gaottt-bench
 .venv/bin/bash scripts/run_benchmark_isolated.sh
 ```
 
-→ 関連: [Tuning](Operations-Tuning.md), [Troubleshooting](Operations-Troubleshooting.md)
+→ 関連: [Performance Testing (7 階層)](Operations-Performance-Testing.md), [Tuning](Operations-Tuning.md), [Troubleshooting](Operations-Troubleshooting.md)
