@@ -233,3 +233,10 @@ opencode.json
 .diag-dynamics-report.json
 .diag-before.json
 .diag-after.json
+
+# Production-DB acceptance snapshot (~950 MB, recreate via scripts/diag_production_acceptance.py)
+.acceptance-snapshot/
+.acceptance-report-*.json
+.acceptance-qualitative-report.md
+.acceptance-live-feel.md
+acceptance-work-*/

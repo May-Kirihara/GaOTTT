@@ -531,11 +531,23 @@ opencode が独立 process で β=0 vs β=1 / β=0 vs β=3 を比較:
 - `scripts/perf_baseline.py` — `--config-overrides` flag を追加、任意 `GaOTTTConfig` field を JSON で切り替えながら baseline 取得可能 (β=0/1 比較を 2 コマンドで完結)
 - `scripts/diag_dynamics.py` — 同一 corpus で 2 config を走らせ、displacement / mass 分布 + top-5 Jaccard を JSON dump する diff ツール。Stage 5 以降 (β-θ decoupling、source-aware Hooke) の検証にも継続使用する
 
-### 残課題 (Stage 5 候補)
+### 本番 33k corpus での acceptance (2026-05-14、live MCP + snapshot)
 
-- **本番 DB で β=1 観察** — Stage 3 単独 1-2 週間運用後、β=1 を有効化して displacement 分布の変化を計測 ([Operations — Performance Testing](Operations-Performance-Testing.md) Tier 4 dynamics、`tests/perf/test_tier4_*.py` で baseline 取得 → β 変更 → 再測の流れ)。**受け入れ検証で「小 corpus では β-scaling が saturate」と判明したため、reality acceptance は本番 23k corpus + 1-2 週間累積が必要**
-- **Source-aware Hooke** — Stage 3 の Source-aware gate と並列で、`θ` または `β` を source 別 dict にする拡張 (agent / value / commitment は anchor 弱め、tweet / file は anchor 強めの設計余地)
-- **β の θ-decoupling** — Stage 4 は θ を Stage 3 と共有しているが、Hooke と kick で別 θ を持つ余地はある (kick は protective、Hooke は restorative で機能が異なるため)。観察次第
+詳細: [handover-2026-05-14-phase-i-stage4-production.md](../maintainers/handover-2026-05-14-phase-i-stage4-production.md)
+
+要約:
+- **Stage 4 main merge は安全** — β=0 default で挙動変化ゼロを 3 経路 (unit / integration / production snapshot) で検証
+- **β=1 を本番で活性化するのは「待ち」** — Sonnet による live MCP 体感テストで like/tweet の **mass inflation** が semantic-無関係 query で score 0.9+ を取る現象を発見 (例: 「Phase I Stage 4 Mass-dependent Hooke の設計」query が奈良の道路 like ツイートを top-1 で返す、score 0.92)。**Phase M Stage 2 (mass reset → 1-2 週観測 → θ 確定)** が先行しないと β=1 は逆効果リスクあり
+- **score deception 罠** — final_score 数字だけ見て質を見ないと false positive を生む、retrieval 版の [F-1 教訓](https://github.com/May-Kirihara/GaOTTT) (StubEmbedder で性能評価)
+- snapshot 上 β=0 vs β=1 quantitative: jaccard 0.966 / top1 14/15 / top3 set 13/15 / positional 7.53/10 (破壊なし) / β=3 は β=1 と同パターン (scaling saturate、小 corpus と同様)
+- 本番 mass 分布: max 33.99、avg 1.65 (heavy tail)、source 比率 file 11k / tweet 7.6k / claude-code 7.5k / like 4.2k / agent 896
+
+### 残課題 (優先順位、本番 acceptance 後に再確定)
+
+1. **(highest) Phase M Stage 2 — mass reset → 1-2 週観測 → θ 確定** — 既存 mass 肥大 (like/tweet) が本番の支配的問題と判明、これを抑制してから Stage 4 β=1 を再評価
+2. **mass rebalance 後の β=1 再評価** — `scripts/diag_production_acceptance.py --overrides-b '{"mass_anchor_extra_strength": 1.0}'` を Phase M Stage 2 完了後に再実行、 [Operations — Performance Testing](Operations-Performance-Testing.md) Tier 4 dynamics で baseline 比較
+3. **Source-aware Hooke (Stage 5 候補)** — Stage 3 の Source-aware gate と並列で、`θ` または `β` を source 別 dict にする拡張 (agent / value / commitment は anchor 弱め、tweet / file は anchor 強め)。本番 acceptance で **persona 層の不可視性** が露呈したため優先度上昇
+4. **β の θ-decoupling (Stage 5 候補)** — Stage 4 は θ を Stage 3 と共有しているが、Hooke と kick で別 θ を持つ余地はある (kick は protective、Hooke は restorative で機能が異なる)
 
 ## 設計判断の倫理 (Phase I が学んだもの)
 
