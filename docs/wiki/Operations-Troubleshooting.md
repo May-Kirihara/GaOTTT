@@ -161,3 +161,42 @@ pkill -f gaottt.server.app
 ```
 
 **注意**: `--all --apply` は全ノードの累積 recall 履歴をリセットするため不可逆。対象を `--tag` や `--min-displacement` で絞るか、`scripts/migrate.py --apply` で自動バックアップ後に実行することを推奨。
+
+## ファイルで登録した文書が recall に出てこない
+
+**症状**: `scripts/load_files.py` 等で `source="file"` として登録したはずの書籍 / ノート / ドキュメントが、明らかにヒットするはずの自然文 query でも `recall(source_filter=["file"])` の top-K に出てこない。直接 SQL で確認すると documents/nodes table にはあり、内容も合っている。
+
+**典型ケース** (2026-05-14 観測):
+- query: 「あの航空機事故はこうして起きた」
+- 期待: 同名書籍の chunks が top に
+- 実際: 京都大学入試、会社四季報、無修正でも合法本など **無関係なファイル chunk** が top を占め、書籍は top-10 圏外
+- 書籍 chunks の cosine sim は raw FAISS 直接検索だと 0.92 と十分高い
+
+**原因 — Phase L Stage 1 (RRF) と Phase H Stage 1 (seed mass boost) の score scale 不整合**:
+
+Phase L Stage 1 で BM25 RRF fusion を導入したとき、`_seed_boost(raw + α × log(1+mass))` の式は更新されなかった。RRF score は ~0.018–0.033 範囲、`α × log(1+mass)` は cosine scale (~0.9 max) 想定 → α=0.02 でも mass=22 の chunk で boost 0.062 = RRF max の 2 倍。**mass の重い無関係 chunk が semantic 距離を完全に上書き**する。
+
+**診断スクリプト** (read-only、副作用なし):
+
+`/tmp/diag_seed_pool.py` のように、`_union_pool` と `_seed_boost` を直接呼んで stage 別に target chunks の位置を追う。コードは `gaottt.core.gravity._union_pool` / `_seed_boost` をそのまま使う:
+
+```python
+from gaottt.core.gravity import _union_pool, _seed_boost
+# ... load components (RuriEmbedder, SqliteStore, FaissIndex, BM25Index, CacheLayer) ...
+qv = embedder.encode_query("<problem query>").reshape(-1).astype(np.float32)
+pool = _union_pool(qv, raw_faiss, virt_faiss, 1000,
+                   query_text="<query>", bm25_index=bm25, ...)
+# Stage 5: source_filter
+filtered = [(nid, s) for nid, s in pool if cache.get_source(nid) in {"file"}]
+# Stage 6: _seed_boost — observe whether targets fall here
+rescored = sorted(((nid, _seed_boost(nid, raw, cache, config, None), raw)
+                   for nid, raw in filtered),
+                  key=lambda t: t[1], reverse=True)
+# Print top 15 with mass / boost / raw
+```
+
+target chunk が **Stage 4-5 (RRF union + source filter) で top に居る** が **Stage 6 (`_seed_boost`) で陥落** していれば scale 不整合バグ。
+
+**対処**: `gaottt/config.py:wave_seed_mass_alpha` を `0.0` に固定(2026-05-14 以降 default)。RRF fusion が既に raw + virtual + BM25 を scale-invariant に組み合わせているため、seed boost で更に mass を加える必要はない。
+
+**Phase N tuning target**(未着手): RRF-mode を検出して mass term を score scale に正規化するか、rank-based boost に切り替える。詳細: [Plans — Roadmap](Plans-Roadmap.md)。

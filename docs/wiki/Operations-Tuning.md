@@ -80,12 +80,24 @@
 | wave_attenuation | 0.7 | 深度ごとの減衰係数 |
 | wave_mass_scale | 1.5 | mass 依存 top-k のスケール |
 | wave_k_with_filter | 1000 | `recall(source_filter=...)` 指定時の seed top-k（dense corpus で sparse class を救済、Phase H Stage 2 で 200→500、2026-05-12 本番 23k DB 検証で 500→1000 引き上げ） |
-| wave_seed_mass_alpha | 0.1 | seed 段階の mass-aware rerank 重み（Phase H Stage 1）。`raw + α*log(1+mass)` で pool を再 rank。`0` で legacy 挙動 |
+| wave_seed_mass_alpha | **0.0** | seed 段階の mass-aware rerank 重み（Phase H Stage 1）。`raw + α*log(1+mass)` で pool を再 rank。**2026-05-14 に 0.1 → 0.02 → 0.0 と段階的に下げて最終 disabled**(下記注を参照)。`> 0` に戻すと Phase L Stage 1 の RRF score scale (~0.03 max) と Phase H Stage 1 の mass term (cosine scale ~0.9 想定) が干渉し、mass の重い無関係 chunk が semantic 距離を上書きする structural bug が発生 |
 | wave_seed_pool_size | 50 | seed 再 rank の pool 大きさ（Phase H Stage 1） |
 | wave_dynamic_k_enabled | `True` | top-N 密度応答型の seed 拡大（Phase H Stage 3）。`False` で固定 initial_k |
 | wave_density_window | 10 | density 評価で見る top-N の N |
 | wave_density_threshold | 0.95 | tail/top 比率の閾値。これ未満で「sparse」と判定して seed 拡大 |
 | wave_initial_k_max | 50 | sparse 判定時の effective_k 上限（Phase H Stage 3） |
+
+> **⚠️ `wave_seed_mass_alpha` の scale 不整合バグ (2026-05-14 発見、`0.0` に固定で回避)**
+>
+> Phase L Stage 1 (RRF fusion) と Phase H Stage 1 (`raw + α × log(1+mass)`) は **score scale が異なる**:
+> - `raw` に来る値 — RRF mode: ~0.018–0.033 / cosine mode (legacy): ~0.5–1.0
+> - `α × log(1+mass)` — 例: α=0.02 × log(23) = **0.062** ← RRF max の 2 倍!
+>
+> 結果、RRF が semantic にランクした top を **mass の重い無関係 chunk が完全に上書き**する。例: 「あの航空機事故はこうして起きた」を recall すると、cosine 0.92 で raw FAISS top の book chunks (mass 1.4) が、cosine 0.79 で **mass 22 の京都大学入試 / 会社四季報 chunk** に seed step で押し出される。
+>
+> **修正**: `wave_seed_mass_alpha = 0.0` で seed boost を完全 disable。RRF fusion が既に raw cosine + virtual + BM25 を scale-invariant に組み合わせているので、seed step での mass 介入は不要。Phase H Stage 1 の意図(heavy node lift)を RRF mode で正しく実現する **RRF-scale aware mass boost** は Phase N で再設計予定([Plans — Roadmap](Plans-Roadmap.md))。
+>
+> 詳細・診断手順は [Operations — Troubleshooting](Operations-Troubleshooting.md) の「ファイルで登録した文書が recall に出てこない」節。
 
 ## Persona-anchored seed boost (Phase J Stage 1)
 
