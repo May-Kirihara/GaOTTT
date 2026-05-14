@@ -34,6 +34,8 @@ recall(
   persona_context: list[str] | None = None, # Phase J Stage 2: 明示的 ID リスト。seed pool に強制注入 + persona boost
   tag_filter: list[str] | None = None,   # Phase J Stage 2: タグ substring (OR 一致) の node を seed pool に強制注入。source_filter を bypass
   output_mode: str = "full",             # MCP 専用トークン節約。"full"=全文, "compact"=300字切詰, "ids"=ID+スコアのみ
+  auto_route: bool = True,               # Phase O Stage 3: 構造化質問なら reflect 並走 + summary 添付
+  mode: str = "detail",                  # Phase O Stage 4: "list" で content を 80 字に切り詰め (REST にも効く)
 )
 → 各結果に id=<uuid> が含まれる
 ```
@@ -47,6 +49,75 @@ recall(
 - `"compact"` — 300 字切り詰め（通常利用、トークン節約に推奨）
 - `"ids"` — ID + スコア行のみ（大量 ID を把握したいが内容不要な場合）
 
+**Score breakdown (Phase O Stage 1):** 各結果に additive な内訳が 1 行で付く。`final_score = (vcos·decay + wave + mass + emo + cert) × sat` を literal に再現する 8 数 + 補助情報 (`persona_prox`, `cos`, flags `[bm25]` / `[forced]`)。LLM caller が「mass で勝ってる」「semantic 弱い」を一発判定できる:
+
+```
+[1] id=abc12345... (score=0.4231, virtual_score=0.1850, source=agent, displacement=0.0234)
+  breakdown: cos=0.142 vcos=0.185·decay=1.000 +wave=0.060 +mass=0.245 +emo=0.000 +cert=0.000 ×sat=0.910 persona_prox=0.000
+```
+
+| field | 意味 | 出方 |
+|---|---|---|
+| `cos` | `raw_cosine` — pure cosine(query, original_emb) | informational (sum に入らない) |
+| `vcos` | `virtual_cosine` — query · virtual_pos (displacement 反映) | sum に入る |
+| `decay` | recency decay multiplier | vcos に掛かる |
+| `wave` | gravity wave propagation の追加項 | additive |
+| `mass` | `α · log(1+mass)` | additive |
+| `emo` | emotion weighting | additive |
+| `cert` | certainty boost | additive |
+| `sat` | habituation saturation multiplier | 全体に掛かる |
+| `persona_prox` | persona-graph 近接度 | informational (wave に baked-in) |
+| `[bm25]` flag | BM25 lexical hit (informational) | wave に baked-in |
+| `[forced]` flag | `tag_filter` / `persona_context` で強制注入された | informational |
+
+REST (`POST /recall`) では `items[].score_breakdown` に上記 11 field がそのまま JSON で返る。`expose_score_breakdown=false` で全体 off (legacy 互換用)。
+
+**Training delta trailer (Phase O Stage 2):** recall 出力の末尾に `## 訓練差分` セクションが付く。caller (LLM) が起こした state 変化 (backward pass) を可視化:
+
+```
+## 訓練差分
+wave_reached=12 depth=2 persona_hop=3 (top-k only)
+Δmass top: abc12345.. +0.0034, def67890.. +0.0012, fed09876.. +0.0008
+Δ|disp| top: abc12345.. +0.0124, def67890.. -0.0050, fed09876.. +0.0021
+```
+
+| field | 意味 |
+|---|---|
+| `displacement_changes` | dict<node_id, Δ\|displacement\|> — post − pre (signed)。Phase I Stage 2 query attraction の literal な観測 |
+| `mass_changes` | dict<node_id, Δmass> — Phase M self-force filter 適用後 |
+| `wave_reached_count` | wave が触れた node 数 (informational) |
+| `wave_max_depth` | 設定 / 要求された wave depth |
+| `persona_hop_reached` | persona graph (Phase J) 経由で触れた node 数 (`persona_proximity > 0`) |
+| `supernova_triggered` | recall path では常に `False` (parity field、ingest path で意味を持つ) |
+| `cache_hit` | `True` のとき simulation 走らず (prefetch cache served)、delta dicts は空 |
+| `topk_only` | default `True`、top-K 結果の node のみ delta dict に含める (context 経済)。`False` で reached 全体 |
+
+REST (`POST /recall` / `POST /explore`) では `training_delta` フィールドにそのまま JSON で返る。`training_delta_enabled=false` で全体 off。
+
+**Auto-routed reflect (Phase O Stage 3):** query 形式 (surface form) が構造化された aspect 問い合わせに一致したら (例: 「現在 active な commitment」「持っている value」「今やってる task」「my intentions」) `recall` / `explore` は **対応する `reflect` aspect を並走実行** し、結果を末尾に append:
+
+```
+## 関連 reflect サマリ (auto-routed)
+_aspect_: `commitments` (query 形式から自動判定 — 関連した state snapshot を併走実行)
+
+Active commitments (3 total, showing top 10):
+  id=abc12345 deadline=2026-05-31 (+17.0d) | niceboat self-knowledge を完了する
+  ...
+```
+
+| field (`routing_hint`) | 意味 |
+|---|---|
+| `aspect` | 一致した aspect 名 (例 `"commitments"`, `"values"`) — 一致なしは `null` |
+| `pattern_matched` | classifier がパターン一致したか (bool) |
+| `auto_routed` | 実際に `reflect` が並走実行されたか (bool) — `auto_route=False` か config off だと `false` |
+| `reflect_summary` | 並走実行された場合の整形済み summary 文字列、なしなら `null` |
+
+判定は **query 形式 (surface form) ベース、source 分岐ゼロ** — Phase M の単一規則を侵さない (caller の質問形式を見るだけで、physics rule は一切触らない)。一致しない自由文 query は legacy free-form recall のまま動作。`auto_route=False` で単発無効化、`config.auto_route_enabled=False` で全体無効化。
+
+REST (`POST /recall` / `POST /explore`) では `routing_hint` フィールドにそのまま JSON で返る。
+
+**List mode (Phase O Stage 4):** `mode="list"` で各結果の `content` を `config.list_mode_excerpt_chars` (既定 80) 字に切り詰め、改行を空白に置換。`top_k=20, mode="list"` で 1 リクエスト ≈ 20 行のスキャン用インデックスを取得 → 興味ある id に対して `recall(query=..., top_k=1, mode="detail")` で深掘り、という 2-step pattern を支える。**MCP / REST 両方で同じ truncate が wire 上に乗る** (MCP 専用の `output_mode` とは独立、`output_mode` は文字列表示の控除、`mode="list"` は service 層の payload 控除)。
+
 ## explore
 
 温度を上げた創発的探索。離れた記憶も引き寄せる。
@@ -58,12 +129,24 @@ explore(
   top_k=10,
   persona_context: list[str] | None = None,  # recall と同じ注入引数
   tag_filter: list[str] | None = None,
+  auto_route: bool = True,                    # Phase O Stage 3: recall と parity
+  mode: str = "serendipity",                  # Phase O Stage 5: "dormant" で counter-importance sampling
 )
 ```
 
 - `diversity=0.0` 通常検索に近い
 - `diversity=0.5` 適度な探索（既定）
 - `diversity=1.0` 最大多様性
+
+**Dormant mode (Phase O Stage 5):** `mode="dormant"` で wave / FAISS を完全に bypass し、**自己発信 source class** (`agent` / `value` / `intention` / `commitment` / `note` / `reference`) のうち以下 3 条件を満たす node からランダムに `top_k` 件を返す:
+
+| 条件 | しきい値 (config) |
+|---|---|
+| `last_access` が cutoff より古い | `dormant_age_threshold_seconds` (既定 30 日) |
+| `mass ≤ θ` (mature gate 未満) | `dormant_mass_threshold` (既定 2.0) |
+| `metadata.source ∈` allowlist | `dormant_source_classes` (上記 6 種) |
+
+`query` は **ignore** (任意の placeholder で OK)。`training_delta` / `routing_hint` は `None` (wave 走らず、aspect 意図も無し)。出力は `## 関連 reflect サマリ` / `## 訓練差分` 無しの dormant 専用 formatter で「💭 Dormant memories surfaced (N):」 prefix から始まる。**設計判断**: `source` 列挙は Phase M 「source 分岐ゼロの単一規則」を侵さない — physics rule (mass update / Hooke / kick) は branching せず、ここでは「自己発信 class」という structural identifier に対する filter (query intent) として使う。
 
 ## reflect
 

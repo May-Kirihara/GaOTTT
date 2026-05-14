@@ -87,12 +87,49 @@ class QueryRequest(BaseModel):
     wave_k: int | None = Field(default=None, ge=1, le=20, description="Override wave initial top-k")
 
 
+class ScoreBreakdown(BaseModel):
+    """Phase O Stage 1 — additive/multiplicative decomposition of final_score.
+
+    Lets a TTT-aware caller see *why* a node scored what it scored:
+    final = (virtual_cosine * decay_factor + wave_score + mass_boost
+            + emotion_term + certainty_term) * saturation
+
+    ``raw_cosine`` is informational only (no displacement applied). ``persona_proximity``
+    and ``bm25_contributed`` reflect contributions that are *folded into* ``wave_score``
+    via the seed-boost path (Phase J / Phase L), so they are exposed as informational
+    fields rather than double-counted additive terms.
+    """
+    raw_cosine: float = 0.0          # query · original_emb (no displacement) — informational
+    virtual_cosine: float = 0.0      # query · virtual_pos (= gravity_sim, what enters final)
+    decay_factor: float = 1.0        # multiplicative recency decay applied to virtual_cosine
+    wave_score: float = 0.0          # additive wave_boost (gravity propagation reach)
+    mass_boost: float = 0.0          # additive α · log(1+mass)
+    emotion_term: float = 0.0        # additive |emotion| · α_emotion
+    certainty_term: float = 0.0      # additive certainty-weighted boost
+    saturation: float = 1.0          # multiplicative habituation (1/(1+return_count·rate))
+    persona_proximity: float = 0.0   # informational: persona-graph proximity (already in wave_score)
+    bm25_contributed: bool = False   # informational: did BM25 affect seed ranking
+    forced_inclusion: bool = False   # informational: was node in injected_ids (tag/persona_context)
+
+    @property
+    def expected_sum(self) -> float:
+        """Reproduce final_score from breakdown — within FP tolerance."""
+        return (
+            self.virtual_cosine * self.decay_factor
+            + self.wave_score
+            + self.mass_boost
+            + self.emotion_term
+            + self.certainty_term
+        ) * self.saturation
+
+
 class QueryResultItem(BaseModel):
     id: str
     content: str
     metadata: dict[str, Any] | None
     raw_score: float   # query_raw · virtual_pos (= gravity_sim). Labelled "virtual_score" in MCP output.
     final_score: float
+    score_breakdown: ScoreBreakdown | None = None  # Phase O Stage 1 — None for legacy/disabled paths
 
 
 class QueryResponse(BaseModel):
@@ -142,6 +179,16 @@ class RecallRequest(BaseModel):
     # Phase J Stage 2: explicit pool injection.
     persona_context: list[str] | None = None  # node ids of declared value/intention/commitment; None → auto-detect (Stage 1)
     tag_filter: list[str] | None = None       # additive injection — substrings (OR match) of metadata.tags entries
+    # Phase O Stage 3: when True, the service classifies the query surface form
+    # and runs the matching ``reflect`` aspect in parallel, attaching summary
+    # to ``RecallResponse.routing_hint``. Default True (engine-side off via
+    # config.auto_route_enabled). Pass False to suppress for a single call.
+    auto_route: bool = True
+    # Phase O Stage 4 — content economy mode.
+    #   "detail" (default) — full content (legacy).
+    #   "list"            — content truncated to config.list_mode_excerpt_chars
+    #                       and newline-stripped, fits one line per result.
+    mode: str = "detail"
 
 
 class ExploreRequest(BaseModel):
@@ -151,6 +198,17 @@ class ExploreRequest(BaseModel):
     # Phase J Stage 3: parity with recall — explicit pool injection for explore.
     persona_context: list[str] | None = None
     tag_filter: list[str] | None = None
+    # Phase O Stage 3: parity with recall — auto-route to reflect when surface
+    # form matches a structured aspect.
+    auto_route: bool = True
+    # Phase O Stage 5 — exploration intent mode.
+    #   "serendipity" (default) — diversity-amplified semantic explore (legacy).
+    #   "dormant"               — random self-authored memo older than
+    #                             dormant_age_threshold_seconds AND mass ≤
+    #                             dormant_mass_threshold AND source ∈
+    #                             dormant_source_classes. Bypasses the wave
+    #                             entirely; intentionally counter-importance.
+    mode: str = "serendipity"
 
 
 class ForgetRequest(BaseModel):
@@ -180,6 +238,7 @@ class MemoryItem(BaseModel):
     source: str = "unknown"
     tags: list[str] = Field(default_factory=list)
     displacement_norm: float = 0.0
+    score_breakdown: ScoreBreakdown | None = None  # Phase O Stage 1
 
 
 class RememberResponse(BaseModel):
@@ -207,15 +266,75 @@ class RevalidateResponse(BaseModel):
     emotion_weight: float | None = None
 
 
+class TrainingDelta(BaseModel):
+    """Phase O Stage 2 — TTT update visibility for the caller.
+
+    State changes induced by this recall — the *backward pass* of the
+    forward-pass that ScoreBreakdown describes (Phase I Stage 2's
+    ``a = (α · score / m_i) · (q - pos_i)`` term lands here as signed
+    displacement_changes).
+
+    - ``displacement_changes`` — node_id → Δ|displacement| (post − pre, signed).
+      Positive means the node drifted *away* from its original embedding by
+      more after this recall; negative means closer.
+    - ``mass_changes`` — node_id → Δmass (Phase M self-force filter applied).
+    - ``wave_reached_count`` — total reached nodes (informational).
+    - ``wave_max_depth`` — requested / configured wave depth (not actual reach).
+    - ``persona_hop_reached`` — count of reached nodes with persona_proximity > 0
+      (Phase J graph traversal landed there).
+    - ``supernova_triggered`` — always ``False`` for recall path; kept for
+      parity with ingest path (where batch ``remember`` can trigger
+      Phase K cohort supernova).
+    - ``cache_hit`` — when ``True``, no simulation ran (prefetch cache served
+      the result), so all delta dicts/counts are zero by definition.
+    - ``topk_only`` — ``displacement_changes`` / ``mass_changes`` cover only the
+      top-K returned nodes (default ``True`` for context economy). ``False``
+      means full reached-node coverage (debug / observability mode).
+    """
+    displacement_changes: dict[str, float] = Field(default_factory=dict)
+    mass_changes: dict[str, float] = Field(default_factory=dict)
+    wave_reached_count: int = 0
+    wave_max_depth: int = 0
+    persona_hop_reached: int = 0
+    supernova_triggered: bool = False
+    cache_hit: bool = False
+    topk_only: bool = True
+
+
+class RoutingHint(BaseModel):
+    """Phase O Stage 3 — auto-routed reflect summary attached to recall/explore.
+
+    Set when the query surface form matched a structured persona/task aspect
+    (e.g. "現在 active な commitment" → ``aspect="commitments"``) and the
+    service ran the matching ``reflect`` aspect in parallel. The free-form
+    recall result is still returned in ``items``; the reflect summary lives
+    here so the caller sees both layers without having to switch tools.
+
+    ``reflect_summary`` is the same human-readable string that ``reflect``
+    would produce for the matched aspect (via ``services.formatters``).
+    ``auto_routed=False`` means the caller passed ``auto_route=False`` or the
+    config switch was off — the field is set so the caller can tell the
+    difference between "router was off" and "router didn't match".
+    """
+    aspect: str | None = None              # matched aspect name (e.g. "commitments"), or None when no match
+    pattern_matched: bool = False          # True iff detect_aspect returned non-None
+    auto_routed: bool = False              # True iff service actually ran the reflect call
+    reflect_summary: str | None = None     # formatted aspect output, or None if no run
+
+
 class RecallResponse(BaseModel):
     items: list[MemoryItem] = Field(default_factory=list)
     count: int = 0
+    training_delta: TrainingDelta | None = None  # Phase O Stage 2
+    routing_hint: RoutingHint | None = None      # Phase O Stage 3
 
 
 class ExploreResponse(BaseModel):
     items: list[MemoryItem] = Field(default_factory=list)
     count: int = 0
     diversity: float = 0.0
+    training_delta: TrainingDelta | None = None  # Phase O Stage 2
+    routing_hint: RoutingHint | None = None      # Phase O Stage 3
 
 
 # --- Relations service ---

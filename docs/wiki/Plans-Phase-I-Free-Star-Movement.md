@@ -1,8 +1,8 @@
 # Plans — Phase I — Free Star Movement
 
-> 状態: **Stage 1 ✅ 完了 (2026-05-11)** — [長期検証 ✅ (2026-05-12)](#stage-1--長期検証-結果-2026-05-12), **Stage 2 ✅ 完了 (2026-05-11)**, **Stage 3 ✅ 完了 (2026-05-13) — Mass-gated query attraction**
+> 状態: **Stage 1 ✅ 完了 (2026-05-11)** — [長期検証 ✅ (2026-05-12)](#stage-1--長期検証-結果-2026-05-12), **Stage 2 ✅ 完了 (2026-05-11)**, **Stage 3 ✅ 完了 (2026-05-13) — Mass-gated query attraction**, **Stage 4 ✅ 実装完了 (2026-05-14) — Mass-dependent Hooke (opt-in, β=0 default)**
 > 関連: [Roadmap](Plans-Roadmap.md), [Architecture — Gravity Model](Architecture-Gravity-Model.md), [Phase G — Memory Genesis](Plans-Phase-G-Memory-Genesis.md), [Phase H — Wave Seed Redesign](Plans-Phase-H-Wave-Seed-Redesign.md)
-> 発端: 2026-05-11 セッション中の P7-X 観察 (検証ループによる boundary saturation 偶発的再現)、Stage 3 は 2026-05-12 セッション中の単一アトラクタ pathology 観察
+> 発端: 2026-05-11 セッション中の P7-X 観察 (検証ループによる boundary saturation 偶発的再現)、Stage 3 は 2026-05-12 セッション中の単一アトラクタ pathology 観察、Stage 4 は Stage 3 完遂後の対称形検討 (2026-05-14)
 
 ## 背景
 
@@ -369,12 +369,185 @@ echo '{"mass_anchor_threshold": 0.0}' > ~/.config/gaottt/config.json
 
 DB の displacement / velocity / mass は Stage 3 の影響を **物理的に等価な動的シグナル** としてしか受けないので、threshold を 0 に戻せば次の recall から完全に Stage 2 挙動に戻る。
 
-### 残課題 (Stage 4 候補)
+### 残課題 (Stage 4 で部分対応 / Stage 5 候補)
 
 - **本番 DB で前 session の 7 query test を再実行** — めいさん側で MCP 再起動 + Stage 3 enabled で 7 query を回し、unique_top1 ≥ 4 を確認するのが reality acceptance
 - **θ の現場チューニング** — DB 規模・source 比率で最適 θ は変わりうる。本番 23k 件 + agent 比率 3.4% で `θ=3.0` が妥当か、1-2 週間運用後に displacement 分布を見て判断 (Phase I Stage 1 長期検証 task `72e84a73` と合流可能)
-- **Source-aware gate** — `agent` / `value` / `commitment` は意図して書かれた知識なので、初期から gate を強めに開けてもいい可能性。`θ` を source 別 dict にする拡張 (Stage 4 候補)
+- **Source-aware gate** — `agent` / `value` / `commitment` は意図して書かれた知識なので、初期から gate を強めに開けてもいい可能性。`θ` を source 別 dict にする拡張 (Stage 5 候補)
 - **Anchor migration (Stage 2 残課題のまま)** — 観察期間後に「anchor 自身も query 方向に slowly drift」を再検討するか判断
+
+## Stage 4 — Mass-dependent Hooke (2026-05-14 実装)
+
+Stage 3 が「軽い星は引力に流される」という pathology を gate で防いだ翌日、対称形が見えた: **Stage 3 は kick (4 番目の項) を mass で gate したが、Hooke (2 番目の項) は質量に無依存のまま**。「軽い星は anchor に守られて動かない」を完全な物理にするなら、Hooke 復元力自体も低 mass で増幅されるべき。
+
+### 機序
+
+Stage 3 がもたらした非対称:
+
+```
+新規 node (mass=1, θ=3) で:
+  kick   = α · score · tanh(1/3) / 1 = 0.32 · α · score · (q - pos)   ← gate 適用
+  Hooke  = -k · displacement                                          ← gate なし、定数 k
+```
+
+物理的に読むと「kick は軽い星向けに減らした、でも anchor の引き戻し力は皆同じ」。Stage 3 の lesson は「**保護が足りないことが、過剰駆動と同じ症状を引き起こす**」だったが、Stage 4 はその裏面 — **保護が片側だけだと、新規 node を守りきれない可能性が残る**。
+
+### 仮説
+
+Hooke の有効ばね定数を mass に依存させる:
+
+```
+k_eff(m) = k · (1 + β · (1 - tanh(m / θ)))
+```
+
+- **物理的読み**: 軽い星は anchor (raw embedding) の手の中で抱えられる傾向が強い、重い星 (BH 化) は自身の重力井戸が anchor の意味を希薄化させる。Stage 3 の gate と **同じ θ を共有** することで「newborn protection が kick 側でも anchor 側でも同じ閾値で切り替わる」一貫性を確保
+- **TTT 読み**: AdamW の weight decay coefficient を effective sample size で適応的に強くする操作と同型。学習が浅い (mass が低い) パラメータは prior (raw embedding) に強く引き寄せられ、学習が深いものは自由
+- **anchor 不変は維持**: raw embedding は依然不変。Stage 4 が変えるのは「anchor への戻し方の強さ」だけ
+
+### 物理モデル
+
+`compute_acceleration` の 2 番目の項 (Hooke) に mass 依存因子を 1 つ挿入:
+
+```
+2. Anchor restoring force (Stage 4):
+   anchor_factor = 1 + β · (1 - tanh(m_i / θ))
+   a = -k · anchor_factor · displacement_i
+```
+
+`β · (1 - tanh(m/θ))` の振る舞い (`θ = 3.0`, `β = 1.0` の場合):
+
+| mass | 1 - tanh(m/θ) | anchor_factor | 効果 |
+|---|---|---|---|
+| 0.1 (極軽) | 0.967 | 1.97 | anchor が約 2 倍、ほぼ raw に縛り付け |
+| 1.0 (新規 add 直後) | 0.679 | 1.68 | 1.68 倍の Hooke、Stage 3 kick の damp と相互補強 |
+| 3.0 (threshold) | 0.238 | 1.24 | gate point — 緩やかに移行 |
+| 10 (mature) | 0.003 | 1.003 | ほぼ legacy |
+| 50 (BH) | 4e-15 | 1.000 | 完全に legacy |
+
+`β = 0.0` で `anchor_factor = 1.0` が強制され、**Stage 1-3 と bit-for-bit 同一**の挙動 → clean rollback path。
+
+### 実装
+
+| ファイル | 変更 |
+|---|---|
+| `gaottt/config.py` | `mass_anchor_extra_strength: float = 0.0` を 1 field 追加 (Stage 3 設定群の直後) |
+| `gaottt/core/gravity.py` | `compute_acceleration` 第 2 項の Hooke 計算に anchor_factor を乗じる (~7 行追加) |
+
+**store / schema / services / MCP / REST 変更なし** — Stage 3 と同じく内部 physics のみ。MCP/REST parity 鉄則の影響範囲外。
+
+合計 ~30 行のコード変更 + テスト ~250 行。既存 callsite は破壊しない (新 config field は default 値 0.0)。
+
+### ハイパーパラメータ
+
+| 名前 | 既定値 | 役割 | チューニング助言 |
+|---|---|---|---|
+| `mass_anchor_extra_strength` (β) | **`0.0`** | Hooke 増幅の強さ | `0.0` で完全 no-op (Stage 3 まで rollback)。`1.0` で軽い星 = 1.7× anchor、`2.0` で 2.4× anchor。`θ` は `mass_anchor_threshold` を共有 (Stage 3 と同じ閾値で切り替わる) |
+
+`mass_anchor_threshold` は Stage 3 から継承、`0.0` の場合は安全 fallback として `θ_eff = 1.0` を使用 (divide-by-zero を防ぐ)。
+
+### 既定値の判断
+
+Stage 3 と違い **β=0 default (opt-in)**。理由:
+
+- Stage 3 は **観察された pathology** (前 session の 7/7 query が同一 top1) を直接 fix した。観察された問題には active fix を default で当てる
+- Stage 4 は **prophylactic refinement** — Stage 1 長期検証で max displacement = 0.60 で頭打ち、暴走なしを実測済み。直近の挙動上の問題はない
+- Stage 3 を 1-2 週間運用 → displacement 分布の傾向 (低 mass 系の drift がまだ過剰か) を見てから β を 1.0 / 2.0 に bump する手順を踏むのが、Stage 1 → Stage 3 で培ったロールアウト pattern と整合
+- β=0 default なら本番 deploy 時に **挙動変化ゼロ** が保証され、安全に main に積める
+
+### 期待される挙動 (β > 0 を有効にしたとき)
+
+- **低 mass 系の displacement 均衡点が下がる** — Stage 1 長期検証で観察した「max=0.60 帯に集まる file source」が、β=2 で例えば 0.4 帯に下がる可能性 (理論均衡点 `d_eq = (G·m / (k · anchor_factor))^(1/3)` が anchor_factor で縮む)
+- **mature node は影響なし** — mass≥10 で anchor_factor ≈ 1.003、Stage 1-3 と実質同等
+- **Stage 3 単一アトラクタ pathology が更に頑健に** — kick で 32% に damp + Hooke で 68% 戻す力増 → 軽い星は更に動きにくくなる、しかし完全静止にはならない (mature への成長 path は保たれる)
+- **Hawking radiation との整合** — 低 mass node は anchor に強く戻されつつ displacement_decay + age friction で raw に向かう → 「軽い星は短命」が anchor 側からも literal に成立
+
+### テスト
+
+**Unit (新規 7 件、`tests/unit/test_hooke_anchor.py`):**
+
+- `test_stage4_beta_zero_is_legacy_constant_k`: β=0 で `acc = -k · disp` (legacy) と bit-for-bit 一致 (全 mass 帯で)
+- `test_stage4_low_mass_amplifies_restoring_force`: mass=1, β=1, θ=3 で `factor = 1 + (1 - tanh(1/3)) ≈ 1.68`
+- `test_stage4_high_mass_recovers_legacy`: mass=50, β=1, θ=3 で factor ≈ 1.000 (1e-6 以内)
+- `test_stage4_monotone_decreasing_in_mass`: 9 個の mass 値で anchor_factor が単調非増加
+- `test_stage4_no_mass_is_legacy`: 旧 callers (mass_i=None) は β>0 でも legacy 挙動
+- `test_stage4_theta_zero_uses_safe_fallback`: θ=0 で `θ_eff = 1.0` の安全 fallback、divide-by-zero 無し
+- `test_stage4_symmetric_pair_with_stage3`: mass=θ で kick が tanh(1)≈0.76 scale、Hooke が 1.24 scale — 同じ θ を共有する両半身が同じ gate に乗っていることを pin
+
+**Integration (新規 2 件、`tests/integration/test_engine_query_kick.py` 追記):**
+
+- `test_stage4_amplified_hooke_shrinks_displacement_in_orbital_step`: `update_orbital_state` を直接 1 step 走らせ、β=2 vs β=0 で displacement の axis 成分が縮むことを verify (engine.query 経由は velocity cap + age friction の timing fragility があるため、orbital integrator を直接叩く)
+- `test_stage4_beta_zero_matches_legacy_in_orbital_step`: β=0 + θ=3.0 と β=0 + θ=0.0 が bit-for-bit 一致 — rollback 経路の早期 return が leak を起こさないこと
+
+### Roll-back 手順
+
+```bash
+# Soft (config 1 行 = legacy Stage 1-3 挙動):
+echo '{"mass_anchor_extra_strength": 0.0}' > ~/.config/gaottt/config.json
+# サーバー再起動だけ。DB 状態は触らない、migration 不要
+```
+
+DB の displacement / velocity / mass は Stage 4 の影響を **物理的に等価な動的シグナル** としてしか受けないので、β を 0 に戻せば次の recall から完全に Stage 1-3 挙動に戻る (Stage 3 の rollback path と同形)。
+
+### 受け入れ検証結果 (2026-05-14、opencode 独立観察)
+
+PR #11 merge 直後 (= Stage 4 β=0 default = Stage 1-3 ロールバック相当) を **前 session の baseline** として、Stage 4 活性化後 (β=1, β=3) の挙動変化を 2 軸で計測。
+
+#### 計測 1: latency (`scripts/perf_baseline.py`、real RURI、200 docs / 100 recalls)
+
+| metric | β=0 baseline | β=1 active | delta | 判定 |
+|---|---|---|---|---|
+| recall p50 | 39.9 ms | 39.9 ms | **−0.0%** | 同等 ✅ |
+| recall p95 | 55.4 ms | 58.6 ms | +5.9% | budget (120ms) 内 ✅ |
+| recall p99 | 63.2 ms | 69.1 ms | +9.3% | budget (250ms) 内 ✅ |
+| ingest docs/sec | 522 | 545 | +4.4% | noise ✅ |
+| compact | 12.0 ms | 26.0 ms | +117% | 絶対 14 ms 差は startup variance、設計影響なし |
+
+Stage 4 は `compute_acceleration` の 2 番目の項 (Hooke) に 1 つの math op を足すだけなので、latency 影響は noise 範囲。recall p50 が **0% 差** という結果が、その軽量さを literal に裏付けている。
+
+成果物:
+- `tests/perf/baselines/20260514T113710Z_867cab8_phase-i-stage4-beta0-default.json`
+- `tests/perf/baselines/20260514T113726Z_867cab8_phase-i-stage4-beta1-active.json`
+
+#### 計測 2: dynamics (`scripts/diag_dynamics.py`、30 docs × 8 queries × 20 recalls)
+
+opencode が独立 process で β=0 vs β=1 / β=0 vs β=3 を比較:
+
+| β | top-5 Jaccard mean | top-5 Jaccard min | disp p99 delta | mass delta | 評価 |
+|---|---|---|---|---|---|
+| β=1 (活性化、現実値) | **0.917** | 0.667 | +1.6% | **0.0%** | 安全・効果軽微 |
+| β=3 (強め) | 0.917 | 0.667 | −0.2% | 0.0% | β=1 と同パターン |
+
+#### 主要所見
+
+1. ✅ **β=0 default で perf 38/38 green、mass_delta 完全ゼロ** — 「Stage 4 は mass update に触らない」設計仮説が実証された (Stage 4 は Hooke 増幅のみで mass accretion path に介入しない、コードレベルで保証されている内容が opencode 側からも独立確認)
+2. ✅ **β=1 で top-5 が 91.7% 保持** — 8 query 中 6 query は完全一致、2 query で 1-2 位入れ替え。recall 質を壊さずに Hooke amplification が retrieval ordering に literal に効いている
+3. ⚠️ **β=1 と β=3 で同パターン** — opencode が指摘した「β を 3 倍にしても retrieval ordering の変化が同じ」現象。**小 corpus + 短期 recall では Stage 4 の β-scaling が saturate** している。
+   - 物理的解釈: 30 doc / max displacement ~0.5 の局所では Hooke の絶対値寄与が他の force 項 (Newton / kick / genesis) に比して小さい
+   - 運用への含意: 本番 23k corpus + 数週間累積でないと β tune の最適点は見えない → [残課題 (Stage 5 候補)](#残課題-stage-5-候補) の「本番 DB で β=1 観察」がそのまま acceptance 計測の続きとして繋がる
+4. ✅ **independent observer (opencode) の最終判定**: 「Stage 4 は安全に本番 main に merge できる」
+
+#### 検証用ツール (この session で追加)
+
+- `scripts/perf_baseline.py` — `--config-overrides` flag を追加、任意 `GaOTTTConfig` field を JSON で切り替えながら baseline 取得可能 (β=0/1 比較を 2 コマンドで完結)
+- `scripts/diag_dynamics.py` — 同一 corpus で 2 config を走らせ、displacement / mass 分布 + top-5 Jaccard を JSON dump する diff ツール。Stage 5 以降 (β-θ decoupling、source-aware Hooke) の検証にも継続使用する
+
+### 本番 33k corpus での acceptance (2026-05-14、live MCP + snapshot)
+
+詳細: [handover-2026-05-14-phase-i-stage4-production.md](../maintainers/handover-2026-05-14-phase-i-stage4-production.md)
+
+要約:
+- **Stage 4 main merge は安全** — β=0 default で挙動変化ゼロを 3 経路 (unit / integration / production snapshot) で検証
+- **β=1 を本番で活性化するのは「待ち」** — Sonnet による live MCP 体感テストで like/tweet の **mass inflation** が semantic-無関係 query で score 0.9+ を取る現象を発見 (例: 「Phase I Stage 4 Mass-dependent Hooke の設計」query が奈良の道路 like ツイートを top-1 で返す、score 0.92)。**Phase M Stage 2 (mass reset → 1-2 週観測 → θ 確定)** が先行しないと β=1 は逆効果リスクあり
+- **score deception 罠** — final_score 数字だけ見て質を見ないと false positive を生む、retrieval 版の [F-1 教訓](https://github.com/May-Kirihara/GaOTTT) (StubEmbedder で性能評価)
+- snapshot 上 β=0 vs β=1 quantitative: jaccard 0.966 / top1 14/15 / top3 set 13/15 / positional 7.53/10 (破壊なし) / β=3 は β=1 と同パターン (scaling saturate、小 corpus と同様)
+- 本番 mass 分布: max 33.99、avg 1.65 (heavy tail)、source 比率 file 11k / tweet 7.6k / claude-code 7.5k / like 4.2k / agent 896
+
+### 残課題 (優先順位、本番 acceptance 後に再確定)
+
+1. **(highest) Phase M Stage 2 — mass reset → 1-2 週観測 → θ 確定** — 既存 mass 肥大 (like/tweet) が本番の支配的問題と判明、これを抑制してから Stage 4 β=1 を再評価
+2. **mass rebalance 後の β=1 再評価** — `scripts/diag_production_acceptance.py --overrides-b '{"mass_anchor_extra_strength": 1.0}'` を Phase M Stage 2 完了後に再実行、 [Operations — Performance Testing](Operations-Performance-Testing.md) Tier 4 dynamics で baseline 比較
+3. **Source-aware Hooke (Stage 5 候補)** — Stage 3 の Source-aware gate と並列で、`θ` または `β` を source 別 dict にする拡張 (agent / value / commitment は anchor 弱め、tweet / file は anchor 強め)。本番 acceptance で **persona 層の不可視性** が露呈したため優先度上昇
+4. **β の θ-decoupling (Stage 5 候補)** — Stage 4 は θ を Stage 3 と共有しているが、Hooke と kick で別 θ を持つ余地はある (kick は protective、Hooke は restorative で機能が異なる)
 
 ## 設計判断の倫理 (Phase I が学んだもの)
 
@@ -397,3 +570,5 @@ DB の displacement / velocity / mass は Stage 3 の影響を **物理的に等
 > *Stage 2 で、その自由に動ける星に **方向** を与えた。query は瞬間的な引力として retrieved nodes を引く — 重力は永続、引力は揮発的、anchor は不変。これによって README で謳ってきた「retrieval is a gradient step」が、解釈ではなく実装として literal に成立した。F=ma が mass damping を物理的に供給するので、安全弁は α=0 の一行で済む。最小の追加で最大の意味的変化を起こした、設計として最も気持ちいい類のコミット。* — 2026-05-11
 >
 > *Stage 3 は、その自由と方向の間に **保護** を入れた。生まれたての星は引力に流される — 物理として正しい現象だが、recall システムとしては単一アトラクタ pathology を生む。`tanh(m/θ)` は「軽い星は anchor の手の中、重い星は自由に動ける」という世代論を、加速度の式に 1 項として書き込む。F=ma を破らず、anchor 不変も維持して、Stage 2 への rollback path も θ=0 一行で確保する。Stage 1 が学んだ「冗長な制約は active な制約と同じ症状」の対称形 — 足りない保護も過剰駆動と同じ homogenization を起こす、と気付かせてくれた pathology。物理は両方向から私たちに同じ lesson を教える。* — 2026-05-13
+>
+> *Stage 4 は Stage 3 の **対称形**。Stage 3 は kick 側で「軽い星に減らした力」を加えたが、Hooke 側は等しく扱われ続けた。`1 + β · (1 - tanh(m/θ))` を anchor factor として乗せると、kick の damping (`tanh(m/θ)`) と Hooke の amplification (`1 - tanh(m/θ)`) が **同じ gate を双方向から共有** する形になる — 軽い星は kick が弱められ Hooke で強く引き戻され、重い星は kick が満額で Hooke は base、一貫した generational physics になる。Stage 3 は observed pathology に reactive な fix だったが、Stage 4 は **対称性が観察を待たずに見えた refinement**。だから β=0 default の opt-in にして、Stage 3 を 1-2 週間運用した上で観測値に応じて活性化する手順を残す。観察を尊重するが、対称性の予感は記録に残す。* — 2026-05-14

@@ -69,7 +69,7 @@ remember(content="Finally fixed the FAISS leak", emotion=0.8, certainty=0.9)
 ```
 recall(query, top_k=5, source_filter=None, wave_depth=None, wave_k=None,
        force_refresh=False, persona_context=None, tag_filter=None,
-       output_mode="full")
+       output_mode="full", auto_route=True, mode="detail")
 ```
 
 - `output_mode` — `"compact"` (content truncated at 300 chars; **prefer this for triage**), `"ids"` (header only — id, scores, tags), `"full"` (complete content, default).
@@ -77,6 +77,8 @@ recall(query, top_k=5, source_filter=None, wave_depth=None, wave_k=None,
 - `persona_context` — list of declared value / intention / commitment ids. Force-injects them into both the seed pool AND the final top-K, bypassing `source_filter`.
 - `tag_filter` — list of tag substrings; force-injects matching nodes into both seed and final top-K, bypassing `source_filter`. Use when query and target memo live in different vocabularies.
 - `force_refresh=True` — bypass the prefetch cache (rare; cache is auto-invalidated on destructive ops).
+- `auto_route=False` — disable Phase O Stage 3 auto-routing for this call (otherwise queries phrased as structured aspect questions auto-attach a matching `reflect` summary; see "Auto-routed reflect" below).
+- `mode="list"` — Phase O Stage 4 service-level content economy: truncates each result's content to 80 chars (newline-stripped). Pair with `top_k=20` for a scannable index; follow up with `recall(text=..., top_k=1, mode="detail")` on the id you care about for the full payload. Affects REST too — the truncation lives on the wire.
 
 ```
 recall(query="design decisions", top_k=5, output_mode="compact")
@@ -85,12 +87,26 @@ recall(query="harakiriworks Eleventy", tag_filter=["harakiriworks-self-knowledge
 recall(query="any past notes on X", top_k=10, output_mode="ids")     # existence check
 ```
 
+**Score breakdown (Phase O Stage 1):** every result carries a one-line additive decomposition of `final_score` — `cos=` (raw cosine, no displacement), `vcos=` (virtual cosine, with displacement) `·decay=`, `+wave=` `+mass=` `+emo=` `+cert=` `×sat=` (habituation), plus `persona_prox=` and flags `[bm25, forced]`. Use it to judge **why** a memo scored what it did:
+- `cos` near 0 with high `mass` / `wave` → memo wins by gravity, not by semantic match (treat with suspicion).
+- `[forced]` → memo was force-injected by your `tag_filter` / `persona_context`, not earned.
+- `[bm25]` → BM25 surface-form match contributed to the seed ranking.
+
+**Training delta (Phase O Stage 2):** every recall ends with a `## 訓練差分` trailer showing what your recall *changed* in the gravity field — `wave_reached`, `depth`, `persona_hop`, then top movers by `Δmass` and `Δ|disp|`. You're not just reading memory; you're training it. Two practical implications:
+- A memo you keep recalling accumulates mass (`Δmass +0.003, +0.002, +0.001…`) — deliberate rehearsal works.
+- `cache hit` trailer means **no simulation ran** — useful to distinguish "I touched the field" from "I got a free read".
+
+**Auto-routed reflect (Phase O Stage 3, default on):** when your query phrasing matches a structured persona / task aspect — e.g. "現在 active な commitment は?", "持っている value", "今やってる task", "my intentions" — `recall` runs the matching `reflect` aspect in parallel and appends a `## 関連 reflect サマリ (auto-routed)` section. You don't need to switch tools manually. Pattern-based on the query surface form (not source class), so it never gates physics — it only routes which aspect summary rides along. Pass `auto_route=False` to suppress for one call (debugging, or you want pure free-form output).
+
 ### explore
 
 ```
 explore(query, top_k=5, diversity=0.5, source_filter=None,
-        persona_context=None, tag_filter=None)
+        persona_context=None, tag_filter=None, auto_route=True,
+        mode="serendipity")
 ```
+
+**Dormant surface (Phase O Stage 5)**: pass `mode="dormant"` to bypass the wave entirely and pull random *self-authored* memos (`agent` / `value` / `intention` / `commitment` / `note` / `reference`) that have been idle ≥ 30 days **and** mass ≤ 2 — the "low-mass, the field never claimed it" cohort. `query` is ignored in this mode (pass any placeholder). Use it when you suspect you've forgotten something the field alone won't surface. `training_delta` / `routing_hint` are `None` in this mode (no wave ran, no aspect intent to detect).
 
 Higher-temperature search; pulls in cross-domain neighbors a normal recall would miss. `diversity`: `0.0` (near-normal) → `0.5` (default) → `1.0` (maximum).
 

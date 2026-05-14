@@ -35,6 +35,7 @@ from gaottt.core.types import (
     DirectedEdge,
     NodeState,
     QueryResultItem,
+    ScoreBreakdown,
 )
 from gaottt.embedding.ruri import RuriEmbedder
 from gaottt.graph.cooccurrence import CooccurrenceGraph
@@ -584,6 +585,7 @@ class GaOTTTEngine:
         source_filter: list[str] | None = None,
         persona_context: list[str] | None = None,
         tag_filter: list[str] | None = None,
+        out_training_delta: dict | None = None,
     ) -> list[QueryResultItem]:
         """Run a recall query.
 
@@ -614,12 +616,18 @@ class GaOTTTEngine:
         if use_cache:
             cached = self.prefetch_cache.get(text, k)
             if cached is not None:
+                if out_training_delta is not None:
+                    # Phase O Stage 2 — cache hit means no simulation ran.
+                    # Signal that explicitly so the caller can distinguish
+                    # "TTT update was suppressed" from "no nodes were touched".
+                    out_training_delta["cache_hit"] = True
                 return cached
         results = await self._query_internal(
             text=text, top_k=k, wave_depth=wave_depth, wave_k=wave_k,
             source_filter=source_filter,
             persona_context=persona_context,
             tag_filter=tag_filter,
+            out_training_delta=out_training_delta,
         )
         if use_cache:
             self.prefetch_cache.put(text, k, results)
@@ -635,6 +643,7 @@ class GaOTTTEngine:
         source_filter: list[str] | None = None,
         persona_context: list[str] | None = None,
         tag_filter: list[str] | None = None,
+        out_training_delta: dict | None = None,
     ) -> list[QueryResultItem]:
         k = top_k
         query_vec = self.embedder.encode_query(text)
@@ -709,6 +718,24 @@ class GaOTTTEngine:
         #   formatters.format_recall labels it "virtual_score" in MCP output (2026-05-12).
         pure_raw_cosines: dict[str, float] = {}
 
+        # Phase O Stage 1 — informational: precompute which reached nodes the
+        # BM25 index hit for this query. Used only for the breakdown flag
+        # (bm25_contributed) since BM25's actual additive contribution is
+        # already folded into wave_score via _seed_boost RRF fusion.
+        bm25_hit_ids: set[str] = set()
+        if (
+            self.config.expose_score_breakdown
+            and self.config.hybrid_bm25_enabled
+            and self.bm25_index is not None
+            and self.bm25_index.size > 0
+            and text
+        ):
+            try:
+                bm25_hits = self.bm25_index.search(text, max(len(reached_ids), 50))
+                bm25_hit_ids = {nid for nid, _ in bm25_hits}
+            except Exception:
+                bm25_hit_ids = set()
+
         for node_id in reached_ids:
             state = self.cache.get_node(node_id)
             if state is None:
@@ -761,6 +788,25 @@ class GaOTTTEngine:
             if doc is None:
                 continue
 
+            breakdown: ScoreBreakdown | None = None
+            if self.config.expose_score_breakdown:
+                persona_prox = 0.0
+                if persona_proximities is not None:
+                    persona_prox = float(persona_proximities.get(node_id, 0.0))
+                breakdown = ScoreBreakdown(
+                    raw_cosine=pure_raw_cosines[node_id],
+                    virtual_cosine=gravity_sim,
+                    decay_factor=decay,
+                    wave_score=wave_boost,
+                    mass_boost=mass_boost,
+                    emotion_term=emotion_boost,
+                    certainty_term=certainty_boost,
+                    saturation=saturation,
+                    persona_proximity=persona_prox,
+                    bm25_contributed=node_id in bm25_hit_ids,
+                    forced_inclusion=bool(injected_ids and node_id in injected_ids),
+                )
+
             results.append(
                 QueryResultItem(
                     id=node_id,
@@ -768,6 +814,7 @@ class GaOTTTEngine:
                     metadata=doc.get("metadata"),
                     raw_score=gravity_sim,
                     final_score=final,
+                    score_breakdown=breakdown,
                 )
             )
 
@@ -871,6 +918,24 @@ class GaOTTTEngine:
                 state.return_count *= (1.0 - self.config.habituation_recovery_rate)
                 self.cache.set_node(state, dirty=True)
 
+        # Phase O Stage 2 — snapshot displacement / mass for delta computation.
+        # ``topk_only=True`` (default) limits coverage to top-K returned nodes
+        # for context economy; ``False`` covers every reached node (debug).
+        pre_disp_norms: dict[str, float] = {}
+        pre_masses: dict[str, float] = {}
+        delta_active = (
+            out_training_delta is not None
+            and self.config.training_delta_enabled
+        )
+        if delta_active:
+            topk_only = self.config.training_delta_topk_only
+            delta_target_ids = result_ids if topk_only else all_reached_ids
+            for nid in delta_target_ids:
+                disp = self.cache.get_displacement(nid)
+                pre_disp_norms[nid] = float(np.linalg.norm(disp)) if disp is not None else 0.0
+                state = self.cache.get_node(nid)
+                pre_masses[nid] = float(state.mass) if state is not None else 0.0
+
         # Step 6: Simulation update — ALL reached nodes.
         # Phase I Stage 2: pass the query vector + wave scores so the orbital
         # step can apply the query-attraction term to reached nodes.
@@ -882,6 +947,31 @@ class GaOTTTEngine:
             wave_attribution=wave_attribution,
         )
         self._update_cooccurrence(result_ids)
+
+        if delta_active:
+            disp_changes: dict[str, float] = {}
+            mass_changes: dict[str, float] = {}
+            for nid in delta_target_ids:
+                disp = self.cache.get_displacement(nid)
+                post_d = float(np.linalg.norm(disp)) if disp is not None else 0.0
+                disp_changes[nid] = post_d - pre_disp_norms.get(nid, 0.0)
+                state = self.cache.get_node(nid)
+                post_m = float(state.mass) if state is not None else 0.0
+                mass_changes[nid] = post_m - pre_masses.get(nid, 0.0)
+            persona_hops = 0
+            if persona_proximities:
+                for nid in all_reached_ids:
+                    if persona_proximities.get(nid, 0.0) > 0.0:
+                        persona_hops += 1
+            out_training_delta["displacement_changes"] = disp_changes
+            out_training_delta["mass_changes"] = mass_changes
+            out_training_delta["wave_reached_count"] = len(reached)
+            out_training_delta["wave_max_depth"] = (
+                wave_depth if wave_depth is not None else self.config.wave_max_depth
+            )
+            out_training_delta["persona_hop_reached"] = persona_hops
+            out_training_delta["supernova_triggered"] = False  # recall path
+            out_training_delta["topk_only"] = self.config.training_delta_topk_only
 
         return results
 

@@ -139,11 +139,13 @@ ReDoc: http://localhost:8000/redoc
   "wave_k": null,
   "force_refresh": false,
   "persona_context": null,
-  "tag_filter": null
+  "tag_filter": null,
+  "auto_route": true,
+  "mode": "detail"
 }
 ```
 
-`tag_filter` は `source_filter` を bypass する（呼び出し側の明示的指定が優先）。`output_mode` は MCP 専用（REST は常に構造化 JSON を返すため不要）。
+`tag_filter` は `source_filter` を bypass する（呼び出し側の明示的指定が優先）。`output_mode` は MCP 専用（REST は常に構造化 JSON を返すため不要）。`auto_route` (Phase O Stage 3) は default `true`。`mode` (Phase O Stage 4) は `"detail"` (既定、全文) / `"list"` (`config.list_mode_excerpt_chars` 字に切り詰め、改行を空白に置換 — `top_k=20` の scan + 興味ある id に対する `mode="detail"` の deep dive という 2-step に向く)。
 
 **レスポンス 200**:
 ```json
@@ -157,22 +159,79 @@ ReDoc: http://localhost:8000/redoc
       "final_score": 0.92,
       "source": "agent",
       "tags": ["concept"],
-      "displacement_norm": 0.087
+      "displacement_norm": 0.087,
+      "score_breakdown": {
+        "raw_cosine": 0.142,
+        "virtual_cosine": 0.185,
+        "decay_factor": 1.0,
+        "wave_score": 0.060,
+        "mass_boost": 0.245,
+        "emotion_term": 0.0,
+        "certainty_term": 0.0,
+        "saturation": 0.910,
+        "persona_proximity": 0.0,
+        "bm25_contributed": false,
+        "forced_inclusion": false
+      }
     }
   ],
   "count": 5
 }
 ```
 
+**Phase O Stage 1 — Score breakdown**: 各 item に `score_breakdown` が attach され、`final_score` の additive な内訳が露出する。`final_score ≈ (virtual_cosine · decay_factor + wave_score + mass_boost + emotion_term + certainty_term) × saturation`。`raw_cosine` / `persona_proximity` / `bm25_contributed` / `forced_inclusion` は informational (sum に入らない)。`config.expose_score_breakdown=false` で `score_breakdown=null` 返却 (legacy 互換)。
+
+**Phase O Stage 2 — Training delta**: response root に `training_delta` field が attach される (recall + explore で同じ shape)。caller が起こした state 変化 (backward pass) を JSON で受け取れる:
+
+```json
+{
+  "training_delta": {
+    "displacement_changes": {"abc12345...": 0.0124, "def67890...": -0.0050},
+    "mass_changes": {"abc12345...": 0.0034, "def67890...": 0.0012},
+    "wave_reached_count": 12,
+    "wave_max_depth": 2,
+    "persona_hop_reached": 3,
+    "supernova_triggered": false,
+    "cache_hit": false,
+    "topk_only": true
+  }
+}
+```
+
+`topk_only=true` (default) で delta dicts は top-K 結果の node のみ。`training_delta_topk_only=false` で全 reached node を含める (debug 用)。`cache_hit=true` のとき simulation 走らず、dicts は空 (caller は「ガード hit で update 抑止された」と「触れた node が無かった」を区別できる)。`training_delta_enabled=false` で `training_delta=null` 返却。
+
+**Phase O Stage 3 — Routing hint**: query 形式が構造化された aspect 問い合わせ (例 `"現在 active な commitment"`, `"持っている value"`, `"今やってる task"`) に match したら、対応する `reflect` aspect を並走実行して `routing_hint` に summary を attach する:
+
+```json
+{
+  "routing_hint": {
+    "aspect": "commitments",
+    "pattern_matched": true,
+    "auto_routed": true,
+    "reflect_summary": "Active commitments (3 total, showing top 10):\n  id=abc12345 deadline=2026-05-31 (+17.0d) | ...\n  ..."
+  }
+}
+```
+
+`pattern_matched=false` (自由文 query) → 並走無し、`reflect_summary=null`。`auto_routed=false` (per-call `auto_route=false` or `auto_route_enabled=false`) でも `pattern_matched` だけは true で返り、caller は「router が off だった」と「pattern に一致しなかった」を区別できる。`auto_route` を request body に省略すると default `true`。
+
 ### POST /explore
 
 発散的探索。`diversity` ∈ [0.0, 1.0] で gamma と wave depth/k をブースト。
 
 ```json
-{"query": "connections between themes", "diversity": 0.7, "top_k": 10}
+{"query": "connections between themes", "diversity": 0.7, "top_k": 10, "auto_route": true, "mode": "serendipity"}
 ```
 
-**レスポンス 200**: `items`（recall と同じ shape）+ `diversity`。
+**レスポンス 200**: `items`（recall と同じ shape）+ `diversity` + `training_delta` + `routing_hint` (Phase O Stage 2 / 3 — recall と parity)。
+
+**Dormant mode (Phase O Stage 5):** `mode: "dormant"` で wave を bypass し counter-importance sampling。**自己発信 source class** (`agent` / `value` / `intention` / `commitment` / `note` / `reference`) のうち `last_access` が `dormant_age_threshold_seconds` (既定 30 日) より古く、かつ `mass ≤ dormant_mass_threshold` (既定 2.0) を満たすノードからランダムに `top_k` 件返す。`query` は ignore、`training_delta` / `routing_hint` は常に `null` (simulation 走らず、aspect intent も検出しない)。
+
+```json
+{"query": "_ignored", "top_k": 5, "mode": "dormant"}
+```
+
+レスポンス 200: `items[]` (空も可)、`count`、`diversity` (request value をそのまま返却、informational)、`training_delta=null`、`routing_hint=null`。
 
 ### POST /forget
 

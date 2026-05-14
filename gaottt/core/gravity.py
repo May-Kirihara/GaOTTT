@@ -130,7 +130,14 @@ def compute_acceleration(
 
     Four components:
     1. Neighbor gravity: a = Σ_j [ G * m_j / (r² + ε) * direction(i→j) ]
-    2. Anchor restoring force: a = -k * displacement (Hooke's law)
+    2. Anchor restoring force: a = -k_eff(m) * displacement (Hooke's law)
+       Phase I Stage 4 — Mass-dependent Hooke: k_eff(m) = k * (1 + β * (1 -
+       tanh(m_i / θ))) when β=mass_anchor_extra_strength > 0 and mass_i is
+       supplied. Low-mass nodes feel a stronger restoring force; mature nodes
+       (mass ≫ θ) feel the legacy k. This is the dual move to Stage 3 — light
+       stars are anchored harder while their kick is damped, mature stars get
+       the legacy anchor while their kick is full. β=0 = legacy Stage 1-3
+       behaviour.
     3. Mass-threshold BH gravity (Phase M Stage 1): heavier-than-θ
        neighbors pull harder via ``bh_factor(m_j) = tanh((m_j-θ)/σ)``,
        clamped to 0 below ``θ - 2σ``. Replaces the Phase B co-occurrence
@@ -159,8 +166,20 @@ def compute_acceleration(
         direction = diff / distance
         acc = acc + magnitude * direction
 
-    # 2. Anchor restoring force (Hooke's law)
-    acc = acc - config.orbital_anchor_strength * displacement_i
+    # 2. Anchor restoring force (Hooke's law) — Phase I Stage 4 mass-dependent
+    # amplification when β > 0 and mass_i is known. Pre-Stage-4 callers (no
+    # mass_i, or β=0) get the legacy constant-k Hooke unchanged.
+    anchor_factor = 1.0
+    if (
+        config.mass_anchor_extra_strength > 0.0
+        and mass_i is not None
+        and mass_i > 0.0
+    ):
+        theta = config.mass_anchor_threshold if config.mass_anchor_threshold > 0.0 else 1.0
+        anchor_factor = 1.0 + config.mass_anchor_extra_strength * (
+            1.0 - math.tanh(float(mass_i) / theta)
+        )
+    acc = acc - config.orbital_anchor_strength * anchor_factor * displacement_i
 
     # 3. Mass-threshold BH gravity (Phase M Stage 1).
     # node_id/cache/all_positions are unused now (they powered the old

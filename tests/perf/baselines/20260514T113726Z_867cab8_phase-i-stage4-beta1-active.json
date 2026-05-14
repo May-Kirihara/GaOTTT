@@ -1,0 +1,24 @@
+{
+  "captured_at": "20260514T113726Z",
+  "git_sha": "867cab8",
+  "label": "phase-i-stage4-beta1-active",
+  "corpus_size": 200,
+  "recall_calls": 100,
+  "config_overrides": {
+    "mass_anchor_extra_strength": 1.0
+  },
+  "metrics": {
+    "cold_startup_seconds": 0.022077448666095734,
+    "ingest_seconds": 0.36696588806807995,
+    "ingest_docs_per_sec": 545.0097856585944,
+    "recall_p50_ms": 39.91870582103729,
+    "recall_p95_ms": 58.631363324820995,
+    "recall_p99_ms": 69.0654581412673,
+    "recall_calls": 100,
+    "compact_seconds": 0.026017178781330585,
+    "warm_startup_seconds": 0.016087060794234276,
+    "warm_startup_corpus_size": 200,
+    "faiss_size_after_warm": 200,
+    "bm25_size_after_warm": 200
+  }
+}

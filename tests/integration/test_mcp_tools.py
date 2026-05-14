@@ -67,6 +67,86 @@ async def test_remember_then_forget_then_restore_roundtrip(engine_singleton):
     assert "uv over pip" in recall_out
 
 
+async def test_recall_mcp_output_includes_training_delta_trailer(engine_singleton):
+    """Phase O Stage 2 — MCP recall formatter appends the ## 訓練差分 trailer."""
+    await srv.remember(content="stage-2 trailer probe alpha gamma", source="user")
+    out = await srv.recall(query="trailer probe alpha", top_k=3)
+    assert "## 訓練差分" in out
+    assert "wave_reached=" in out
+    # depth marker shows config / requested wave depth
+    assert "depth=" in out
+    assert "persona_hop=" in out
+
+
+async def test_recall_mcp_output_includes_score_breakdown(engine_singleton):
+    """Phase O Stage 1 — MCP recall formatter exposes per-result breakdown line."""
+    await srv.remember(content="alpha gamma kappa observability", source="user")
+    out = await srv.recall(query="observability alpha", top_k=3)
+    # one-line breakdown is prefixed with "  breakdown: "
+    assert "breakdown:" in out
+    assert "cos=" in out      # raw_cosine
+    assert "vcos=" in out     # virtual_cosine
+    assert "decay=" in out
+    assert "wave=" in out
+    assert "mass=" in out
+    assert "sat=" in out      # saturation
+    assert "persona_prox=" in out
+
+
+async def test_recall_mcp_output_includes_routing_hint_for_aspect_query(engine_singleton):
+    """Phase O Stage 3 — MCP recall formatter appends auto-routed reflect summary."""
+    # Plant a commitment-source memory directly; ``reflect(aspect='commitments')``
+    # surfaces it without needing a parent intention.
+    await srv.remember(
+        content="Phase O Stage 3 MCP trailer probe を完了する",
+        source="commitment",
+    )
+    out = await srv.recall(
+        query="現在 active な commitment は?", top_k=3,
+    )
+    assert "auto-routed" in out
+    # The trailer marker — written as "## 関連 reflect サマリ (auto-routed)"
+    assert "関連 reflect サマリ" in out
+    assert "commitments" in out
+
+
+async def test_recall_mcp_output_no_routing_hint_for_free_form_query(engine_singleton):
+    """Free-form query → no routing trailer (legacy free-form path)."""
+    await srv.remember(content="free-form routing probe", source="user")
+    out = await srv.recall(
+        query="free-form routing probe", top_k=3,
+    )
+    assert "auto-routed" not in out
+
+
+async def test_recall_mcp_list_mode_truncates_content(engine_singleton):
+    """Phase O Stage 4 — MCP recall with ``mode='list'`` returns short excerpts."""
+    long_text = "alpha gamma " + ("y" * 500)
+    await srv.remember(content=long_text, source="user")
+    out = await srv.recall(
+        query="alpha gamma list-mode", top_k=3, mode="list",
+    )
+    # The full 500-char body must not appear — truncated to ~80 chars per item.
+    assert ("y" * 500) not in out
+
+
+async def test_explore_mcp_dormant_mode_surfaces_old_self_authored(engine_singleton):
+    """Phase O Stage 5 — MCP explore with ``mode='dormant'`` returns the prefix marker."""
+    import time
+    out = await srv.remember(
+        content="dormant-mcp-probe note authored long ago", source="agent",
+    )
+    nid = out.split("ID: ")[1].split()[0]
+    state = engine_singleton.cache.get_node(nid)
+    assert state is not None
+    state.last_access = time.time() - 60 * 86400
+    state.mass = 1.0
+    explore_out = await srv.explore(
+        query="_ignored", top_k=5, mode="dormant",
+    )
+    assert "Dormant memories surfaced" in explore_out or "No dormant memories" in explore_out
+
+
 async def test_remember_hypothesis_assigns_default_ttl(engine_singleton):
     out = await srv.remember(
         content="hypothesis: gravity collision could merge similar memories",

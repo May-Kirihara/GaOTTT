@@ -83,6 +83,89 @@ def format_revalidate(result: RevalidateResponse) -> str:
 _COMPACT_LIMIT = 300
 
 
+def _format_breakdown(b) -> str:
+    """Phase O Stage 1 — one-line additive breakdown of final_score.
+
+    Always appended to recall output when score_breakdown is present, so a
+    TTT-aware caller can see why a result scored what it scored.
+    """
+    if b is None:
+        return ""
+    flags = []
+    if b.bm25_contributed:
+        flags.append("bm25")
+    if b.forced_inclusion:
+        flags.append("forced")
+    flag_str = f" [{', '.join(flags)}]" if flags else ""
+    return (
+        f"  breakdown: cos={b.raw_cosine:.3f} vcos={b.virtual_cosine:.3f}·"
+        f"decay={b.decay_factor:.3f} +wave={b.wave_score:.3f} "
+        f"+mass={b.mass_boost:.3f} +emo={b.emotion_term:.3f} "
+        f"+cert={b.certainty_term:.3f} ×sat={b.saturation:.3f} "
+        f"persona_prox={b.persona_proximity:.3f}{flag_str}"
+    )
+
+
+def _format_training_delta(td) -> str:
+    """Phase O Stage 2 — TTT update visibility trailer.
+
+    Reports state changes induced by this recall — backward-pass equivalent of
+    the forward-pass breakdown. Emits a compact ``## 訓練差分`` section so the
+    caller sees what their recall *changed* in the gravity field.
+    """
+    if td is None:
+        return ""
+    if td.cache_hit:
+        # No simulation ran — be explicit so the caller doesn't mis-attribute
+        # zero deltas to "nothing moved" (it's "nothing was tried").
+        return (
+            "\n\n## 訓練差分\n"
+            "(cache hit — no simulation ran; mass / displacement unchanged)"
+        )
+    # Top movers — sort by absolute change, then trim to a small fixed budget.
+    def _top(d: dict[str, float], n: int = 3) -> list[tuple[str, float]]:
+        return sorted(d.items(), key=lambda t: abs(t[1]), reverse=True)[:n]
+
+    lines = ["\n\n## 訓練差分"]
+    mass_top = _top(td.mass_changes)
+    disp_top = _top(td.displacement_changes)
+    coverage = "top-k only" if td.topk_only else "full reached set"
+    lines.append(
+        f"wave_reached={td.wave_reached_count} "
+        f"depth={td.wave_max_depth} "
+        f"persona_hop={td.persona_hop_reached} "
+        f"({coverage})"
+    )
+    if mass_top:
+        parts = [f"{nid[:8]}.. {d:+.4f}" for nid, d in mass_top]
+        lines.append("Δmass top: " + ", ".join(parts))
+    if disp_top:
+        parts = [f"{nid[:8]}.. {d:+.4f}" for nid, d in disp_top]
+        lines.append("Δ|disp| top: " + ", ".join(parts))
+    if not mass_top and not disp_top:
+        lines.append("(no state changes captured)")
+    return "\n".join(lines)
+
+
+def _format_routing_hint(h) -> str:
+    """Phase O Stage 3 — auto-routed reflect summary trailer.
+
+    Emits a ``## 関連 reflect サマリ (auto-routed)`` section when the surface
+    form of the query matched a structured aspect and the reflect summary
+    was attached. Keeps existing recall substrings untouched (CLAUDE.md
+    "MCP formatter の出力文字列を変えない").
+    """
+    if h is None or not h.auto_routed or h.reflect_summary is None:
+        return ""
+    aspect_label = h.aspect or "?"
+    return (
+        f"\n\n## 関連 reflect サマリ (auto-routed)\n"
+        f"_aspect_: `{aspect_label}` "
+        f"(query 形式から自動判定 — 関連した state snapshot を併走実行)\n\n"
+        f"{h.reflect_summary}"
+    )
+
+
 def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
     """Format recall results for MCP output.
 
@@ -92,7 +175,12 @@ def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
       "ids"     — header line only, no content
     """
     if not result.items:
-        return "No memories found."
+        # Even with no memories, surface the auto-routed reflect summary so
+        # the caller still gets the structured answer the surface form asked
+        # for (Phase O Stage 3 — the whole point of routing is to substitute
+        # when free-form recall would have come back empty).
+        routing_trailer = _format_routing_hint(result.routing_hint)
+        return "No memories found." + routing_trailer
     lines = []
     for i, item in enumerate(result.items):
         tag_str = f" [{', '.join(item.tags)}]" if item.tags else ""
@@ -102,28 +190,71 @@ def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
             f"source={item.source}{tag_str}, "
             f"displacement={item.displacement_norm:.4f})"
         )
+        breakdown_line = _format_breakdown(item.score_breakdown)
         if output_mode == "ids":
-            lines.append(header)
+            block = header
+            if breakdown_line:
+                block += f"\n{breakdown_line}"
+            lines.append(block)
         elif output_mode == "compact":
             content = item.content
             if len(content) > _COMPACT_LIMIT:
                 content = content[:_COMPACT_LIMIT] + f"…({len(item.content)} chars)"
-            lines.append(f"{header}\n{content}")
+            block = header
+            if breakdown_line:
+                block += f"\n{breakdown_line}"
+            block += f"\n{content}"
+            lines.append(block)
         else:
-            lines.append(f"{header}\n{item.content}")
-    return "\n\n---\n\n".join(lines)
+            block = header
+            if breakdown_line:
+                block += f"\n{breakdown_line}"
+            block += f"\n{item.content}"
+            lines.append(block)
+    body = "\n\n---\n\n".join(lines)
+    trailer = _format_training_delta(result.training_delta)
+    routing_trailer = _format_routing_hint(result.routing_hint)
+    return body + trailer + routing_trailer
 
 
-def format_explore(result: ExploreResponse) -> str:
+def format_explore(result: ExploreResponse, mode: str = "serendipity") -> str:
+    """Format an explore result. ``mode='dormant'`` swaps the header for a
+    counter-importance framing (Phase O Stage 5) — final_score is meaningless
+    there since the wave was bypassed, so it is omitted from the per-item
+    line."""
+    if mode == "dormant":
+        if not result.items:
+            return (
+                "💭 No dormant memories to surface "
+                "(none match age + mass + source-class conditions)."
+            )
+        lines = [f"💭 Dormant memories surfaced ({len(result.items)}):"]
+        for i, item in enumerate(result.items):
+            tag_str = f" [{', '.join(item.tags)}]" if item.tags else ""
+            lines.append(
+                f"[{i+1}] id={item.id} "
+                f"(source={item.source}{tag_str}, "
+                f"displacement={item.displacement_norm:.4f})\n"
+                f"{item.content[:300]}"
+            )
+        return "\n\n---\n\n".join(lines)
+
     if not result.items:
-        return "No memories found for exploration."
+        return "No memories found for exploration." + _format_routing_hint(
+            result.routing_hint,
+        )
     lines = [f"Exploration (diversity={result.diversity:.1f}):"]
     for i, item in enumerate(result.items):
         lines.append(
             f"[{i+1}] (score={item.final_score:.4f}, source={item.source})\n"
             f"{item.content[:200]}"
         )
-    return "\n\n---\n\n".join(lines)
+    body = "\n\n---\n\n".join(lines)
+    return (
+        body
+        + _format_training_delta(result.training_delta)
+        + _format_routing_hint(result.routing_hint)
+    )
 
 
 # --- Relations ---

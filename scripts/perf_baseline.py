@@ -38,6 +38,16 @@ if str(_PROJECT_ROOT) not in sys.path:
 from tests.perf._helpers import make_engine  # noqa: E402
 
 
+def _make_engine_with_overrides(data_dir: Path, overrides: dict | None):
+    """Wrap ``make_engine`` so CLI ``--config-overrides`` (JSON) can flip
+    individual config fields (e.g. ``mass_anchor_extra_strength``) without
+    touching the user's ~/.config/gaottt/config.json or shifting defaults.
+    """
+    if not overrides:
+        return make_engine(data_dir)
+    return make_engine(data_dir, **overrides)
+
+
 def _percentile(values: list[float], pct: float) -> float:
     if not values:
         return 0.0
@@ -66,8 +76,10 @@ async def _measure(args) -> dict:
         if f.is_file():
             f.unlink()
 
+    overrides = json.loads(args.config_overrides) if args.config_overrides else {}
+
     # --- Cold startup
-    eng_cold = make_engine(data_dir)
+    eng_cold = _make_engine_with_overrides(data_dir, overrides)
     t0 = time.perf_counter()
     await eng_cold.startup()
     metrics["cold_startup_seconds"] = time.perf_counter() - t0
@@ -104,7 +116,7 @@ async def _measure(args) -> dict:
         await eng_cold.shutdown()
 
     # --- Warm startup (corpus_size docs already persisted)
-    eng_warm = make_engine(data_dir)
+    eng_warm = _make_engine_with_overrides(data_dir, overrides)
     t0 = time.perf_counter()
     await eng_warm.startup()
     metrics["warm_startup_seconds"] = time.perf_counter() - t0
@@ -127,6 +139,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--recall-calls", type=int, default=100)
     parser.add_argument("--label", default="", help="Short label appended to filename for context")
     parser.add_argument("--out-dir", default=str(_PROJECT_ROOT / "tests" / "perf" / "baselines"))
+    parser.add_argument(
+        "--config-overrides",
+        default="",
+        help=(
+            'JSON dict of GaOTTTConfig field overrides, e.g. '
+            '\'{"mass_anchor_extra_strength": 1.0}\'. Applied to both the '
+            "cold-startup engine and the warm-startup engine so the metric "
+            "comparison is fair."
+        ),
+    )
     args = parser.parse_args(argv)
 
     metrics = asyncio.run(_measure(args))
@@ -144,6 +166,7 @@ def main(argv: list[str] | None = None) -> None:
         "label": args.label,
         "corpus_size": args.corpus_size,
         "recall_calls": args.recall_calls,
+        "config_overrides": json.loads(args.config_overrides) if args.config_overrides else {},
         "metrics": metrics,
     }
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))

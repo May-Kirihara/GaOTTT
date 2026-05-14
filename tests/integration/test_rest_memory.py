@@ -83,6 +83,152 @@ async def test_recall_returns_items_with_source_and_displacement(rest_client):
     assert "tags" in item
 
 
+async def test_recall_training_delta_in_rest_response(rest_client):
+    """Phase O Stage 2 — REST JSON response carries TrainingDelta."""
+    await rest_client.post(
+        "/remember", json={"content": "phase-o-stage-2 alpha gamma", "source": "user"},
+    )
+    resp = await rest_client.post("/recall", json={"query": "alpha gamma", "top_k": 3})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "training_delta" in data
+    td = data["training_delta"]
+    assert td is not None
+    for field in [
+        "displacement_changes", "mass_changes", "wave_reached_count",
+        "wave_max_depth", "persona_hop_reached", "supernova_triggered",
+        "cache_hit", "topk_only",
+    ]:
+        assert field in td, f"missing training_delta field: {field}"
+    assert td["cache_hit"] is False
+    assert td["supernova_triggered"] is False
+    assert isinstance(td["displacement_changes"], dict)
+    assert isinstance(td["mass_changes"], dict)
+
+
+async def test_recall_score_breakdown_in_rest_response(rest_client):
+    """Phase O Stage 1 — REST JSON response carries ScoreBreakdown."""
+    await rest_client.post(
+        "/remember", json={"content": "alpha gamma kappa", "source": "user"},
+    )
+    resp = await rest_client.post("/recall", json={"query": "alpha gamma", "top_k": 3})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] >= 1
+    item = data["items"][0]
+    assert "score_breakdown" in item
+    b = item["score_breakdown"]
+    assert b is not None
+    # All breakdown fields present and serialized as plain JSON values
+    for field in [
+        "raw_cosine", "virtual_cosine", "decay_factor", "wave_score",
+        "mass_boost", "emotion_term", "certainty_term", "saturation",
+        "persona_proximity", "bm25_contributed", "forced_inclusion",
+    ]:
+        assert field in b, f"missing breakdown field: {field}"
+    # expected_sum is a @property — pydantic doesn't serialize properties
+    # by default, so we verify the additive structure ourselves
+    expected = (
+        b["virtual_cosine"] * b["decay_factor"]
+        + b["wave_score"] + b["mass_boost"]
+        + b["emotion_term"] + b["certainty_term"]
+    ) * b["saturation"]
+    final = item["final_score"]
+    assert abs(expected - final) <= max(1e-6, abs(final) * 1e-4)
+
+
+async def test_recall_routing_hint_in_rest_response(rest_client):
+    """Phase O Stage 3 — REST JSON response carries RoutingHint when auto-routed."""
+    await rest_client.post(
+        "/remember",
+        json={
+            "content": "Phase O Stage 3 を完了する",
+            "source": "commitment",
+        },
+    )
+    resp = await rest_client.post(
+        "/recall",
+        json={"query": "現在 active な commitment は?", "top_k": 3},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "routing_hint" in data
+    h = data["routing_hint"]
+    assert h is not None
+    for field in ("aspect", "pattern_matched", "auto_routed", "reflect_summary"):
+        assert field in h, f"missing routing_hint field: {field}"
+    assert h["pattern_matched"] is True
+    assert h["aspect"] == "commitments"
+    assert h["auto_routed"] is True
+    assert h["reflect_summary"] is not None
+    assert "Phase O Stage 3" in h["reflect_summary"]
+
+
+async def test_recall_list_mode_truncates_content(rest_client):
+    """Phase O Stage 4 — REST ``/recall`` honours ``mode='list'``."""
+    long = "alpha gamma " + ("x" * 500)
+    await rest_client.post("/remember", json={"content": long, "source": "user"})
+    resp = await rest_client.post(
+        "/recall", json={"query": "alpha gamma", "top_k": 5, "mode": "list"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] >= 1
+    for item in data["items"]:
+        assert len(item["content"]) <= 80
+        assert "\n" not in item["content"]
+
+
+async def test_explore_dormant_mode_via_rest(rest_client):
+    """Phase O Stage 5 — REST ``/explore`` honours ``mode='dormant'``."""
+    import time
+    remember = await rest_client.post(
+        "/remember", json={"content": "dormant agent memo", "source": "agent"},
+    )
+    nid = remember.json()["id"]
+    # Backdate via the live engine fixture
+    engine = app_engine_from_request_state(rest_client)
+    state = engine.cache.get_node(nid)
+    state.last_access = time.time() - 60 * 86400
+    state.mass = 1.0
+    resp = await rest_client.post(
+        "/explore",
+        json={"query": "_ignored", "top_k": 5, "mode": "dormant"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert any(item["id"] == nid for item in data["items"])
+    # dormant skips wave → no training_delta / routing_hint
+    assert data.get("training_delta") is None
+    assert data.get("routing_hint") is None
+
+
+def app_engine_from_request_state(client):
+    """Reach into the ASGI app's stored engine — fixture leaves it on app.state.engine."""
+    from gaottt.server.app import app
+    return app.state.engine
+
+
+async def test_recall_auto_route_false_no_summary(rest_client):
+    """auto_route=False on the request suppresses the reflect run."""
+    await rest_client.post(
+        "/remember", json={"content": "no-route check", "source": "commitment"},
+    )
+    resp = await rest_client.post(
+        "/recall",
+        json={
+            "query": "現在 active な commitment",
+            "top_k": 3,
+            "auto_route": False,
+        },
+    )
+    data = resp.json()
+    h = data.get("routing_hint")
+    if h is not None:
+        assert h["auto_routed"] is False
+        assert h["reflect_summary"] is None
+
+
 async def test_recall_source_filter_narrows_results(rest_client):
     await rest_client.post(
         "/remember", json={"content": "agent note alpha", "source": "agent"},

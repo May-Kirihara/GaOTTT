@@ -222,3 +222,21 @@ input/projects
 gaottt_3d.html
 ger_rag_3d.html
 opencode.json
+
+# Perf / dynamics diagnostics (project-local, transient — keep baselines/ JSON only)
+.perf-baseline-tmp/
+.perf-acceptance/
+.diag-tmp/
+.diag-dynamics-a/
+.diag-dynamics-b/
+.diag-acceptance-*.json
+.diag-dynamics-report.json
+.diag-before.json
+.diag-after.json
+
+# Production-DB acceptance snapshot (~950 MB, recreate via scripts/diag_production_acceptance.py)
+.acceptance-snapshot/
+.acceptance-report-*.json
+.acceptance-qualitative-report.md
+.acceptance-live-feel.md
+acceptance-work-*/

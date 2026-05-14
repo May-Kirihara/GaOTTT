@@ -142,6 +142,7 @@ async def query_documents(request: QueryRequest):
         engine, query=request.text, top_k=request.top_k,
         wave_depth=request.wave_depth, wave_k=request.wave_k,
         force_refresh=True,  # legacy /query never consulted cache
+        auto_route=False,    # legacy path stays free-form only
     )
     legacy_items = [
         QueryResultItem(
@@ -188,6 +189,8 @@ async def recall_memory(request: RecallRequest):
         force_refresh=request.force_refresh,
         persona_context=request.persona_context,
         tag_filter=request.tag_filter,
+        auto_route=request.auto_route,
+        mode=request.mode,
     )
 
 
@@ -203,6 +206,8 @@ async def explore_memory(request: ExploreRequest):
         top_k=request.top_k,
         persona_context=request.persona_context,
         tag_filter=request.tag_filter,
+        auto_route=request.auto_route,
+        mode=request.mode,
     )
 
 

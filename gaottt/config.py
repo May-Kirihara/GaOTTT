@@ -164,6 +164,29 @@ class GaOTTTConfig:
     # Set θ=0.0 for clean rollback to Stage 2 behaviour (gate forced to 1.0).
     mass_anchor_threshold: float = 3.0
 
+    # Phase I Stage 4 — Mass-dependent Hooke (symmetric form of Stage 3).
+    # Stage 3 gated the query-attraction kick by mass so brand-new nodes are
+    # protected from one-shot drift. Stage 4 is the dual move: the Hooke
+    # restoring force itself is amplified for low-mass nodes — the anchor is
+    # stronger when the node hasn't yet earned a gravity well of its own.
+    #   k_eff(m) = k · (1 + β · (1 - tanh(m / θ)))
+    #     mass=1, θ=3, β=1   → 1 + 0.68  → 1.68× anchor   (newborn)
+    #     mass=3, θ=3, β=1   → 1 + 0.24  → 1.24× anchor   (gate point)
+    #     mass=10, θ=3, β=1  → 1 + 0.003 → ~1.00×        (mature)
+    #     mass=50, θ=3, β=1  → 1 + 1e-15 → 1.00×        (BH)
+    # β shares θ with Stage 3 so the two halves keep a single notion of
+    # "newborn" — light nodes get strong anchor *and* damped kick; mature
+    # nodes get base anchor *and* full kick. The asymmetric pair was the
+    # learning of Phase I Stage 3 (protection short-fall = same homogenization
+    # symptom as over-driving); Stage 4 closes the symmetry.
+    #
+    # Default β=0.0 — opt-in. Unlike Stage 3 (which fixed a directly observed
+    # single-attractor pathology), Stage 4 is a prophylactic refinement.
+    # Activate after 1-2 weeks of running with Stage 3 alone to confirm the
+    # added anchor doesn't over-restrict mature drift. Set β=0.0 for a
+    # bit-for-bit rollback to Stage 1-3 behaviour.
+    mass_anchor_extra_strength: float = 0.0
+
     # Phase J Stage 1 — Persona-anchored retrieval (graph traversal seed boost).
     # Boosts seed-pool ranking for nodes within N hops of an actively-declared
     # value / intention / commitment, via fulfills / derived_from edges.
@@ -279,6 +302,58 @@ class GaOTTTConfig:
     saturation_rate: float = 0.2            # How fast nodes saturate (higher = faster)
     habituation_recovery_rate: float = 0.01 # Recovery from saturation per step
     thermal_escape_scale: float = 5000.0    # Temperature-based BH escape scaling
+
+    # Phase O Stage 1 — Score breakdown observability.
+    # When True, each QueryResultItem carries an additive/multiplicative
+    # decomposition of final_score (raw_cosine, virtual_cosine, decay,
+    # wave_score, mass_boost, emotion/certainty, saturation, plus informational
+    # persona_proximity / bm25_contributed / forced_inclusion). default ON —
+    # TTT-aware caller can read why a result scored what it scored without
+    # workaround. set False for legacy clients or to shave a few bytes.
+    expose_score_breakdown: bool = True
+
+    # Phase O Stage 2 — Training delta trailer (TTT update visibility).
+    # When True, recall/explore responses carry a ``training_delta`` field
+    # exposing displacement/mass changes induced by this recall + wave reach
+    # counts. ``training_delta_topk_only`` (default True) limits the per-node
+    # delta dicts to the top-K returned nodes for context economy; set False
+    # for full reached-node coverage (debug mode). Cache hits emit a
+    # ``cache_hit=True`` delta with empty dicts (no simulation ran).
+    training_delta_enabled: bool = True
+    training_delta_topk_only: bool = True
+
+    # Phase O Stage 4 — List mode (recall(mode='list')) excerpt size.
+    # When ``mode='list'`` is requested on recall, ``services.memory.recall``
+    # truncates each result's content to this many chars and replaces newlines
+    # with spaces. Default 80 — fits one terminal line, ~20× smaller than a
+    # typical agent memo. caller-side opt-in (default mode is 'detail').
+    list_mode_excerpt_chars: int = 80
+
+    # Phase O Stage 5 — Dormant surface (explore(mode='dormant')).
+    # ``explore(mode='dormant')`` returns random self-authored memos that have
+    # been quietly forgotten — older than ``dormant_age_threshold_seconds``
+    # since last_access, mass ≤ ``dormant_mass_threshold`` (raw cosine alone
+    # cannot pull them back), and source ∈ ``dormant_source_classes``. The
+    # source list is a **structural identifier** for "memories I authored"
+    # (Phase D persona / agent / note classes) — it is a *filter* on caller
+    # intent, not a gate on physics rule, so Phase M's source-branching-zero
+    # principle stays intact (see Plans-Phase-O §Stage 5 "設計判断").
+    dormant_age_threshold_seconds: float = 30 * 86400.0  # 30 days
+    dormant_mass_threshold: float = 2.0                  # mature gate point — below means "the field didn't claim it"
+    dormant_source_classes: tuple[str, ...] = (
+        "agent", "value", "intention", "commitment", "note", "reference",
+    )
+
+    # Phase O Stage 3 — Query routing (recall + reflect auto-merge).
+    # When True, ``recall`` / ``explore`` heuristically classify the query
+    # surface form (e.g. "現在 active な commitment", "持っている value") and run
+    # the corresponding ``reflect`` aspect in parallel, attaching the summary to
+    # ``routing_hint``. caller can ask free-form questions about declared
+    # persona / task state without remembering to switch tools. Pattern-based
+    # (query syntax) — *not* source-based — so it stays compatible with Phase M
+    # "source 分岐ゼロの単一規則". Disable to suppress for all calls; per-call
+    # opt-out via ``auto_route=False`` on the recall request.
+    auto_route_enabled: bool = True
 
     # Similarity history
     sim_buffer_size: int = 20  # Ring buffer size

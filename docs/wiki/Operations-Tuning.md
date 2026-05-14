@@ -35,17 +35,20 @@
 | orbital_max_velocity | 0.05 | 速度の上限ノルム |
 | orbital_anchor_strength | 0.02 | アンカー復元力（Hooke's k） |
 
-## Query 引力（Phase I — Stage 2 + Stage 3）
+## Query 引力（Phase I — Stage 2 + Stage 3 + Stage 4）
 
-`compute_acceleration` の 4 番目の項。recall 時に retrieved nodes へ query 方向の小さな引力を加える。`F = α · score · gate · (q - pos)`, `a = F / m_i` で **mass damping** が自動で効く (BH 化 node はほぼ動かない)。**Stage 3** では `gate = tanh(m_i / θ)` で新規 (低 mass) ノードが anchor (Hooke) に守られる — 単一アトラクタ pathology の防止策。**transient force** — Hooke が raw embedding を anchor として引き続き保持するので anchor migration ではない。詳細: [Plans — Phase I](Plans-Phase-I-Free-Star-Movement.md) §Stage 2-3。
+`compute_acceleration` の 2 番目と 4 番目の項。recall 時に retrieved nodes へ query 方向の小さな引力 (kick、4 項目) を加える一方、anchor (raw embedding) への復元力 (Hooke、2 項目) を低 mass で増幅する (Stage 4)。`F_kick = α · score · gate · (q - pos)`, `a_kick = F_kick / m_i` で **mass damping** が自動で効く (BH 化 node はほぼ動かない)。**Stage 3** では `gate = tanh(m_i / θ)` で新規 (低 mass) ノードが anchor に守られる — 単一アトラクタ pathology の防止策。**Stage 4** はその対称形 — Hooke の effective k を `k · (1 + β · (1 - tanh(m / θ)))` に拡張し、軽い星を anchor 側からも守る。**transient force** — Hooke が raw embedding を anchor として引き続き保持するので anchor migration ではない。詳細: [Plans — Phase I](Plans-Phase-I-Free-Star-Movement.md) §Stage 2-4。
 
 | パラメータ | 既定 | 影響 | 上げると | 下げると |
 |---|---|---|---|---|
 | query_kick_strength | 0.01 | 結合定数 α (G に類似) | recall ごとの drift ↑（短期で query 方向に集まる） | drift が緩慢、長期累積でしか効かない。`0` で完全 no-op (roll-back) |
 | query_kick_enabled | `True` | グローバル off スイッチ | n/a | `False` で 4 項目を完全 skip (config 即時 off) |
-| mass_anchor_threshold (θ) | 3.0 | Stage 3 gate の特徴点 (`tanh(1)≈0.76` が ここ) | 攻撃的 (`θ=1` → 新規 m=1 で gate=0.76、ほぼ満額)。新規ノードの drift 即時化 | 保守的 (`θ=10` → 新規 m=1 で gate=0.10、ほぼ動かない)。`0` で Stage 2 へ rollback (gate=1.0 強制) |
+| mass_anchor_threshold (θ) | 3.0 | Stage 3/4 の gate 特徴点 (`tanh(1)≈0.76` が ここ)。kick と Hooke で共有 | 攻撃的 (`θ=1` → 新規 m=1 で gate=0.76、ほぼ満額)。新規ノードの drift 即時化 | 保守的 (`θ=10` → 新規 m=1 で gate=0.10、ほぼ動かない)。`0` で Stage 2 へ rollback (gate=1.0 強制、Stage 4 も `θ_eff=1.0` の安全 fallback) |
+| **mass_anchor_extra_strength (β)** | **`0.0`** | **Stage 4 — 低 mass 系の Hooke 増幅倍率** | `1.0` で m=1 ノード anchor 1.7×、`2.0` で 2.4×。低 mass 系の displacement 均衡点が下がる、軽い星の drift が更に抑制される | `0.0` で完全 no-op (Stage 1-3 へ rollback、bit-for-bit) |
 
-> **チューニング助言**: per-step acceleration は `orbital_max_velocity=0.05` で cap されるので、`α / m × score × gate × \|q-pos\|` が ~0.05 を超えると効きが頭打ち。質量 1 の新規 node + score=1 + |q-pos|=1.4 (unit-norm 直交) + θ=3 で gate=0.32 → α=0.11 が cap 境界 (Stage 2 単体の 0.035 から余裕拡大)。`α=0.01` (既定) は安全側、`mass_anchor_threshold=3.0` で **新規ノードは ~32%、mature ノード (mass≥10) はほぼ満額** という世代論的挙動。pathology が再発したら θ を上げる、新規ノードの surface が遅すぎたら θ を下げる。
+> **チューニング助言 (Stage 3 kick)**: per-step acceleration は `orbital_max_velocity=0.05` で cap されるので、`α / m × score × gate × \|q-pos\|` が ~0.05 を超えると効きが頭打ち。質量 1 の新規 node + score=1 + |q-pos|=1.4 (unit-norm 直交) + θ=3 で gate=0.32 → α=0.11 が cap 境界 (Stage 2 単体の 0.035 から余裕拡大)。`α=0.01` (既定) は安全側、`mass_anchor_threshold=3.0` で **新規ノードは ~32%、mature ノード (mass≥10) はほぼ満額** という世代論的挙動。pathology が再発したら θ を上げる、新規ノードの surface が遅すぎたら θ を下げる。
+>
+> **チューニング助言 (Stage 4 Hooke β)**: 既定 `β=0` は opt-in 安全側 — `mass_anchor_threshold` を 1-2 週間運用した上で本番 `tests/perf/test_tier4_*.py` で displacement 分布を見て活性化を判断。低 mass 系 (`mass≤2`) の `|d|` p99 が anchor 側からまだ過剰に見えるなら β=1 を試す (anchor 1.7× 増、mature 系は影響ほぼ無し)。**θ は Stage 3 と共有** なので、両者を別々に持つ場合は Stage 5 候補 (`source-aware θ` と並列でロードマップ)。`β` を変えた後の検証は `scripts/perf_baseline.py --label "stage4-β1"` で before/after baseline 取って `perf_diff.py` で 25% gate を超えないか確認するのが運用 pattern。
 
 ## 馴化・温度脱出
 
@@ -55,6 +58,31 @@
 | habituation_recovery_rate | 0.01 | 馴化からの回復速度 | 早く新鮮さ回復 | 長く飽和持続 |
 | thermal_escape_scale | 5000 | （Phase M で deprecated）共起 BH の温度脱出効果。`compute_acceleration` から呼び出し削除済、`scripts/visualize_3d.py` 互換のため定義は残存 |
 | bh_mass_scale | 0.5 | （Phase M で deprecated）共起 BH 質量スケーリング。同上 |
+
+## TTT Observability (Phase O Stage 1)
+
+`recall` / `explore` のレスポンス各 item に additive な `score_breakdown` を付与する。`expected_sum = (virtual_cosine · decay_factor + wave_score + mass_boost + emotion_term + certainty_term) × saturation` で `final_score` を literal に再現できる。詳細: [Plans — Phase O](Plans-Phase-O-TTT-Observability.md)、[MCP-Reference-Memory.md](MCP-Reference-Memory.md)、[REST-API-Reference.md](REST-API-Reference.md)。
+
+| パラメータ | 既定 | 影響 |
+|---|---|---|
+| expose_score_breakdown | `True` | each QueryResultItem に `ScoreBreakdown` を attach。`False` で `None` を返す (legacy 互換、context 数 byte 節約) |
+| training_delta_enabled | `True` | recall/explore response に `TrainingDelta` (state 変化 trailer) を attach。`False` で `None` を返す (legacy 互換) |
+| training_delta_topk_only | `True` | delta dicts (`displacement_changes` / `mass_changes`) を top-K 結果の node のみに限定 (context 経済)。`False` で全 reached node を含める (debug / observability mode) |
+| auto_route_enabled | `True` | recall/explore の query 形式が構造化 aspect に match したら `reflect` を並走実行して `routing_hint.reflect_summary` に attach。`False` で完全 off (legacy 自由文 recall のみ) |
+| list_mode_excerpt_chars | `80` | Phase O Stage 4 — `recall(mode='list')` で各結果の `content` を切り詰める文字数 (改行は空白に置換)。下げれば context 節約、上げれば 1 件あたりの情報量増。20 で 1 行 ~12 件相当、80 で 1 行 ~3 件相当 (typical agent memo 240 字 ≈ 3 行) |
+| dormant_age_threshold_seconds | `30 × 86400` (30 日) | Phase O Stage 5 — `explore(mode='dormant')` で「忘れた」と見なす `last_access` cutoff。短くすると最近のものまで surface、長くすると本当に枯れた node のみ |
+| dormant_mass_threshold | `2.0` | Stage 5 mass 上限 — mature gate point (`gate=tanh(m/3) ≈ 0.58 で 1.0 飽和の 58%`) と整合。これを超えた node は「raw cosine 弱者として埋もれてる」状態ではないので dormant 対象外 |
+| dormant_source_classes | `("agent", "value", "intention", "commitment", "note", "reference")` | Stage 5 — surface 対象の **structural identifier 列挙**。Phase D 系 (value/intention/commitment) + agent/note/reference。tweet / file / hypothesis は除外 (これらは自己発信ではない) |
+
+> **チューニング助言 (Stage 1)**: 既定 `True` のまま運用推奨。breakdown は scoring loop と同じパスで構築されるので overhead は無視可能 (BM25 hit set 算出に 1 query × O(n) 程度)、context payload も 1 item あたり ~140 byte 増のみ。LLM caller (Claude / agent) が `breakdown.raw_cosine` を見て「semantic 弱いのに mass で勝った結果」を自律的に弾けるようになるので、Sonnet 本番 acceptance で観察された "score deception" 系の罠を機構レベルで防げる。`False` にする状況は (a) extreme low-context client (b) breakdown 表示で混乱する non-TTT-aware caller 向け fallback (c) emergency rollback の 3 ケースのみ。
+
+> **チューニング助言 (Stage 2)**: 既定 `True` + `topk_only=True` のまま運用推奨。delta capture は `_update_simulation` の前後で `displacement_norm` + `mass` を snapshot するだけなので overhead は O(top_k) で無視可能、payload も top_k=5 で ~250 byte 増程度。`topk_only=False` は **デバッグ専用** — `wave_initial_k × max_depth^depth` の reached node 全件 (大規模 DB で数百件) が delta dict に乗るので context を消費する。「mass が累積していく感覚」を LLM caller が掴めるのは Hebbian deliberate rehearsal の literal な前提条件、`cache_hit=True` の trailer は「自分が field を訓練できる時 / できない時」の境界を明示する効果。`training_delta_enabled=False` は emergency rollback 用、`expose_score_breakdown` と同じ判断基準。
+
+> **チューニング助言 (Stage 3)**: 既定 `True` のまま運用推奨。classifier 自体は O(patterns) 個の compiled regex を 1 query に走らせるだけ (現在 ~15 pattern、< 10 µs)、pattern が match した場合のみ並走で `reflect` aspect 1 件を走らせる。`reflect` aspect は最大で `cache.get_all_nodes()` を一巡 + `store.get_document()` を最大 limit=10 回叩く程度なので 1k node 規模で数 ms、22k node 規模でも 100ms 以下。`False` にする状況は (a) classifier の誤 routing が頻発する environment (現状の Japanese + English pattern では未観測) (b) 並走で別 path を走らせたくない low-latency 用途 (c) reflect summary が context 圧迫する extreme tight loop。per-call の `auto_route=False` で test / 一時診断にも対応。**Phase M の「source 分岐ゼロの単一規則」を侵さない**: pattern は caller の query 形式 (surface form) を classify するだけで、physics rule (mass update / Hooke / kick) は一切触らない — query intent layer の routing。
+
+> **チューニング助言 (Stage 4)**: `list_mode_excerpt_chars=80` で 1 行に収まる切り詰めが既定。`recall(mode='list', top_k=20)` の典型 payload は ~1.8 KB (header + breakdown + 80字 excerpt × 20)、`mode='detail'` の同 top_k=20 は agent memo 平均 240字 × 20 = ~5 KB 越。Context-tight な caller 程効く。**下げる**: 20 まで下げると tabular scan に近付くが、source-class を見ない caller には情報量不足。**上げる**: 120-200 で「だいたい何の話か分かる」レベルになるが、200 を超えると `output_mode="compact"` (300字 trunc) との差が薄れる。**意思決定の経路**: list-mode で id 列見て興味あれば `recall(query=..., top_k=1, mode="detail")` で深掘り、という 2-step pattern が **caller の認知負荷を減らす** Phase O Stage 4 の本来意図。MCP `output_mode` (formatter 側 truncate) との差: Stage 4 の `mode='list'` は **service 層** で truncate するので REST にも同じ payload が乗る (wire 上の context 経済)、`output_mode` は MCP 文字列のみ。
+
+> **チューニング助言 (Stage 5)**: dormant は **物理機構ではない operation** — counter-importance sampling で「重力場 (mass + raw cosine) が surface しなくなった自己発信 memo」を意図的に蘇生する別経路。`dormant_age_threshold_seconds` を **短くしすぎる** と recent な低 mass node まで surface してしまい dormant の意味が希薄に (`reflect(aspect="dormant")` と差が薄れる)、**長すぎる** と本当に枯れた node が出ない (3 ヶ月以上未参照は実用上稀)。30 日が「session 内で意識から落ちる時間スケール」と整合。`dormant_mass_threshold=2.0` は **mass-gated kick `gate=tanh(m/3.0)`** の 58% 飽和点 — これを超える node は既に gravity 場で十分動く資格があるので「埋もれてる」と見なさない。`dormant_source_classes` への追加は慎重に — Phase D 人格層 + agent/note/reference は **「私が能動的に書いた memo」** という structural class で、これに `file` (受動 ingest) を混ぜると counter-importance が「忘れた自己発信」から「忘れた素材」に意味がぼやける。**設計判断: source 列挙は physics 違反ではない** — Phase M の単一規則は physics rule (mass update / Hooke / kick) に対する制約、Stage 5 の列挙は query intent (どの class を surface するか) に対する filter — physics は一切触らない。詳細: [Plans — Phase O §Stage 5 設計判断](Plans-Phase-O-TTT-Observability.md)。
 
 ## Mass Conservation + mass-based BH (Phase M Stage 1)
 
