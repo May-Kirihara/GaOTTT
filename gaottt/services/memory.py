@@ -6,6 +6,7 @@ via ``gaottt.services.formatters``; the REST server returns them as JSON.
 """
 from __future__ import annotations
 
+import random
 import time
 from typing import Any
 
@@ -101,13 +102,23 @@ async def remember(
     )
 
 
-def _to_memory_item(engine: GaOTTTEngine, r) -> MemoryItem:
+def _to_memory_item(
+    engine: GaOTTTEngine, r, *, excerpt_chars: int | None = None,
+) -> MemoryItem:
     meta = r.metadata or {}
     source = meta.get("source", "unknown")
     tags = meta.get("tags") or []
+    content = r.content
+    # Phase O Stage 4 — list mode truncation. Applied here so the truncation
+    # lives on the wire (both REST + MCP get the shorter payload), not just at
+    # MCP-formatter time. Newlines collapsed to spaces so the result fits on
+    # one terminal line.
+    if excerpt_chars is not None and content:
+        flat = content.replace("\n", " ").replace("\r", " ")
+        content = flat[:excerpt_chars]
     return MemoryItem(
         id=r.id,
-        content=r.content,
+        content=content,
         metadata=r.metadata,
         raw_score=r.raw_score,
         final_score=r.final_score,
@@ -183,6 +194,7 @@ async def recall(
     persona_context: list[str] | None = None,
     tag_filter: list[str] | None = None,
     auto_route: bool = True,
+    mode: str = "detail",
 ) -> RecallResponse:
     # Phase H Stage 2: source_filter is applied at the wave seed step inside
     # propagate_gravity_wave (engine.query → _query_internal). The post-filter
@@ -219,13 +231,71 @@ async def recall(
             if meta.get("source") in sf or r.id in injected_set:
                 filtered.append(r)
         raw = filtered[:top_k]
-    items = [_to_memory_item(engine, r) for r in raw]
+    excerpt_chars = (
+        engine.config.list_mode_excerpt_chars if mode == "list" else None
+    )
+    items = [
+        _to_memory_item(engine, r, excerpt_chars=excerpt_chars) for r in raw
+    ]
     routing_hint = await _build_routing_hint(engine, query, auto_route)
     return RecallResponse(
         items=items, count=len(items),
         training_delta=_delta_from_dict(delta_out),
         routing_hint=routing_hint,
     )
+
+
+async def _dormant_surface(
+    engine: GaOTTTEngine, top_k: int, diversity: float,
+) -> ExploreResponse:
+    """Phase O Stage 5 — random self-authored memo that the field has not
+    pulled back in a long time.
+
+    Bypasses the wave / FAISS entirely. The dormant condition is purely
+    structural: age (last_access), mass (still below the mature gate), and
+    source-class membership (the *kind* of memo I authored). No physics rule
+    branches on the result — this is a different *operation* (counter-importance
+    sampling), not a physics modifier.
+    """
+    cfg = engine.config
+    cutoff = time.time() - cfg.dormant_age_threshold_seconds
+    sources = set(cfg.dormant_source_classes)
+    candidates: list[tuple[Any, dict[str, Any]]] = []
+    for state in engine.cache.get_all_nodes():
+        if state.is_archived:
+            continue
+        if state.last_access > cutoff:
+            continue
+        if state.mass > cfg.dormant_mass_threshold:
+            continue
+        doc = await engine.store.get_document(state.id)
+        if doc is None:
+            continue
+        meta = doc.get("metadata") or {}
+        if meta.get("source", "") not in sources:
+            continue
+        candidates.append((state, doc))
+    if not candidates:
+        return ExploreResponse(items=[], count=0, diversity=diversity)
+    # Random sample without replacement — the whole point is to surface a
+    # *different* dormant memo each call (the field's saturation is
+    # broken by counter-importance picking).
+    picks = random.sample(candidates, k=min(top_k, len(candidates)))
+    items: list[MemoryItem] = []
+    for state, doc in picks:
+        meta = doc.get("metadata") or {}
+        items.append(MemoryItem(
+            id=state.id,
+            content=doc.get("content", ""),
+            metadata=meta,
+            raw_score=0.0,
+            final_score=0.0,
+            source=meta.get("source", "unknown"),
+            tags=list(meta.get("tags") or []),
+            displacement_norm=engine.get_displacement_norm(state.id),
+            score_breakdown=None,
+        ))
+    return ExploreResponse(items=items, count=len(items), diversity=diversity)
 
 
 async def explore(
@@ -236,7 +306,14 @@ async def explore(
     persona_context: list[str] | None = None,
     tag_filter: list[str] | None = None,
     auto_route: bool = True,
+    mode: str = "serendipity",
 ) -> ExploreResponse:
+    if mode == "dormant":
+        # Phase O Stage 5 — counter-importance sampling. Skips wave / routing
+        # / training_delta entirely: this is a different operation, not a
+        # query (no semantic intent to detect, no gradient step to record).
+        return await _dormant_surface(engine, top_k=top_k, diversity=diversity)
+
     config = engine.config
     original_gamma = config.gamma
     config.gamma = config.gamma * (1.0 + diversity * 20.0)

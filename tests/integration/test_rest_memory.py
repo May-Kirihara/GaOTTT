@@ -164,6 +164,51 @@ async def test_recall_routing_hint_in_rest_response(rest_client):
     assert "Phase O Stage 3" in h["reflect_summary"]
 
 
+async def test_recall_list_mode_truncates_content(rest_client):
+    """Phase O Stage 4 — REST ``/recall`` honours ``mode='list'``."""
+    long = "alpha gamma " + ("x" * 500)
+    await rest_client.post("/remember", json={"content": long, "source": "user"})
+    resp = await rest_client.post(
+        "/recall", json={"query": "alpha gamma", "top_k": 5, "mode": "list"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] >= 1
+    for item in data["items"]:
+        assert len(item["content"]) <= 80
+        assert "\n" not in item["content"]
+
+
+async def test_explore_dormant_mode_via_rest(rest_client):
+    """Phase O Stage 5 — REST ``/explore`` honours ``mode='dormant'``."""
+    import time
+    remember = await rest_client.post(
+        "/remember", json={"content": "dormant agent memo", "source": "agent"},
+    )
+    nid = remember.json()["id"]
+    # Backdate via the live engine fixture
+    engine = app_engine_from_request_state(rest_client)
+    state = engine.cache.get_node(nid)
+    state.last_access = time.time() - 60 * 86400
+    state.mass = 1.0
+    resp = await rest_client.post(
+        "/explore",
+        json={"query": "_ignored", "top_k": 5, "mode": "dormant"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert any(item["id"] == nid for item in data["items"])
+    # dormant skips wave → no training_delta / routing_hint
+    assert data.get("training_delta") is None
+    assert data.get("routing_hint") is None
+
+
+def app_engine_from_request_state(client):
+    """Reach into the ASGI app's stored engine — fixture leaves it on app.state.engine."""
+    from gaottt.server.app import app
+    return app.state.engine
+
+
 async def test_recall_auto_route_false_no_summary(rest_client):
     """auto_route=False on the request suppresses the reflect run."""
     await rest_client.post(

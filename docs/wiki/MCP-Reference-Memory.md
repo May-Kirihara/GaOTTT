@@ -35,6 +35,7 @@ recall(
   tag_filter: list[str] | None = None,   # Phase J Stage 2: タグ substring (OR 一致) の node を seed pool に強制注入。source_filter を bypass
   output_mode: str = "full",             # MCP 専用トークン節約。"full"=全文, "compact"=300字切詰, "ids"=ID+スコアのみ
   auto_route: bool = True,               # Phase O Stage 3: 構造化質問なら reflect 並走 + summary 添付
+  mode: str = "detail",                  # Phase O Stage 4: "list" で content を 80 字に切り詰め (REST にも効く)
 )
 → 各結果に id=<uuid> が含まれる
 ```
@@ -115,6 +116,8 @@ Active commitments (3 total, showing top 10):
 
 REST (`POST /recall` / `POST /explore`) では `routing_hint` フィールドにそのまま JSON で返る。
 
+**List mode (Phase O Stage 4):** `mode="list"` で各結果の `content` を `config.list_mode_excerpt_chars` (既定 80) 字に切り詰め、改行を空白に置換。`top_k=20, mode="list"` で 1 リクエスト ≈ 20 行のスキャン用インデックスを取得 → 興味ある id に対して `recall(query=..., top_k=1, mode="detail")` で深掘り、という 2-step pattern を支える。**MCP / REST 両方で同じ truncate が wire 上に乗る** (MCP 専用の `output_mode` とは独立、`output_mode` は文字列表示の控除、`mode="list"` は service 層の payload 控除)。
+
 ## explore
 
 温度を上げた創発的探索。離れた記憶も引き寄せる。
@@ -127,12 +130,23 @@ explore(
   persona_context: list[str] | None = None,  # recall と同じ注入引数
   tag_filter: list[str] | None = None,
   auto_route: bool = True,                    # Phase O Stage 3: recall と parity
+  mode: str = "serendipity",                  # Phase O Stage 5: "dormant" で counter-importance sampling
 )
 ```
 
 - `diversity=0.0` 通常検索に近い
 - `diversity=0.5` 適度な探索（既定）
 - `diversity=1.0` 最大多様性
+
+**Dormant mode (Phase O Stage 5):** `mode="dormant"` で wave / FAISS を完全に bypass し、**自己発信 source class** (`agent` / `value` / `intention` / `commitment` / `note` / `reference`) のうち以下 3 条件を満たす node からランダムに `top_k` 件を返す:
+
+| 条件 | しきい値 (config) |
+|---|---|
+| `last_access` が cutoff より古い | `dormant_age_threshold_seconds` (既定 30 日) |
+| `mass ≤ θ` (mature gate 未満) | `dormant_mass_threshold` (既定 2.0) |
+| `metadata.source ∈` allowlist | `dormant_source_classes` (上記 6 種) |
+
+`query` は **ignore** (任意の placeholder で OK)。`training_delta` / `routing_hint` は `None` (wave 走らず、aspect 意図も無し)。出力は `## 関連 reflect サマリ` / `## 訓練差分` 無しの dormant 専用 formatter で「💭 Dormant memories surfaced (N):」 prefix から始まる。**設計判断**: `source` 列挙は Phase M 「source 分岐ゼロの単一規則」を侵さない — physics rule (mass update / Hooke / kick) は branching せず、ここでは「自己発信 class」という structural identifier に対する filter (query intent) として使う。
 
 ## reflect
 

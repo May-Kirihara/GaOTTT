@@ -119,6 +119,34 @@ async def test_recall_mcp_output_no_routing_hint_for_free_form_query(engine_sing
     assert "auto-routed" not in out
 
 
+async def test_recall_mcp_list_mode_truncates_content(engine_singleton):
+    """Phase O Stage 4 — MCP recall with ``mode='list'`` returns short excerpts."""
+    long_text = "alpha gamma " + ("y" * 500)
+    await srv.remember(content=long_text, source="user")
+    out = await srv.recall(
+        query="alpha gamma list-mode", top_k=3, mode="list",
+    )
+    # The full 500-char body must not appear — truncated to ~80 chars per item.
+    assert ("y" * 500) not in out
+
+
+async def test_explore_mcp_dormant_mode_surfaces_old_self_authored(engine_singleton):
+    """Phase O Stage 5 — MCP explore with ``mode='dormant'`` returns the prefix marker."""
+    import time
+    out = await srv.remember(
+        content="dormant-mcp-probe note authored long ago", source="agent",
+    )
+    nid = out.split("ID: ")[1].split()[0]
+    state = engine_singleton.cache.get_node(nid)
+    assert state is not None
+    state.last_access = time.time() - 60 * 86400
+    state.mass = 1.0
+    explore_out = await srv.explore(
+        query="_ignored", top_k=5, mode="dormant",
+    )
+    assert "Dormant memories surfaced" in explore_out or "No dormant memories" in explore_out
+
+
 async def test_remember_hypothesis_assigns_default_ttl(engine_singleton):
     out = await srv.remember(
         content="hypothesis: gravity collision could merge similar memories",

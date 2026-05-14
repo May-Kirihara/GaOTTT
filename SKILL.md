@@ -69,7 +69,7 @@ remember(content="Finally fixed the FAISS leak", emotion=0.8, certainty=0.9)
 ```
 recall(query, top_k=5, source_filter=None, wave_depth=None, wave_k=None,
        force_refresh=False, persona_context=None, tag_filter=None,
-       output_mode="full", auto_route=True)
+       output_mode="full", auto_route=True, mode="detail")
 ```
 
 - `output_mode` — `"compact"` (content truncated at 300 chars; **prefer this for triage**), `"ids"` (header only — id, scores, tags), `"full"` (complete content, default).
@@ -78,6 +78,7 @@ recall(query, top_k=5, source_filter=None, wave_depth=None, wave_k=None,
 - `tag_filter` — list of tag substrings; force-injects matching nodes into both seed and final top-K, bypassing `source_filter`. Use when query and target memo live in different vocabularies.
 - `force_refresh=True` — bypass the prefetch cache (rare; cache is auto-invalidated on destructive ops).
 - `auto_route=False` — disable Phase O Stage 3 auto-routing for this call (otherwise queries phrased as structured aspect questions auto-attach a matching `reflect` summary; see "Auto-routed reflect" below).
+- `mode="list"` — Phase O Stage 4 service-level content economy: truncates each result's content to 80 chars (newline-stripped). Pair with `top_k=20` for a scannable index; follow up with `recall(text=..., top_k=1, mode="detail")` on the id you care about for the full payload. Affects REST too — the truncation lives on the wire.
 
 ```
 recall(query="design decisions", top_k=5, output_mode="compact")
@@ -101,8 +102,11 @@ recall(query="any past notes on X", top_k=10, output_mode="ids")     # existence
 
 ```
 explore(query, top_k=5, diversity=0.5, source_filter=None,
-        persona_context=None, tag_filter=None, auto_route=True)
+        persona_context=None, tag_filter=None, auto_route=True,
+        mode="serendipity")
 ```
+
+**Dormant surface (Phase O Stage 5)**: pass `mode="dormant"` to bypass the wave entirely and pull random *self-authored* memos (`agent` / `value` / `intention` / `commitment` / `note` / `reference`) that have been idle ≥ 30 days **and** mass ≤ 2 — the "low-mass, the field never claimed it" cohort. `query` is ignored in this mode (pass any placeholder). Use it when you suspect you've forgotten something the field alone won't surface. `training_delta` / `routing_hint` are `None` in this mode (no wave ran, no aspect intent to detect).
 
 Higher-temperature search; pulls in cross-domain neighbors a normal recall would miss. `diversity`: `0.0` (near-normal) → `0.5` (default) → `1.0` (maximum).
 

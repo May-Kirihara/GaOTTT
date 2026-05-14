@@ -184,6 +184,11 @@ class RecallRequest(BaseModel):
     # to ``RecallResponse.routing_hint``. Default True (engine-side off via
     # config.auto_route_enabled). Pass False to suppress for a single call.
     auto_route: bool = True
+    # Phase O Stage 4 — content economy mode.
+    #   "detail" (default) — full content (legacy).
+    #   "list"            — content truncated to config.list_mode_excerpt_chars
+    #                       and newline-stripped, fits one line per result.
+    mode: str = "detail"
 
 
 class ExploreRequest(BaseModel):
@@ -196,6 +201,14 @@ class ExploreRequest(BaseModel):
     # Phase O Stage 3: parity with recall — auto-route to reflect when surface
     # form matches a structured aspect.
     auto_route: bool = True
+    # Phase O Stage 5 — exploration intent mode.
+    #   "serendipity" (default) — diversity-amplified semantic explore (legacy).
+    #   "dormant"               — random self-authored memo older than
+    #                             dormant_age_threshold_seconds AND mass ≤
+    #                             dormant_mass_threshold AND source ∈
+    #                             dormant_source_classes. Bypasses the wave
+    #                             entirely; intentionally counter-importance.
+    mode: str = "serendipity"
 
 
 class ForgetRequest(BaseModel):

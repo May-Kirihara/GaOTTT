@@ -140,11 +140,12 @@ ReDoc: http://localhost:8000/redoc
   "force_refresh": false,
   "persona_context": null,
   "tag_filter": null,
-  "auto_route": true
+  "auto_route": true,
+  "mode": "detail"
 }
 ```
 
-`tag_filter` は `source_filter` を bypass する（呼び出し側の明示的指定が優先）。`output_mode` は MCP 専用（REST は常に構造化 JSON を返すため不要）。`auto_route` (Phase O Stage 3) は default `true`。
+`tag_filter` は `source_filter` を bypass する（呼び出し側の明示的指定が優先）。`output_mode` は MCP 専用（REST は常に構造化 JSON を返すため不要）。`auto_route` (Phase O Stage 3) は default `true`。`mode` (Phase O Stage 4) は `"detail"` (既定、全文) / `"list"` (`config.list_mode_excerpt_chars` 字に切り詰め、改行を空白に置換 — `top_k=20` の scan + 興味ある id に対する `mode="detail"` の deep dive という 2-step に向く)。
 
 **レスポンス 200**:
 ```json
@@ -219,10 +220,18 @@ ReDoc: http://localhost:8000/redoc
 発散的探索。`diversity` ∈ [0.0, 1.0] で gamma と wave depth/k をブースト。
 
 ```json
-{"query": "connections between themes", "diversity": 0.7, "top_k": 10, "auto_route": true}
+{"query": "connections between themes", "diversity": 0.7, "top_k": 10, "auto_route": true, "mode": "serendipity"}
 ```
 
 **レスポンス 200**: `items`（recall と同じ shape）+ `diversity` + `training_delta` + `routing_hint` (Phase O Stage 2 / 3 — recall と parity)。
+
+**Dormant mode (Phase O Stage 5):** `mode: "dormant"` で wave を bypass し counter-importance sampling。**自己発信 source class** (`agent` / `value` / `intention` / `commitment` / `note` / `reference`) のうち `last_access` が `dormant_age_threshold_seconds` (既定 30 日) より古く、かつ `mass ≤ dormant_mass_threshold` (既定 2.0) を満たすノードからランダムに `top_k` 件返す。`query` は ignore、`training_delta` / `routing_hint` は常に `null` (simulation 走らず、aspect intent も検出しない)。
+
+```json
+{"query": "_ignored", "top_k": 5, "mode": "dormant"}
+```
+
+レスポンス 200: `items[]` (空も可)、`count`、`diversity` (request value をそのまま返却、informational)、`training_delta=null`、`routing_hint=null`。
 
 ### POST /forget
 

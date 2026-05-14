@@ -322,6 +322,28 @@ class GaOTTTConfig:
     training_delta_enabled: bool = True
     training_delta_topk_only: bool = True
 
+    # Phase O Stage 4 — List mode (recall(mode='list')) excerpt size.
+    # When ``mode='list'`` is requested on recall, ``services.memory.recall``
+    # truncates each result's content to this many chars and replaces newlines
+    # with spaces. Default 80 — fits one terminal line, ~20× smaller than a
+    # typical agent memo. caller-side opt-in (default mode is 'detail').
+    list_mode_excerpt_chars: int = 80
+
+    # Phase O Stage 5 — Dormant surface (explore(mode='dormant')).
+    # ``explore(mode='dormant')`` returns random self-authored memos that have
+    # been quietly forgotten — older than ``dormant_age_threshold_seconds``
+    # since last_access, mass ≤ ``dormant_mass_threshold`` (raw cosine alone
+    # cannot pull them back), and source ∈ ``dormant_source_classes``. The
+    # source list is a **structural identifier** for "memories I authored"
+    # (Phase D persona / agent / note classes) — it is a *filter* on caller
+    # intent, not a gate on physics rule, so Phase M's source-branching-zero
+    # principle stays intact (see Plans-Phase-O §Stage 5 "設計判断").
+    dormant_age_threshold_seconds: float = 30 * 86400.0  # 30 days
+    dormant_mass_threshold: float = 2.0                  # mature gate point — below means "the field didn't claim it"
+    dormant_source_classes: tuple[str, ...] = (
+        "agent", "value", "intention", "commitment", "note", "reference",
+    )
+
     # Phase O Stage 3 — Query routing (recall + reflect auto-merge).
     # When True, ``recall`` / ``explore`` heuristically classify the query
     # surface form (e.g. "現在 active な commitment", "持っている value") and run

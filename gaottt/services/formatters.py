@@ -217,7 +217,28 @@ def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
     return body + trailer + routing_trailer
 
 
-def format_explore(result: ExploreResponse) -> str:
+def format_explore(result: ExploreResponse, mode: str = "serendipity") -> str:
+    """Format an explore result. ``mode='dormant'`` swaps the header for a
+    counter-importance framing (Phase O Stage 5) — final_score is meaningless
+    there since the wave was bypassed, so it is omitted from the per-item
+    line."""
+    if mode == "dormant":
+        if not result.items:
+            return (
+                "💭 No dormant memories to surface "
+                "(none match age + mass + source-class conditions)."
+            )
+        lines = [f"💭 Dormant memories surfaced ({len(result.items)}):"]
+        for i, item in enumerate(result.items):
+            tag_str = f" [{', '.join(item.tags)}]" if item.tags else ""
+            lines.append(
+                f"[{i+1}] id={item.id} "
+                f"(source={item.source}{tag_str}, "
+                f"displacement={item.displacement_norm:.4f})\n"
+                f"{item.content[:300]}"
+            )
+        return "\n\n---\n\n".join(lines)
+
     if not result.items:
         return "No memories found for exploration." + _format_routing_hint(
             result.routing_hint,

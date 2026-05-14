@@ -216,6 +216,7 @@ async def recall(
     tag_filter: list[str] | None = None,
     output_mode: str = "full",
     auto_route: bool = True,
+    mode: str = "detail",
 ) -> str:
     """Search long-term memory with gravitational wave propagation.
 
@@ -265,13 +266,20 @@ async def recall(
                     summary is appended to the response so you do not have to
                     switch to ``reflect`` manually. Pass False to suppress for
                     this call (debugging, or you want pure free-form recall).
+        mode: Phase O Stage 4 — content economy.
+              "detail" (default) — full content per result.
+              "list" — content truncated to 80 chars (newline-stripped) so 20
+              results fit in the budget one full result would consume. Pair
+              with ``top_k=20, output_mode="full"`` for a scannable index;
+              follow up with a targeted ``recall(...)`` on the id you care
+              about for the full payload.
     """
     engine = await get_engine()
     result = await memory_service.recall(
         engine, query=query, top_k=top_k, source_filter=source_filter,
         wave_depth=wave_depth, wave_k=wave_k, force_refresh=force_refresh,
         persona_context=persona_context, tag_filter=tag_filter,
-        auto_route=auto_route,
+        auto_route=auto_route, mode=mode,
     )
     return formatters.format_recall(result, output_mode=output_mode)
 
@@ -284,6 +292,7 @@ async def explore(
     persona_context: list[str] | None = None,
     tag_filter: list[str] | None = None,
     auto_route: bool = True,
+    mode: str = "serendipity",
 ) -> str:
     """Explore memories serendipitously with increased randomness.
 
@@ -304,14 +313,23 @@ async def explore(
         auto_route: Phase O Stage 3 — auto-attach a matching ``reflect``
                     summary when the query phrasing maps to a structured
                     aspect. Same semantics as ``recall.auto_route``.
+        mode: Phase O Stage 5 — exploration intent.
+              "serendipity" (default) — diversity-amplified semantic explore.
+              "dormant" — counter-importance sampling: returns random
+              self-authored memos (agent/value/intention/commitment/note/
+              reference) that are ≥ 30 days idle AND mass ≤ 2. The wave is
+              bypassed entirely; ``query`` is ignored. Use this when you
+              suspect you have forgotten things worth pulling back; the field
+              alone will not surface them (low mass + raw cosine alone never
+              wins against a dense cluster).
     """
     engine = await get_engine()
     result = await memory_service.explore(
         engine, query=query, diversity=diversity, top_k=top_k,
         persona_context=persona_context, tag_filter=tag_filter,
-        auto_route=auto_route,
+        auto_route=auto_route, mode=mode,
     )
-    return formatters.format_explore(result)
+    return formatters.format_explore(result, mode=mode)
 
 
 @mcp.tool()

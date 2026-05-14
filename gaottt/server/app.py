@@ -190,6 +190,7 @@ async def recall_memory(request: RecallRequest):
         persona_context=request.persona_context,
         tag_filter=request.tag_filter,
         auto_route=request.auto_route,
+        mode=request.mode,
     )
 
 
@@ -206,6 +207,7 @@ async def explore_memory(request: ExploreRequest):
         persona_context=request.persona_context,
         tag_filter=request.tag_filter,
         auto_route=request.auto_route,
+        mode=request.mode,
     )
 
 
