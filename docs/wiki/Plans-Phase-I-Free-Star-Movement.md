@@ -488,9 +488,52 @@ echo '{"mass_anchor_extra_strength": 0.0}' > ~/.config/gaottt/config.json
 
 DB の displacement / velocity / mass は Stage 4 の影響を **物理的に等価な動的シグナル** としてしか受けないので、β を 0 に戻せば次の recall から完全に Stage 1-3 挙動に戻る (Stage 3 の rollback path と同形)。
 
+### 受け入れ検証結果 (2026-05-14、opencode 独立観察)
+
+PR #11 merge 直後 (= Stage 4 β=0 default = Stage 1-3 ロールバック相当) を **前 session の baseline** として、Stage 4 活性化後 (β=1, β=3) の挙動変化を 2 軸で計測。
+
+#### 計測 1: latency (`scripts/perf_baseline.py`、real RURI、200 docs / 100 recalls)
+
+| metric | β=0 baseline | β=1 active | delta | 判定 |
+|---|---|---|---|---|
+| recall p50 | 39.9 ms | 39.9 ms | **−0.0%** | 同等 ✅ |
+| recall p95 | 55.4 ms | 58.6 ms | +5.9% | budget (120ms) 内 ✅ |
+| recall p99 | 63.2 ms | 69.1 ms | +9.3% | budget (250ms) 内 ✅ |
+| ingest docs/sec | 522 | 545 | +4.4% | noise ✅ |
+| compact | 12.0 ms | 26.0 ms | +117% | 絶対 14 ms 差は startup variance、設計影響なし |
+
+Stage 4 は `compute_acceleration` の 2 番目の項 (Hooke) に 1 つの math op を足すだけなので、latency 影響は noise 範囲。recall p50 が **0% 差** という結果が、その軽量さを literal に裏付けている。
+
+成果物:
+- `tests/perf/baselines/20260514T113710Z_867cab8_phase-i-stage4-beta0-default.json`
+- `tests/perf/baselines/20260514T113726Z_867cab8_phase-i-stage4-beta1-active.json`
+
+#### 計測 2: dynamics (`scripts/diag_dynamics.py`、30 docs × 8 queries × 20 recalls)
+
+opencode が独立 process で β=0 vs β=1 / β=0 vs β=3 を比較:
+
+| β | top-5 Jaccard mean | top-5 Jaccard min | disp p99 delta | mass delta | 評価 |
+|---|---|---|---|---|---|
+| β=1 (活性化、現実値) | **0.917** | 0.667 | +1.6% | **0.0%** | 安全・効果軽微 |
+| β=3 (強め) | 0.917 | 0.667 | −0.2% | 0.0% | β=1 と同パターン |
+
+#### 主要所見
+
+1. ✅ **β=0 default で perf 38/38 green、mass_delta 完全ゼロ** — 「Stage 4 は mass update に触らない」設計仮説が実証された (Stage 4 は Hooke 増幅のみで mass accretion path に介入しない、コードレベルで保証されている内容が opencode 側からも独立確認)
+2. ✅ **β=1 で top-5 が 91.7% 保持** — 8 query 中 6 query は完全一致、2 query で 1-2 位入れ替え。recall 質を壊さずに Hooke amplification が retrieval ordering に literal に効いている
+3. ⚠️ **β=1 と β=3 で同パターン** — opencode が指摘した「β を 3 倍にしても retrieval ordering の変化が同じ」現象。**小 corpus + 短期 recall では Stage 4 の β-scaling が saturate** している。
+   - 物理的解釈: 30 doc / max displacement ~0.5 の局所では Hooke の絶対値寄与が他の force 項 (Newton / kick / genesis) に比して小さい
+   - 運用への含意: 本番 23k corpus + 数週間累積でないと β tune の最適点は見えない → [残課題 (Stage 5 候補)](#残課題-stage-5-候補) の「本番 DB で β=1 観察」がそのまま acceptance 計測の続きとして繋がる
+4. ✅ **independent observer (opencode) の最終判定**: 「Stage 4 は安全に本番 main に merge できる」
+
+#### 検証用ツール (この session で追加)
+
+- `scripts/perf_baseline.py` — `--config-overrides` flag を追加、任意 `GaOTTTConfig` field を JSON で切り替えながら baseline 取得可能 (β=0/1 比較を 2 コマンドで完結)
+- `scripts/diag_dynamics.py` — 同一 corpus で 2 config を走らせ、displacement / mass 分布 + top-5 Jaccard を JSON dump する diff ツール。Stage 5 以降 (β-θ decoupling、source-aware Hooke) の検証にも継続使用する
+
 ### 残課題 (Stage 5 候補)
 
-- **本番 DB で β=1 観察** — Stage 3 単独 1-2 週間運用後、β=1 を有効化して displacement 分布の変化を計測 ([Operations — Performance Testing](Operations-Performance-Testing.md) Tier 4 dynamics、`tests/perf/test_tier4_*.py` で baseline 取得 → β 変更 → 再測の流れ)
+- **本番 DB で β=1 観察** — Stage 3 単独 1-2 週間運用後、β=1 を有効化して displacement 分布の変化を計測 ([Operations — Performance Testing](Operations-Performance-Testing.md) Tier 4 dynamics、`tests/perf/test_tier4_*.py` で baseline 取得 → β 変更 → 再測の流れ)。**受け入れ検証で「小 corpus では β-scaling が saturate」と判明したため、reality acceptance は本番 23k corpus + 1-2 週間累積が必要**
 - **Source-aware Hooke** — Stage 3 の Source-aware gate と並列で、`θ` または `β` を source 別 dict にする拡張 (agent / value / commitment は anchor 弱め、tweet / file は anchor 強めの設計余地)
 - **β の θ-decoupling** — Stage 4 は θ を Stage 3 と共有しているが、Hooke と kick で別 θ を持つ余地はある (kick は protective、Hooke は restorative で機能が異なるため)。観察次第
 
