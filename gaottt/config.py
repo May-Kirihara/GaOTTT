@@ -355,6 +355,31 @@ class GaOTTTConfig:
     # opt-out via ``auto_route=False`` on the recall request.
     auto_route_enabled: bool = True
 
+    # Phase N candidate β — Mass Evaporation (Hawking radiation 類比、出力側).
+    # Single rule: ``mass -= ε · max(mass - floor, 0)^β · (t_idle / τ_idle)^γ``
+    # applied when ``mass > floor AND t_idle > τ_grace``. Source-branching-zero
+    # (Phase M 単一規則と整合): same formula for every node, only structural
+    # identifiers (mass, last_access) matter. Floor-protected (新規ノードは
+    # 永久不変)、grace-protected (recent recall は即時 decay されない).
+    #
+    # D2=C hybrid evaluation:
+    #   - lazy: applied inside ``_update_simulation`` at touch time (no extra I/O).
+    #   - startup sweep: ``engine.startup`` walks all active nodes once when
+    #     enabled — settles "cold-start mass debt" from any offline period.
+    #
+    # Default OFF — Stage 1 merges with no observable behaviour change. Enable
+    # via opt-in PR (Stage 1.5) after Phase M Stage 2 (θ confirmation) lands.
+    # Stage 2 will add ``training_delta.evaporation_changes`` visibility +
+    # optional eager cron via ``mass_evaporation_eager_cron_seconds``.
+    mass_evaporation_enabled: bool = False
+    mass_evaporation_floor: float = 1.0                          # M_floor — initial mass、below this no decay
+    mass_evaporation_grace_seconds: float = 7 * 86400.0          # τ_grace (7d) — recall 直後の即時 decay 抑止
+    mass_evaporation_idle_normalize_seconds: float = 30 * 86400.0  # τ_idle (30d) — t_idle/τ_idle 比の正規化
+    mass_evaporation_rate: float = 0.01                          # ε — fraction-of-excess^β eroded per τ_idle period
+    mass_evaporation_mass_exponent: float = 1.5                  # β — mass-amplification (heavier loses more)
+    mass_evaporation_time_exponent: float = 1.0                  # γ — time-amplification (linear default)
+    mass_evaporation_eager_cron_seconds: float = 0.0             # Stage 2: >0 → spawn background cron sweep loop
+
     # Similarity history
     sim_buffer_size: int = 20  # Ring buffer size
 

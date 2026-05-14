@@ -23,6 +23,53 @@ from gaottt.config import GaOTTTConfig
 logger = logging.getLogger(__name__)
 
 
+def evaporate_mass(
+    mass: float,
+    last_access: float,
+    now: float,
+    config: GaOTTTConfig,
+) -> float:
+    """Phase N candidate β — Mass Evaporation (Hawking radiation 類比).
+
+    Single rule (no source branching, source-class-zero — mirrors Phase M):
+
+        Δmass = ε · max(mass - floor, 0)^β · (t_idle / τ_idle)^γ
+        new_mass = max(floor, mass - Δmass)
+
+    Guards:
+        - ``config.mass_evaporation_enabled=False`` → no-op (Stage 1 default)
+        - ``mass <= floor`` → no-op (新規ノード保護)
+        - ``now - last_access <= τ_grace`` → no-op (recall 直後の即時 decay 抑止)
+
+    Idempotency: the function reads ``last_access`` but does *not* mutate it.
+    Callers update ``last_access`` after touching the node (existing code path).
+    A startup sweep that re-applies this to the same node with the same
+    ``last_access`` produces the same result — safe to call multiple times.
+    """
+    if not config.mass_evaporation_enabled:
+        return mass
+    floor = config.mass_evaporation_floor
+    if mass <= floor:
+        return mass
+    t_idle = now - last_access
+    if t_idle <= config.mass_evaporation_grace_seconds:
+        return mass
+    excess = mass - floor
+    tau_idle = config.mass_evaporation_idle_normalize_seconds
+    if tau_idle <= 0.0:
+        return mass  # mis-configured normalization — fail safe, no decay
+    idle_ratio = t_idle / tau_idle
+    decay = (
+        config.mass_evaporation_rate
+        * (excess ** config.mass_evaporation_mass_exponent)
+        * (idle_ratio ** config.mass_evaporation_time_exponent)
+    )
+    new_mass = mass - decay
+    if new_mass < floor:
+        return floor
+    return new_mass
+
+
 # -----------------------------------------------------------------------
 # Virtual position
 # -----------------------------------------------------------------------

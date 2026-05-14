@@ -15,6 +15,7 @@ from gaottt.core.gravity import (
     SEED_PARENT_ID,
     compute_gravity_kick,
     compute_virtual_position,
+    evaporate_mass,
     is_self_force_by_id,
     propagate_gravity_wave,
     update_orbital_state,
@@ -178,6 +179,34 @@ class GaOTTTEngine:
                 "Startup diagnostics raised — engine remains operational: %s: %s",
                 type(e).__name__, e,
             )
+
+        # Phase N candidate β Stage 1 — cold-start mass evaporation sweep.
+        # If the engine was offline for longer than τ_grace, no recall path
+        # has touched these nodes since shutdown, so the lazy hook never
+        # fires for them. Apply ``evaporate_mass`` once to every active
+        # node here so the field starts from a fully-settled state. Idempotent:
+        # uses ``state.last_access`` as the only time reference, so re-running
+        # this on the same shutdown→startup gap produces the same result.
+        # No-op when ``mass_evaporation_enabled=False`` (per-call guard inside
+        # ``evaporate_mass``), so the loop cost is only paid post-rollout.
+        if self.config.mass_evaporation_enabled:
+            now_sweep = time.time()
+            swept = 0
+            for state in self.cache.get_all_nodes():
+                if state.is_archived:
+                    continue
+                new_mass = evaporate_mass(
+                    state.mass, state.last_access, now_sweep, self.config,
+                )
+                if new_mass != state.mass:
+                    state.mass = new_mass
+                    self.cache.set_node(state, dirty=True)
+                    swept += 1
+            if swept:
+                logger.info(
+                    "Phase N β cold-start sweep: %d nodes settled mass debt",
+                    swept,
+                )
 
     async def shutdown(self) -> None:
         await self.prefetch_pool.drain(timeout=5.0)
@@ -1025,6 +1054,15 @@ class GaOTTTEngine:
                     mass_force = force
             else:
                 mass_force = force
+
+            # Phase N candidate β Stage 1 — lazy mass evaporation.
+            # Apply the t_idle-accumulated decay *before* this recall's
+            # Hebbian growth, so a heavily-touched-then-idle node first
+            # repays its evaporation debt and then receives new mass on
+            # top. No-op when disabled / below floor / inside grace window.
+            state.mass = evaporate_mass(
+                state.mass, state.last_access, now, self.config,
+            )
 
             # Mass update scaled by external (non-self) force only.
             state.mass += self.config.eta * mass_force * (1.0 - state.mass / self.config.m_max)

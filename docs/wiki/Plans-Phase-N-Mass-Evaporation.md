@@ -89,17 +89,31 @@ state.mass -= epsilon * state.mass ** 3.5 * t_idle_normalized
 
 ## 4. 実装スコープ (D1-D6 案、めいさん決済)
 
-### D1. Decay law の確定
+### D1. Decay law の確定 ✅ (B) Mass-amplified time-decay (2026-05-15 確定)
 
-候補 (A) Pure Ebbinghaus / (B) Mass-amplified (提案) / (C) Stellar 型 のいずれを採用するか。**現提案は (B)**、3 パラメータで挙動が広く取れるため。Stage 1 で (B) を `β=1.5, γ=1.0` で起動し、観測で調整。
+```
+mass -= ε · max(mass - M_floor, 0)^β · (t_idle / τ_idle)^γ
+  if mass > M_floor and t_idle > τ_grace
+```
 
-### D2. Evaluation 戦略 — eager vs lazy
+3 パラメータ (ε, β, γ) + 1 floor で挙動を細かく調整できる。Stage 1 起動時の暫定値は `ε=0.01, β=1.5, γ=1.0, τ_idle=30日, τ_grace=7日, M_floor=1.0`。**観測で確定** (Phase M Stage 2 と同様)。
 
-**(a) eager (cron / background loop)**: 1 時間に 1 回など、全ノードに対し evaluation。書き込み多くなる。
-**(b) lazy (on-access)**: recall / query で touch されるたびに「最後の evaluation 以降の dt」を補正。書き込み最小、コスト分散。
-**(c) hybrid**: lazy を default に + 起動時に full sweep 1 回 (cold-start mass debt の一括清算)。
+却下した候補:
+- (A) Pure Ebbinghaus (`mass *= (1 - ε·dt)`): mass-aware 性なし、hub と塵に同じ rate がかかるので hub dominance を直接矯正できない
+- (C) Stellar 型 (`mass -= ε·mass^3.5·dt`): β=3.5 固定で、低 mass まで一気に蒸発させすぎる (新規ノード保護が崩れる)
 
-**提案: (c) hybrid**。lazy は `engine._update_simulation` 内で 1 行追加するだけ、cold-start は `gaottt/diagnostics/` から `migrate.py N005` として 1 回限り。
+### D2. Evaluation 戦略 ✅ (c) Hybrid (2026-05-15 確定)
+
+**lazy** を default、**起動時 full sweep** を併用。
+
+- **lazy 経路**: `engine._update_simulation` 内、Hebbian mass 更新 (line 1030) の直前で `evaporate_mass(state.mass, state.last_access, now, config)` を呼ぶ。recall / query で touch されるたびに「前回 access 以降の蒸発量」を補正。書き込みは既存の `state.last_access = now` と同じ tick で乗るので追加 I/O ゼロ。
+- **起動時 sweep**: `engine.startup` 末尾で `mass_evaporation_enabled=True` のとき、全 active node に対し evaporate を 1 回適用。engine が長期停止していた間の "cold-start mass debt" を一括清算。lazy だけだと touch されないノードが永久 stale になるので必要。idempotent (同じ `last_access` を基準にするので 2 回呼んでも同じ結果)。
+
+却下した候補:
+- (a) eager only (cron / background loop): 全 N nodes に毎周期書き込み、I/O 過剰
+- (b) lazy only: 長期 touch されないノードが永遠に stale (= hub dominance 矯正の漏れ)
+
+eager cron は **Stage 2 で optional オプションとして残す** (`mass_evaporation_eager_cron_seconds > 0` で有効化、観測 dashboard 用途)。
 
 ### D3. M_floor、τ_grace、ε、β、γ の初期値
 
