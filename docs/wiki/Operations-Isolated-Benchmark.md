@@ -2,7 +2,7 @@
 
 ベンチマークを **本番 DB を触らずに** 走らせる隔離実行スクリプト。
 
-> **使い分け**: 開発時の日常的な perf 退行検知は [Operations — Performance Testing](Operations-Performance-Testing.md) (`tests/perf/` の Tier 6、StubEmbedder ベース、~7 秒で 38 tests) を先に走らせる。**実 RURI embedder + 本番に近い corpus** で確認したいとき、または latency の絶対値が CLAUDE.md "p50 < 50ms" を満たすか検証したいときに **このページの `scripts/run_benchmark_isolated.sh`** を使う。両者は補完関係。
+> **使い分け**: 仮説→実装→検証ループの **検証** は [Operations — Performance Testing](Operations-Performance-Testing.md) (`tests/perf/` の 7 階層、real RURI、~15 秒で 38 tests) が main path。**実 RURI で本番に近い corpus + REST/uvicorn 経由で latency を測りたいとき** (SC-001〜SC-007 シナリオを含む production-like e2e benchmark) に **このページの `scripts/run_benchmark_isolated.sh`** を使う。tests/perf/ は engine 直叩き unit-level、isolated_benchmark は server stack 込みの integration-level という関係。
 
 ## なぜ隔離するか
 
@@ -58,10 +58,10 @@ SC-005 Concurrency:    50 succeeded, 0 failed
 # 1. 単体 + 統合テスト
 .venv/bin/python -m pytest tests/ -q
 
-# 2. ★ 7 階層 perf テストスイート (StubEmbedder、構造的回帰を素早く検知)
+# 2. ★ 7 階層 perf テストスイート (real RURI、仮説→実装→検証 ループの検証)
 .venv/bin/python -m pytest tests/perf/ -q
 
-# 3. このページの isolated bench (実 RURI、絶対値の確認)
+# 3. このページの isolated bench (REST/uvicorn stack 込みの e2e)
 rm -rf /tmp/gaottt-bench
 .venv/bin/bash scripts/run_benchmark_isolated.sh
 ```

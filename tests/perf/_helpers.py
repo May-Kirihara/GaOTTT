@@ -1,54 +1,46 @@
-"""Shared engine factory + StubEmbedder for Tier 1-7 perf tests.
+"""Shared engine factory for Tier 1-7 perf tests.
 
-Centralises the boilerplate so each tier test stays focused on what it
-verifies. The default config disables every non-deterministic side
-channel (dream loop, supernova, write-behind delays, persona boost) so
-size invariants and round-trip checks are reproducible.
+The perf suite is a **manual verification step in the 仮説 → 実装 → 検証
+loop**, run after implementing a feature to confirm production-grade
+behaviour. It is **not** wired into CI.
+
+For that intent to be honest the suite uses the **real RURI v3 310m
+embedder** so every recorded number (latency, retrieval quality,
+ranking) reflects what a user actually experiences. The model is loaded
+once per pytest session via a module-level singleton and shared across
+all engines.
+
+The first test pays a ~5-10 second model-load cost (less on a warm HF
+cache). All subsequent engines reuse the in-memory model.
 """
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
-
-import numpy as np
 
 from gaottt.config import GaOTTTConfig
 from gaottt.core.engine import GaOTTTEngine
+from gaottt.embedding.ruri import RuriEmbedder
 from gaottt.index.bm25_index import BM25Index
 from gaottt.index.faiss_index import FaissIndex
 from gaottt.store.cache import CacheLayer
 from gaottt.store.sqlite_store import SqliteStore
 
 
-class StubEmbedder:
-    """Deterministic random embeddings keyed on md5 of text.
+_SHARED_EMBEDDER: RuriEmbedder | None = None
 
-    Cosine similarity has no relationship to lexical overlap — useful
-    when a test wants FAISS and BM25 to behave as independent metric
-    tensors (same shape used by ``test_engine_bm25_union.py``).
+
+def get_shared_embedder() -> RuriEmbedder:
+    """Return a process-wide RURI embedder, loaded on first call.
+
+    Loading SentenceTransformer + RURI weights costs several seconds.
+    Sharing it across the 38-test suite turns 38 × that cost into a
+    one-time amortised cost, keeping the manual verification runtime
+    bounded to roughly *single-model-load + per-test work*.
     """
-
-    def __init__(self, dim: int = 768):
-        self.dim = dim
-
-    @property
-    def dimension(self) -> int:
-        return self.dim
-
-    def encode_documents(self, contents):
-        return np.array([self._embed(c) for c in contents], dtype=np.float32)
-
-    def encode_query(self, text):
-        return self._embed(text).reshape(1, -1).astype(np.float32)
-
-    def _embed(self, text: str) -> np.ndarray:
-        seed = int.from_bytes(
-            hashlib.md5(text.encode("utf-8")).digest()[:4], "big"
-        )
-        rng = np.random.default_rng(seed)
-        v = rng.standard_normal(self.dim).astype(np.float32)
-        v /= np.linalg.norm(v) + 1e-9
-        return v
+    global _SHARED_EMBEDDER
+    if _SHARED_EMBEDDER is None:
+        _SHARED_EMBEDDER = RuriEmbedder()
+    return _SHARED_EMBEDDER
 
 
 def make_config(tmp_path, **overrides) -> GaOTTTConfig:
@@ -87,13 +79,14 @@ def make_config(tmp_path, **overrides) -> GaOTTTConfig:
 
 
 def make_engine(tmp_path, **config_overrides) -> GaOTTTEngine:
-    """Construct a GaOTTTEngine wired with stub embedder + tmp_path-isolated stores.
+    """Construct a GaOTTTEngine wired with the shared RURI embedder and
+    tmp_path-isolated stores.
 
     Caller is responsible for ``await eng.startup()`` and
-    ``await eng.shutdown()`` (or use the ``engine`` fixture below).
+    ``await eng.shutdown()``.
     """
     config = make_config(tmp_path, **config_overrides)
-    embedder = StubEmbedder(dim=config.embedding_dim)
+    embedder = get_shared_embedder()
     faiss_index = FaissIndex(dimension=config.embedding_dim)
     virtual_faiss_index = (
         FaissIndex(dimension=config.embedding_dim)

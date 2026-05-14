@@ -1,22 +1,24 @@
-"""Tier 6 performance — latency / throughput baselines.
+"""Tier 6 performance — latency / throughput baselines (real RURI).
 
-Each test prints its measurement (so they're useful even when run
-locally) and asserts a generous upper bound — they catch *structural*
-regressions (O(N²) loops, missing batching, sync flushes per call) but
-not normal hardware variance.
+Each test prints its measurement and asserts an upper bound that
+catches structural regressions while tolerating modest hardware
+variance.
 
-Stage 3 follow-up: ``scripts/perf_baseline.py`` snapshots these numbers
-to ``tests/perf/baselines/`` so CI can compare across versions.
+Used as part of the 仮説 → 実装 → 検証 manual loop: after touching a hot
+path, run this and confirm the numbers haven't drifted past the
+budget. Snapshot historical values with ``scripts/perf_baseline.py``
+for delta inspection.
 
-Budgets (deliberately loose):
-  - recall p50 < 200ms (CLAUDE.md p50 < 50ms is the production
-    target; this is a CI-friendly 4× headroom for stub embedder
-    + small corpus startup overhead)
-  - recall p99 < 500ms
-  - ingest > 50 docs/sec
-  - cold startup < 30s (empty DB, no FAISS to reload)
-  - warm startup < 60s (DB with 200 docs to reload)
-  - compact < 30s (200-doc corpus)
+Budgets (calibrated against real RURI v3 310m on a workstation,
+2026-05-14):
+  - recall p50 < 60ms (CLAUDE.md production target is < 50ms;
+    observed ~35ms; budget gives ~70% headroom)
+  - recall p95 < 120ms (observed ~56ms)
+  - recall p99 < 250ms (observed ~85ms)
+  - ingest > 500 docs/sec (observed ~1200; budget ~40% of observed
+    to absorb batch-size + corpus variation)
+  - engine init (cold/warm, model already in singleton) < 30s
+  - compact (200 docs) < 30s
 """
 from __future__ import annotations
 
@@ -62,9 +64,11 @@ async def test_recall_latency_under_budget(tmp_path):
             f"p50={p50:.1f}ms p95={p95:.1f}ms p99={p99:.1f}ms"
         )
 
-        # Loose CI bounds. Local p50 typically < 20ms.
-        assert p50 < 200.0, f"p50={p50:.1f}ms > 200ms budget"
-        assert p99 < 500.0, f"p99={p99:.1f}ms > 500ms budget"
+        # Real-RURI calibrated bounds. CLAUDE.md target is p50 < 50ms;
+        # budget allows ~70% headroom for hardware variance.
+        assert p50 < 60.0, f"p50={p50:.1f}ms > 60ms budget (CLAUDE.md target <50ms)"
+        assert p95 < 120.0, f"p95={p95:.1f}ms > 120ms budget"
+        assert p99 < 250.0, f"p99={p99:.1f}ms > 250ms budget"
     finally:
         await eng.shutdown()
 
@@ -85,8 +89,9 @@ async def test_ingest_throughput_above_floor(tmp_path):
         assert len(ids) == 500
         throughput = 500 / elapsed
         print(f"\ningest throughput: {throughput:.1f} docs/sec (500 docs in {elapsed:.2f}s)")
-        assert throughput > 50.0, (
-            f"ingest throughput {throughput:.1f} docs/sec < 50 docs/sec floor"
+        # Real-RURI calibrated: observed ~1200 docs/sec, budget at 40% headroom.
+        assert throughput > 500.0, (
+            f"ingest throughput {throughput:.1f} docs/sec < 500 docs/sec floor"
         )
     finally:
         await eng.shutdown()

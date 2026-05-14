@@ -1,21 +1,19 @@
 """Tier 3 retrieval quality — engine.query golden-corpus assertions.
 
-Stage 2 (commitment id=faf61f5f). Three axes from design doc id=55579286.
+Real RURI v3 310m provides genuine semantic ranking, so the contracts
+here are *tight* — they test what a user actually experiences.
 
-Two complementary engine.query paths are tested:
+Three axes from design doc id=55579286:
 
-A. **Plain query** (``top_k`` widened) — verify the BM25-surface match
-   reaches the seed pool. The final ranking is dominated by
-   ``final_score`` (mass + wave + cosine) so we widen ``top_k`` rather
-   than expecting top-3 precision under random-embedder conditions.
+A. **Surface (plain)** — top_k=5 must contain the lexical-match chunk.
+B. **Surface (tag_filter)** — top_k=3 with Phase J Stage 2 injection;
+   exact match must land tightly.
+C. **Semantic cluster** — top_k=5; ≥1 cluster member must surface
+   (paraphrase reaches the right neighbourhood).
+D. **Source-mix sanity** — top_k=5; no single cluster dominates
+   ≥ 4/5 of the result.
 
-B. **tag_filter injection** (``top_k=3``) — Phase J Stage 2 plus the
-   Phase L Stage 1 RRF supplement explicitly re-orders injected nodes
-   by ``cosine ⊕ BM25``. This is the production path users hit with
-   ``recall(tag_filter=[...])``, and the lexical match must surface
-   tightly.
-
-Both contracts must hold; a regression in either fires Tier 3.
+A regression in any axis fires Tier 3.
 """
 from __future__ import annotations
 
@@ -31,9 +29,9 @@ GOLDEN_DIR = Path(__file__).parent / "golden_corpus"
 CHUNKS_PATH = GOLDEN_DIR / "synthetic_chunks.jsonl"
 QUERIES_PATH = GOLDEN_DIR / "queries.json"
 
-TOP_K_SURFACE_PLAIN = 15        # path A: widen for BM25 seed-pool reach
-TOP_K_SURFACE_TAGGED = 3        # path B: tag_filter injection — strict
-TOP_K_SEMANTIC = 10
+TOP_K_SURFACE_PLAIN = 5         # real RURI: surface match should land in top-5
+TOP_K_SURFACE_TAGGED = 3        # tag_filter + RRF — strict
+TOP_K_SEMANTIC = 5              # ≥1 cluster member in top-5
 TOP_K_SOURCE_MIX = 5
 MAX_SOURCE_DOMINANCE = 4        # 4/5 from one cluster is the warning threshold
 
@@ -87,11 +85,11 @@ async def _ingest_corpus(eng):
 
 
 @pytest.mark.asyncio
-async def test_engine_query_surface_in_widened_pool(tmp_path):
-    """Path A — plain engine.query, widened top_k.
+async def test_engine_query_surface_plain(tmp_path):
+    """Path A — plain engine.query, top_k=5.
 
-    The lexical-match chunk must reach the engine.query result set when
-    top_k is widened enough for BM25 seed-pool contribution to land.
+    With real RURI semantic ranking + BM25 seed-pool union, a surface
+    query must land its lexical match in the top-5.
     """
     queries = _load_queries()
     surface = [q for q in queries if q.get("axis") == "surface"]

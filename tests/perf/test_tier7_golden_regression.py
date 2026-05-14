@@ -1,18 +1,9 @@
-"""Tier 7 regression — golden corpus baseline.
+"""Tier 7 regression — golden corpus baseline at engine.query level.
 
-Stage 1 scope (this file):
-  - Verify the loader path (chunks + queries parse, ids cross-reference).
-  - Verify that for every golden query the lexical layer (BM25) returns
-    the expected fixture id in its top-K. This is the layer we can
-    assert deterministically with random embeddings; the full
-    ``engine.query`` ranking depends on wave dynamics that need a larger
-    corpus to baseline meaningfully.
-
-Stage 2 (deferred — same commitment id=faf61f5f, deadline 2026-05-28):
-  - Expand the corpus to ~30 chunks across topic clusters.
-  - Add `engine.query` top-K assertions with Surface / Semantic /
-    Score-scale axes.
-  - Add a score-scale baseline (raw FAISS / RRF / final) frozen at ±30%.
+Real RURI embedder + 30-chunk corpus + 11 queries spanning surface /
+semantic-cluster / cross-vocabulary / source-mix axes. The test runs
+the full ``engine.query`` and asserts each query's expected fixture id
+lands in the top-K.
 
 If you intentionally change retrieval behaviour and want to re-baseline,
 edit ``golden_corpus/queries.json`` — never adjust this test to make a
@@ -32,9 +23,10 @@ GOLDEN_DIR = Path(__file__).parent / "golden_corpus"
 CHUNKS_PATH = GOLDEN_DIR / "synthetic_chunks.jsonl"
 QUERIES_PATH = GOLDEN_DIR / "queries.json"
 
-# Stage 1: top-K window. Generous enough that BM25's lexical match for
-# the seeded queries lands inside the window even with random embeddings.
-TOP_K = 3
+# Real RURI: top-K=5 is tight enough to catch ranking regressions
+# while tolerating minor reordering between BM25-strong and
+# semantic-strong queries.
+TOP_K = 5
 
 
 def _load_chunks() -> list[dict]:
@@ -89,12 +81,13 @@ def _query_expectations(q: dict) -> tuple[str, list[str]]:
 
 
 @pytest.mark.asyncio
-async def test_golden_queries_hit_bm25_top(tmp_path):
-    """BM25 layer must satisfy each golden query's expectations.
+async def test_golden_queries_hit_engine_query_top(tmp_path):
+    """Full ``engine.query`` must satisfy each golden query's expectations.
 
-    Uses BM25 directly (not the full ``engine.query`` wave) so the
-    assertion is deterministic under the random-embedder regime. The
-    full wave-level golden lives in Tier 3.
+    With real RURI semantic ranking + BM25 hybrid seed pool + wave
+    propagation, the production retrieval path must surface each
+    expected fixture id within the top-K window. This is the test
+    that catches retrieval-quality regressions across phase boundaries.
     """
     chunks = _load_chunks()
     queries = _load_queries()
@@ -116,27 +109,23 @@ async def test_golden_queries_hit_bm25_top(tmp_path):
         engine_ids = await eng.index_documents(documents)
         fixture_to_engine = dict(zip([c["id"] for c in chunks], engine_ids))
 
-        assert eng.bm25_index is not None, (
-            "Tier 7 assumes BM25 is enabled — see _helpers.make_engine"
-        )
-
         failures: list[str] = []
         for q in queries:
             mode, fixture_ids = _query_expectations(q)
-            results = eng.bm25_index.search(q["query"], top_k=TOP_K)
-            result_ids = [doc_id for doc_id, _ in results]
+            results = await eng.query(text=q["query"], top_k=TOP_K)
+            result_ids = [r.id for r in results]
             engine_targets = [fixture_to_engine[fid] for fid in fixture_ids if fid in fixture_to_engine]
 
             if mode == "all":
                 missing = [fid for fid in fixture_ids if fixture_to_engine.get(fid) not in result_ids]
                 if missing:
                     failures.append(
-                        f"query {q['query']!r}: missing {missing} from BM25 top-{TOP_K} {result_ids}"
+                        f"query {q['query']!r}: missing {missing} from engine top-{TOP_K} {result_ids}"
                     )
             else:  # "any"
                 if not any(target in result_ids for target in engine_targets):
                     failures.append(
-                        f"query {q['query']!r}: none of {fixture_ids} in BM25 top-{TOP_K} {result_ids}"
+                        f"query {q['query']!r}: none of {fixture_ids} in engine top-{TOP_K} {result_ids}"
                     )
         assert not failures, "Golden regression failures:\n  " + "\n  ".join(failures)
     finally:

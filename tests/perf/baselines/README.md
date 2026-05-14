@@ -1,7 +1,8 @@
 # Perf baselines
 
-JSON snapshots of Tier 6 metrics, one per perf-relevant change. Used by
-``scripts/perf_diff.py`` to detect regressions across versions.
+Real-RURI JSON snapshots of Tier 6 metrics, captured manually as part
+of the 仮説 → 実装 → 検証 loop's measurement step. Used by
+``scripts/perf_diff.py`` to inspect deltas across versions.
 
 ## Capturing a baseline
 

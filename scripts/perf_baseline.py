@@ -2,14 +2,18 @@
 
 Runs the same measurement loops as ``tests/perf/test_tier6_performance.py``
 but writes the numbers to a JSON file instead of asserting bounds. Use
-this when a structural change should be remeasured (e.g. a new
-optimisation, a config default tweak, or a model upgrade).
+this when implementing a hypothesis-driven change and you want a
+before/after delta of real-RURI performance (the 仮説 → 実装 → 検証
+loop's measurement step).
 
-The output filename encodes ``<git_sha>_<UTC_timestamp>.json`` so
-multiple baselines coexist; the most recent two can be diffed with
+The output filename encodes ``<UTC_timestamp>_<git_sha>[_<label>].json``
+so multiple baselines coexist; the most recent two can be diffed with
 ``scripts/perf_diff.py``.
 
-Isolated from the production DB by default (``--data-dir /tmp/...``).
+Uses **real RURI v3 310m** via the shared ``tests/perf/_helpers``
+factory — every metric reflects production-grade behaviour, not a
+stub-embedder lower bound. The data directory is isolated from the
+production DB by default.
 
 Usage::
 
@@ -31,14 +35,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from gaottt.config import GaOTTTConfig  # noqa: E402
-from gaottt.index.bm25_index import BM25Index  # noqa: E402
-from gaottt.index.faiss_index import FaissIndex  # noqa: E402
-from gaottt.store.cache import CacheLayer  # noqa: E402
-from gaottt.store.sqlite_store import SqliteStore  # noqa: E402
-from gaottt.core.engine import GaOTTTEngine  # noqa: E402
-
-from tests.perf._helpers import StubEmbedder  # noqa: E402
+from tests.perf._helpers import make_engine  # noqa: E402
 
 
 def _percentile(values: list[float], pct: float) -> float:
@@ -60,44 +57,6 @@ def _git_sha() -> str:
         return "nogit"
 
 
-def _make_engine(data_dir: Path) -> GaOTTTEngine:
-    config = GaOTTTConfig(
-        data_dir=str(data_dir),
-        db_path=str(data_dir / "perf.db"),
-        faiss_index_path=str(data_dir / "perf.faiss"),
-        virtual_faiss_index_path=str(data_dir / "perf.virtual.faiss"),
-        virtual_faiss_enabled=True,
-        hybrid_bm25_enabled=True,
-        wave_initial_k=3,
-        wave_seed_mass_alpha=0.0,
-        wave_dynamic_k_enabled=False,
-        genesis_kick_enabled=False,
-        supernova_enabled=False,
-        dream_enabled=False,
-        faiss_save_interval_seconds=0.0,
-        virtual_faiss_save_interval_seconds=0.0,
-        flush_interval_seconds=0.05,
-        persona_boost_enabled=False,
-        mass_conservation_enabled=False,
-        mass_bh_enabled=False,
-    )
-    embedder = StubEmbedder(dim=config.embedding_dim)
-    return GaOTTTEngine(
-        config=config,
-        embedder=embedder,
-        faiss_index=FaissIndex(dimension=config.embedding_dim),
-        cache=CacheLayer(
-            flush_interval=config.flush_interval_seconds,
-            flush_threshold=config.flush_threshold,
-        ),
-        store=SqliteStore(db_path=config.db_path),
-        virtual_faiss_index=FaissIndex(dimension=config.embedding_dim),
-        bm25_index=BM25Index(
-            k1=config.bm25_k1, b=config.bm25_b, tokenizer=config.bm25_tokenizer,
-        ),
-    )
-
-
 async def _measure(args) -> dict:
     metrics: dict = {}
     data_dir = Path(args.data_dir).expanduser()
@@ -108,7 +67,7 @@ async def _measure(args) -> dict:
             f.unlink()
 
     # --- Cold startup
-    eng_cold = _make_engine(data_dir)
+    eng_cold = make_engine(data_dir)
     t0 = time.perf_counter()
     await eng_cold.startup()
     metrics["cold_startup_seconds"] = time.perf_counter() - t0
@@ -145,7 +104,7 @@ async def _measure(args) -> dict:
         await eng_cold.shutdown()
 
     # --- Warm startup (corpus_size docs already persisted)
-    eng_warm = _make_engine(data_dir)
+    eng_warm = make_engine(data_dir)
     t0 = time.perf_counter()
     await eng_warm.startup()
     metrics["warm_startup_seconds"] = time.perf_counter() - t0
@@ -163,7 +122,7 @@ async def _measure(args) -> dict:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--data-dir", default="/tmp/gaottt-perf-baseline")
+    parser.add_argument("--data-dir", default=str(_PROJECT_ROOT / ".perf-baseline-tmp"))
     parser.add_argument("--corpus-size", type=int, default=200)
     parser.add_argument("--recall-calls", type=int, default=100)
     parser.add_argument("--label", default="", help="Short label appended to filename for context")
