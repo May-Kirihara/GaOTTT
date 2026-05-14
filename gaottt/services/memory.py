@@ -111,6 +111,7 @@ def _to_memory_item(engine: GaOTTTEngine, r) -> MemoryItem:
         source=source,
         tags=list(tags),
         displacement_norm=engine.get_displacement_norm(r.id),
+        score_breakdown=getattr(r, "score_breakdown", None),  # Phase O Stage 1
     )
 
 

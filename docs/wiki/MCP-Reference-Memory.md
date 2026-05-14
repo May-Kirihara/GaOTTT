@@ -47,6 +47,29 @@ recall(
 - `"compact"` — 300 字切り詰め（通常利用、トークン節約に推奨）
 - `"ids"` — ID + スコア行のみ（大量 ID を把握したいが内容不要な場合）
 
+**Score breakdown (Phase O Stage 1):** 各結果に additive な内訳が 1 行で付く。`final_score = (vcos·decay + wave + mass + emo + cert) × sat` を literal に再現する 8 数 + 補助情報 (`persona_prox`, `cos`, flags `[bm25]` / `[forced]`)。LLM caller が「mass で勝ってる」「semantic 弱い」を一発判定できる:
+
+```
+[1] id=abc12345... (score=0.4231, virtual_score=0.1850, source=agent, displacement=0.0234)
+  breakdown: cos=0.142 vcos=0.185·decay=1.000 +wave=0.060 +mass=0.245 +emo=0.000 +cert=0.000 ×sat=0.910 persona_prox=0.000
+```
+
+| field | 意味 | 出方 |
+|---|---|---|
+| `cos` | `raw_cosine` — pure cosine(query, original_emb) | informational (sum に入らない) |
+| `vcos` | `virtual_cosine` — query · virtual_pos (displacement 反映) | sum に入る |
+| `decay` | recency decay multiplier | vcos に掛かる |
+| `wave` | gravity wave propagation の追加項 | additive |
+| `mass` | `α · log(1+mass)` | additive |
+| `emo` | emotion weighting | additive |
+| `cert` | certainty boost | additive |
+| `sat` | habituation saturation multiplier | 全体に掛かる |
+| `persona_prox` | persona-graph 近接度 | informational (wave に baked-in) |
+| `[bm25]` flag | BM25 lexical hit (informational) | wave に baked-in |
+| `[forced]` flag | `tag_filter` / `persona_context` で強制注入された | informational |
+
+REST (`POST /recall`) では `items[].score_breakdown` に上記 11 field がそのまま JSON で返る。`expose_score_breakdown=false` で全体 off (legacy 互換用)。
+
 ## explore
 
 温度を上げた創発的探索。離れた記憶も引き寄せる。

@@ -85,6 +85,11 @@ recall(query="harakiriworks Eleventy", tag_filter=["harakiriworks-self-knowledge
 recall(query="any past notes on X", top_k=10, output_mode="ids")     # existence check
 ```
 
+**Score breakdown (Phase O Stage 1):** every result carries a one-line additive decomposition of `final_score` — `cos=` (raw cosine, no displacement), `vcos=` (virtual cosine, with displacement) `·decay=`, `+wave=` `+mass=` `+emo=` `+cert=` `×sat=` (habituation), plus `persona_prox=` and flags `[bm25, forced]`. Use it to judge **why** a memo scored what it did:
+- `cos` near 0 with high `mass` / `wave` → memo wins by gravity, not by semantic match (treat with suspicion).
+- `[forced]` → memo was force-injected by your `tag_filter` / `persona_context`, not earned.
+- `[bm25]` → BM25 surface-form match contributed to the seed ranking.
+
 ### explore
 
 ```

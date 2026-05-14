@@ -67,6 +67,21 @@ async def test_remember_then_forget_then_restore_roundtrip(engine_singleton):
     assert "uv over pip" in recall_out
 
 
+async def test_recall_mcp_output_includes_score_breakdown(engine_singleton):
+    """Phase O Stage 1 — MCP recall formatter exposes per-result breakdown line."""
+    await srv.remember(content="alpha gamma kappa observability", source="user")
+    out = await srv.recall(query="observability alpha", top_k=3)
+    # one-line breakdown is prefixed with "  breakdown: "
+    assert "breakdown:" in out
+    assert "cos=" in out      # raw_cosine
+    assert "vcos=" in out     # virtual_cosine
+    assert "decay=" in out
+    assert "wave=" in out
+    assert "mass=" in out
+    assert "sat=" in out      # saturation
+    assert "persona_prox=" in out
+
+
 async def test_remember_hypothesis_assigns_default_ttl(engine_singleton):
     out = await srv.remember(
         content="hypothesis: gravity collision could merge similar memories",

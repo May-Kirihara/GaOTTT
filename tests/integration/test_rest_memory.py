@@ -83,6 +83,37 @@ async def test_recall_returns_items_with_source_and_displacement(rest_client):
     assert "tags" in item
 
 
+async def test_recall_score_breakdown_in_rest_response(rest_client):
+    """Phase O Stage 1 — REST JSON response carries ScoreBreakdown."""
+    await rest_client.post(
+        "/remember", json={"content": "alpha gamma kappa", "source": "user"},
+    )
+    resp = await rest_client.post("/recall", json={"query": "alpha gamma", "top_k": 3})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] >= 1
+    item = data["items"][0]
+    assert "score_breakdown" in item
+    b = item["score_breakdown"]
+    assert b is not None
+    # All breakdown fields present and serialized as plain JSON values
+    for field in [
+        "raw_cosine", "virtual_cosine", "decay_factor", "wave_score",
+        "mass_boost", "emotion_term", "certainty_term", "saturation",
+        "persona_proximity", "bm25_contributed", "forced_inclusion",
+    ]:
+        assert field in b, f"missing breakdown field: {field}"
+    # expected_sum is a @property — pydantic doesn't serialize properties
+    # by default, so we verify the additive structure ourselves
+    expected = (
+        b["virtual_cosine"] * b["decay_factor"]
+        + b["wave_score"] + b["mass_boost"]
+        + b["emotion_term"] + b["certainty_term"]
+    ) * b["saturation"]
+    final = item["final_score"]
+    assert abs(expected - final) <= max(1e-6, abs(final) * 1e-4)
+
+
 async def test_recall_source_filter_narrows_results(rest_client):
     await rest_client.post(
         "/remember", json={"content": "agent note alpha", "source": "agent"},

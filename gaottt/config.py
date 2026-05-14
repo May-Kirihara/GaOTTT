@@ -303,6 +303,15 @@ class GaOTTTConfig:
     habituation_recovery_rate: float = 0.01 # Recovery from saturation per step
     thermal_escape_scale: float = 5000.0    # Temperature-based BH escape scaling
 
+    # Phase O Stage 1 — Score breakdown observability.
+    # When True, each QueryResultItem carries an additive/multiplicative
+    # decomposition of final_score (raw_cosine, virtual_cosine, decay,
+    # wave_score, mass_boost, emotion/certainty, saturation, plus informational
+    # persona_proximity / bm25_contributed / forced_inclusion). default ON —
+    # TTT-aware caller can read why a result scored what it scored without
+    # workaround. set False for legacy clients or to shave a few bytes.
+    expose_score_breakdown: bool = True
+
     # Similarity history
     sim_buffer_size: int = 20  # Ring buffer size
 

@@ -35,6 +35,7 @@ from gaottt.core.types import (
     DirectedEdge,
     NodeState,
     QueryResultItem,
+    ScoreBreakdown,
 )
 from gaottt.embedding.ruri import RuriEmbedder
 from gaottt.graph.cooccurrence import CooccurrenceGraph
@@ -709,6 +710,24 @@ class GaOTTTEngine:
         #   formatters.format_recall labels it "virtual_score" in MCP output (2026-05-12).
         pure_raw_cosines: dict[str, float] = {}
 
+        # Phase O Stage 1 — informational: precompute which reached nodes the
+        # BM25 index hit for this query. Used only for the breakdown flag
+        # (bm25_contributed) since BM25's actual additive contribution is
+        # already folded into wave_score via _seed_boost RRF fusion.
+        bm25_hit_ids: set[str] = set()
+        if (
+            self.config.expose_score_breakdown
+            and self.config.hybrid_bm25_enabled
+            and self.bm25_index is not None
+            and self.bm25_index.size > 0
+            and text
+        ):
+            try:
+                bm25_hits = self.bm25_index.search(text, max(len(reached_ids), 50))
+                bm25_hit_ids = {nid for nid, _ in bm25_hits}
+            except Exception:
+                bm25_hit_ids = set()
+
         for node_id in reached_ids:
             state = self.cache.get_node(node_id)
             if state is None:
@@ -761,6 +780,25 @@ class GaOTTTEngine:
             if doc is None:
                 continue
 
+            breakdown: ScoreBreakdown | None = None
+            if self.config.expose_score_breakdown:
+                persona_prox = 0.0
+                if persona_proximities is not None:
+                    persona_prox = float(persona_proximities.get(node_id, 0.0))
+                breakdown = ScoreBreakdown(
+                    raw_cosine=pure_raw_cosines[node_id],
+                    virtual_cosine=gravity_sim,
+                    decay_factor=decay,
+                    wave_score=wave_boost,
+                    mass_boost=mass_boost,
+                    emotion_term=emotion_boost,
+                    certainty_term=certainty_boost,
+                    saturation=saturation,
+                    persona_proximity=persona_prox,
+                    bm25_contributed=node_id in bm25_hit_ids,
+                    forced_inclusion=bool(injected_ids and node_id in injected_ids),
+                )
+
             results.append(
                 QueryResultItem(
                     id=node_id,
@@ -768,6 +806,7 @@ class GaOTTTEngine:
                     metadata=doc.get("metadata"),
                     raw_score=gravity_sim,
                     final_score=final,
+                    score_breakdown=breakdown,
                 )
             )
 

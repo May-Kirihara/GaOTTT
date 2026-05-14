@@ -83,6 +83,29 @@ def format_revalidate(result: RevalidateResponse) -> str:
 _COMPACT_LIMIT = 300
 
 
+def _format_breakdown(b) -> str:
+    """Phase O Stage 1 — one-line additive breakdown of final_score.
+
+    Always appended to recall output when score_breakdown is present, so a
+    TTT-aware caller can see why a result scored what it scored.
+    """
+    if b is None:
+        return ""
+    flags = []
+    if b.bm25_contributed:
+        flags.append("bm25")
+    if b.forced_inclusion:
+        flags.append("forced")
+    flag_str = f" [{', '.join(flags)}]" if flags else ""
+    return (
+        f"  breakdown: cos={b.raw_cosine:.3f} vcos={b.virtual_cosine:.3f}·"
+        f"decay={b.decay_factor:.3f} +wave={b.wave_score:.3f} "
+        f"+mass={b.mass_boost:.3f} +emo={b.emotion_term:.3f} "
+        f"+cert={b.certainty_term:.3f} ×sat={b.saturation:.3f} "
+        f"persona_prox={b.persona_proximity:.3f}{flag_str}"
+    )
+
+
 def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
     """Format recall results for MCP output.
 
@@ -102,15 +125,27 @@ def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
             f"source={item.source}{tag_str}, "
             f"displacement={item.displacement_norm:.4f})"
         )
+        breakdown_line = _format_breakdown(item.score_breakdown)
         if output_mode == "ids":
-            lines.append(header)
+            block = header
+            if breakdown_line:
+                block += f"\n{breakdown_line}"
+            lines.append(block)
         elif output_mode == "compact":
             content = item.content
             if len(content) > _COMPACT_LIMIT:
                 content = content[:_COMPACT_LIMIT] + f"…({len(item.content)} chars)"
-            lines.append(f"{header}\n{content}")
+            block = header
+            if breakdown_line:
+                block += f"\n{breakdown_line}"
+            block += f"\n{content}"
+            lines.append(block)
         else:
-            lines.append(f"{header}\n{item.content}")
+            block = header
+            if breakdown_line:
+                block += f"\n{breakdown_line}"
+            block += f"\n{item.content}"
+            lines.append(block)
     return "\n\n---\n\n".join(lines)
 
 

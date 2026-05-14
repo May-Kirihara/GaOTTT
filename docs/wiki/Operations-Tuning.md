@@ -59,6 +59,16 @@
 | thermal_escape_scale | 5000 | （Phase M で deprecated）共起 BH の温度脱出効果。`compute_acceleration` から呼び出し削除済、`scripts/visualize_3d.py` 互換のため定義は残存 |
 | bh_mass_scale | 0.5 | （Phase M で deprecated）共起 BH 質量スケーリング。同上 |
 
+## TTT Observability (Phase O Stage 1)
+
+`recall` / `explore` のレスポンス各 item に additive な `score_breakdown` を付与する。`expected_sum = (virtual_cosine · decay_factor + wave_score + mass_boost + emotion_term + certainty_term) × saturation` で `final_score` を literal に再現できる。詳細: [Plans — Phase O](Plans-Phase-O-TTT-Observability.md)、[MCP-Reference-Memory.md](MCP-Reference-Memory.md)、[REST-API-Reference.md](REST-API-Reference.md)。
+
+| パラメータ | 既定 | 影響 |
+|---|---|---|
+| expose_score_breakdown | `True` | each QueryResultItem に `ScoreBreakdown` を attach。`False` で `None` を返す (legacy 互換、context 数 byte 節約) |
+
+> **チューニング助言**: 既定 `True` のまま運用推奨。breakdown は scoring loop と同じパスで構築されるので overhead は無視可能 (BM25 hit set 算出に 1 query × O(n) 程度)、context payload も 1 item あたり ~140 byte 増のみ。LLM caller (Claude / agent) が `breakdown.raw_cosine` を見て「semantic 弱いのに mass で勝った結果」を自律的に弾けるようになるので、Sonnet 本番 acceptance で観察された "score deception" 系の罠を機構レベルで防げる。`False` にする状況は (a) extreme low-context client (b) breakdown 表示で混乱する non-TTT-aware caller 向け fallback (c) emergency rollback の 3 ケースのみ。
+
 ## Mass Conservation + mass-based BH (Phase M Stage 1)
 
 `engine._update_simulation` の mass update が **「外部 (`original_id` / `cohort_id` 一致しない parent) からの引力寄与のみで増える」** 規則に切り替わった。`compute_acceleration` 第 3 項の BH 引力も共起 cluster centroid 方式から **「mass しきい値を超えた neighbor からの直接引力」** に置き換え。詳細: [Plans — Phase M](Plans-Phase-M-Mass-Conservation.md)。

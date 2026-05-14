@@ -157,12 +157,27 @@ ReDoc: http://localhost:8000/redoc
       "final_score": 0.92,
       "source": "agent",
       "tags": ["concept"],
-      "displacement_norm": 0.087
+      "displacement_norm": 0.087,
+      "score_breakdown": {
+        "raw_cosine": 0.142,
+        "virtual_cosine": 0.185,
+        "decay_factor": 1.0,
+        "wave_score": 0.060,
+        "mass_boost": 0.245,
+        "emotion_term": 0.0,
+        "certainty_term": 0.0,
+        "saturation": 0.910,
+        "persona_proximity": 0.0,
+        "bm25_contributed": false,
+        "forced_inclusion": false
+      }
     }
   ],
   "count": 5
 }
 ```
+
+**Phase O Stage 1 — Score breakdown**: 各 item に `score_breakdown` が attach され、`final_score` の additive な内訳が露出する。`final_score ≈ (virtual_cosine · decay_factor + wave_score + mass_boost + emotion_term + certainty_term) × saturation`。`raw_cosine` / `persona_proximity` / `bm25_contributed` / `forced_inclusion` は informational (sum に入らない)。`config.expose_score_breakdown=false` で `score_breakdown=null` 返却 (legacy 互換)。
 
 ### POST /explore
 

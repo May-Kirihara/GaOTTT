@@ -87,12 +87,49 @@ class QueryRequest(BaseModel):
     wave_k: int | None = Field(default=None, ge=1, le=20, description="Override wave initial top-k")
 
 
+class ScoreBreakdown(BaseModel):
+    """Phase O Stage 1 — additive/multiplicative decomposition of final_score.
+
+    Lets a TTT-aware caller see *why* a node scored what it scored:
+    final = (virtual_cosine * decay_factor + wave_score + mass_boost
+            + emotion_term + certainty_term) * saturation
+
+    ``raw_cosine`` is informational only (no displacement applied). ``persona_proximity``
+    and ``bm25_contributed`` reflect contributions that are *folded into* ``wave_score``
+    via the seed-boost path (Phase J / Phase L), so they are exposed as informational
+    fields rather than double-counted additive terms.
+    """
+    raw_cosine: float = 0.0          # query · original_emb (no displacement) — informational
+    virtual_cosine: float = 0.0      # query · virtual_pos (= gravity_sim, what enters final)
+    decay_factor: float = 1.0        # multiplicative recency decay applied to virtual_cosine
+    wave_score: float = 0.0          # additive wave_boost (gravity propagation reach)
+    mass_boost: float = 0.0          # additive α · log(1+mass)
+    emotion_term: float = 0.0        # additive |emotion| · α_emotion
+    certainty_term: float = 0.0      # additive certainty-weighted boost
+    saturation: float = 1.0          # multiplicative habituation (1/(1+return_count·rate))
+    persona_proximity: float = 0.0   # informational: persona-graph proximity (already in wave_score)
+    bm25_contributed: bool = False   # informational: did BM25 affect seed ranking
+    forced_inclusion: bool = False   # informational: was node in injected_ids (tag/persona_context)
+
+    @property
+    def expected_sum(self) -> float:
+        """Reproduce final_score from breakdown — within FP tolerance."""
+        return (
+            self.virtual_cosine * self.decay_factor
+            + self.wave_score
+            + self.mass_boost
+            + self.emotion_term
+            + self.certainty_term
+        ) * self.saturation
+
+
 class QueryResultItem(BaseModel):
     id: str
     content: str
     metadata: dict[str, Any] | None
     raw_score: float   # query_raw · virtual_pos (= gravity_sim). Labelled "virtual_score" in MCP output.
     final_score: float
+    score_breakdown: ScoreBreakdown | None = None  # Phase O Stage 1 — None for legacy/disabled paths
 
 
 class QueryResponse(BaseModel):
@@ -180,6 +217,7 @@ class MemoryItem(BaseModel):
     source: str = "unknown"
     tags: list[str] = Field(default_factory=list)
     displacement_norm: float = 0.0
+    score_breakdown: ScoreBreakdown | None = None  # Phase O Stage 1
 
 
 class RememberResponse(BaseModel):
