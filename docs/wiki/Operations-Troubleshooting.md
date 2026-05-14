@@ -25,6 +25,29 @@ Stage 2 候補 (WAL audit / physics dynamics drift / JSON endpoint) と Stage 3 
 
 正常動作。初回クエリ時、`last_access` がインデックス時刻のため `decay = exp(-δ × 経過時間)` が非常に小さくなる。2 回目以降は decay ≈ 1.0。
 
+## 本番 acceptance test で新機能が一切検出されない (proxy mode backend が古いコードを保持)
+
+**症状**: 直前に commit/push した Phase X 機能 (新しい trailer / response field / mode arg 等) が、`mcp__gaottt__recall` / `mcp__gaottt__explore` 経由の本番 acceptance で 1 件も検出されない。`scripts/rest_smoke.py` / `scripts/mcp_smoke.py` (各 smoke は毎回新 engine を立てる) では green、テスト suite (`pytest tests/`) も green。
+
+**原因 (2026-05-15 発見)**: proxy mode の HTTP backend は **常駐 process** (`gaottt.server.mcp_server --transport streamable-http --port 7878`) で、Python module を in-memory に保持する。`git push` だけでは backend は **更新されない**。dead-man-switch は「全 shim ping が 5 分止まる」が条件だが、新しい opencode/Claude Code agent が来続ける限り発動しない → **古いコードが何時間も memory に居座る**。Phase O acceptance では PID 2788684 が commit 4 時間前から動いており、7 test 全て pre-Phase-O 出力を返した。
+
+**対処**:
+```bash
+# 1. backend 起動時刻を確認
+ps -ef | grep "gaottt.server.mcp_server.*streamable-http" | grep -v grep
+# 出力例: misaki_+ 2788684 ... 19:25 ... gaottt.server.mcp_server --transport streamable-http --host 127.0.0.1 --port 7878
+
+# 2. 起動時刻が直近 commit より古ければ kill
+kill <pid>
+
+# 3. 数秒待って消えたことを確認
+sleep 3 && ps -ef | grep "gaottt.server.mcp_server.*streamable-http" | grep -v grep || echo "backend stopped"
+
+# 4. 次に MCP shim (opencode/Claude Code) が接続したタイミングで新 backend が auto-respawn、新コードが乗る
+```
+
+**予防**: code 変更後の本番 acceptance ルーチンの **Step 0** として backend 起動時刻チェックを入れる。同じ pattern (process 内 state が外部 source-of-truth と乖離) は cache write-behind の「逆方向上書き罠」と同型 — CLAUDE.md の「bulk 書き換え時は他プロセス停止」ルールは **code update にも適用** する。memory: [[feedback-backend-kill-on-code-deploy]]。
+
 ## 別プロセスから新規 `remember` が見えない（FAISS stale）
 
 **症状**: 別プロセスの MCP サーバー / opencode エージェント等で `remember` した直後、自プロセスの `recall` でその memory が一切 surface しない。`reflect(aspect="summary")` の `Total memories` は増えていることがある（SQLite は WAL で共有されるが FAISS index はプロセス毎独立）。

@@ -205,6 +205,15 @@ rm -rf /tmp/gaottt-bench
 
 > **推奨セットアップ** (2026-05-13): `mcp_server` の **default `--transport proxy`** で運用する。Agent ごとに軽量 stdio shim が立ち上がるが、初回起動時に detached な HTTP backend を auto-spawn (port 7878) → 以降は relay として動作 → backend は cold-war dead-man-switch で全 shim が ping を止めて 5 分後に self-shutdown。N agents 起動しても engine (cache / FAISS / dream loop) は **常に 1 process だけ**、`.mcp.json` / `opencode.json` 変更不要 (default が proxy なので既存設定がそのまま動く)。詳細 + systemd で backend を明示常駐させる場合の手順は [Operations — Server Setup](docs/wiki/Operations-Server-Setup.md) 「起動モード」節。
 
+> ★ **code deploy 時の backend 再起動 (2026-05-15 学び)**: `git push` だけでは proxy mode の HTTP backend は **更新されない** — backend process は in-memory の Python module を保持し続け、新しい shim が来続ける限り dead-man-switch も発動しない (= 4 時間前の古いコードが動いてる事象が起きる)。本番 acceptance / 機構動作確認の前には:
+> ```bash
+> ps -ef | grep "gaottt.server.mcp_server.*streamable-http" | grep -v grep
+> # 起動時刻が最新 commit より古ければ
+> kill <pid>
+> # 次の shim 接続で auto-respawn、新コードが乗る
+> ```
+> Phase O acceptance (2026-05-15) で「7/7 ❌ → backend kill → 7/7 ✅」の事象が観測された。`compact(rebuild_faiss=True)` 等の destructive op 前の「他プロセス停止」ルールは **code update にも適用** (process 内 state が外部 source-of-truth と乖離する同型問題)。
+
 以下は **`--transport stdio` で 複数 agent を起動した場合** の注意事項 (proxy mode を使わない legacy 構成):
 
 GaOTTT の DB は **複数 MCP プロセスから共有される** ことがある（複数エージェント、ユーザーの並行ターミナル等）:
