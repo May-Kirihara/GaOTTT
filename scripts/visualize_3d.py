@@ -445,6 +445,7 @@ def add_nodes_to_figure(
     hover_texts, sources, edges, velocities_3d=None, config=None,
     cooccurrence_neighbors=None, row=None, col=None, wireframe: bool = True,
     curves: bool = True,
+    draw_filaments: bool = False,
     filament_pts: int = 10,
     velocity_pts: int = 8,
 ):
@@ -460,6 +461,13 @@ def add_nodes_to_figure(
     through the interior. Set False (``--straight-lines`` from the CLI)
     to fall back to chord rendering, which is cheaper but lies about
     the unit-sphere constraint.
+
+    ``draw_filaments`` defaults to **False** — typical corpora produce
+    hundreds of thousands of co-occurrence edges (a 4.6k-node corpus
+    routinely emits ~500k filaments), and the resulting HTML both
+    crashes Chrome's renderer (SIGILL on Aw! Snap from V8 OOM) and
+    obscures the stellar layout it's meant to show. Pass
+    ``--filaments`` on the CLI to opt back in.
     """
 
     def _add(trace):
@@ -475,7 +483,7 @@ def add_nodes_to_figure(
     # chords through the interior otherwise. Each filament contributes
     # filament_pts (curve) or 2 (chord) points; None terminators break
     # segments inside one trace.
-    if edges:
+    if draw_filaments and edges:
         id_to_idx = {nid: i for i, nid in enumerate(ids)}
         ex, ey, ez = [], [], []
         for edge in edges:
@@ -643,7 +651,8 @@ def add_nodes_to_figure(
 
 def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
                         cooccurrence_neighbors=None, title_suffix="",
-                        wireframe: bool = True, curves: bool = True):
+                        wireframe: bool = True, curves: bool = True,
+                        draw_filaments: bool = False):
     masses, temperatures, decays, disp_norms, vel_norms, hover_texts, sources = props
 
     fig = go.Figure()
@@ -651,7 +660,7 @@ def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
         fig, coords_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
         hover_texts, sources, edges, velocities_3d=velocities_3d, config=config,
         cooccurrence_neighbors=cooccurrence_neighbors, wireframe=wireframe,
-        curves=curves,
+        curves=curves, draw_filaments=draw_filaments,
     )
 
     displaced = sum(1 for d in disp_norms if d > 0.001)
@@ -660,10 +669,14 @@ def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
     max_vel = float(vel_norms.max()) if len(vel_norms) > 0 else 0
     high_mass = sum(1 for m in masses if m > 2.0)
 
+    filament_label = (
+        f"{len(edges)} filaments" if draw_filaments
+        else f"{len(edges)} filaments (hidden — pass --filaments to draw)"
+    )
     fig.update_layout(
         title=dict(text=(
             f"<span style='font-size:20px'>GaOTTT Cosmos {title_suffix}</span><br>"
-            f"<sub style='color:#888'>{len(ids)} stars | {len(edges)} filaments | "
+            f"<sub style='color:#888'>{len(ids)} stars | {filament_label} | "
             f"Displaced: {displaced} | Moving: {moving} | "
             f"High mass: {high_mass} | Max v: {max_vel:.4f}</sub>"
         )),
@@ -688,7 +701,8 @@ def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
 
 def build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, velocities_3d, config,
                             cooccurrence_neighbors=None,
-                            wireframe: bool = True, curves: bool = True):
+                            wireframe: bool = True, curves: bool = True,
+                            draw_filaments: bool = False):
     masses, temperatures, decays, disp_norms, vel_norms, hover_texts, sources = props
 
     fig = make_subplots(
@@ -703,23 +717,27 @@ def build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, velocities_3
     add_nodes_to_figure(
         fig, orig_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
         hover_texts, sources, edges, row=1, col=1, wireframe=wireframe,
-        curves=curves,
+        curves=curves, draw_filaments=draw_filaments,
     )
     add_nodes_to_figure(
         fig, virtual_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
         hover_texts, sources, edges, velocities_3d=velocities_3d, config=config,
         cooccurrence_neighbors=cooccurrence_neighbors, row=1, col=2,
-        wireframe=wireframe, curves=curves,
+        wireframe=wireframe, curves=curves, draw_filaments=draw_filaments,
     )
 
     displaced = sum(1 for d in disp_norms if d > 0.001)
     moving = sum(1 for v in vel_norms if v > 0.001)
     max_vel = float(vel_norms.max()) if len(vel_norms) > 0 else 0
 
+    filament_label = (
+        f"{len(edges)} filaments" if draw_filaments
+        else f"{len(edges)} filaments (hidden — pass --filaments to draw)"
+    )
     fig.update_layout(
         title=dict(text=(
             f"<span style='font-size:20px'>GaOTTT Cosmos — Original vs Gravitational Field</span><br>"
-            f"<sub style='color:#888'>{len(ids)} stars | {len(edges)} filaments | "
+            f"<sub style='color:#888'>{len(ids)} stars | {filament_label} | "
             f"Displaced: {displaced} | Moving: {moving} | Max velocity: {max_vel:.4f}</sub>"
         )),
         scene=SPACE_SCENE, scene2=SPACE_SCENE,
@@ -800,6 +818,13 @@ def main():
              "tangent geodesics. Cuts ~10x off the trace point count and "
              "speeds up the initial HTML load; loses the visual ‘motion is "
              "on the sphere surface’ metaphor. Implied by --flat.",
+    )
+    parser.add_argument(
+        "--filaments", action="store_true",
+        help="Render co-occurrence edges (filaments). OFF by default — "
+             "typical corpora produce hundreds of thousands of edges, "
+             "which crash Chrome's renderer and obscure the stellar "
+             "layout. The edge count still appears in the title bar.",
     )
     args = parser.parse_args()
 
@@ -902,7 +927,8 @@ def main():
         print(f"Building cosmic comparison (virtual source: {vsrc})...")
         fig = build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, vel_3d, config,
                                       cooccurrence_neighbors=cooc_neighbors,
-                                      wireframe=use_sphere, curves=use_curves)
+                                      wireframe=use_sphere, curves=use_curves,
+                                      draw_filaments=args.filaments)
 
     elif args.position_space == "raw":
         print(f"Reducing raw embedding to 3D ({args.method.upper()})...")
@@ -924,7 +950,8 @@ def main():
         fig = build_single_figure(coords_3d, ids, props, edges, vel_3d, config,
                                   cooccurrence_neighbors=cooc_neighbors,
                                   title_suffix="— Raw Space",
-                                  wireframe=use_sphere, curves=use_curves)
+                                  wireframe=use_sphere, curves=use_curves,
+                                  draw_filaments=args.filaments)
 
     else:  # virtual
         virtual_vectors, vsrc = _build_virtual()
@@ -949,7 +976,8 @@ def main():
         fig = build_single_figure(coords_3d, ids, props, edges, vel_3d, config,
                                   cooccurrence_neighbors=cooc_neighbors,
                                   title_suffix=suffix,
-                                  wireframe=use_sphere, curves=use_curves)
+                                  wireframe=use_sphere, curves=use_curves,
+                                  draw_filaments=args.filaments)
 
     print(f"Saving to {args.output}...")
     fig.write_html(args.output, include_plotlyjs=True)
