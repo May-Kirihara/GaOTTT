@@ -99,6 +99,27 @@
 
 > **チューニング助言**: 新規 `remember` の original_id は `node_id` 自身 (自己一致なので自己フィルタの影響 0)。file ingest (`scripts/load_files.py`) は `original_id = file_path` で chunk 群を共通グループ化。Phase K supernova batch は `cohort_id = uuid4().hex[:12]` を共有 — `cohort_id` が **同じ** node 同士の force は mass update に寄与しない (Articulation as Carrier の literal な物理実装)。`mass_bh_theta` を下げ過ぎると低 mass node も attractor 化 → homogenization リスク。上げ過ぎると 1-2 週観測しても BH が発生しない (期待 1.7-5% の節点が θ 超え)。Stage 1 暫定 θ=5.0 は旧規則下の p99=26.5 から「新規則下は inflation が消えるので θ は大幅に下がる」前提の placeholder。
 
+## Mass Evaporation (Phase N candidate β Stage 1)
+
+Phase M 「自己関与は mass を生まない」(入力側) の対称形として「使われない mass は時間で蒸発する」(出力側) を物理化。単一規則: `mass -= ε · max(mass - floor, 0)^β · (t_idle / τ_idle)^γ`、`mass > floor AND t_idle > τ_grace` のとき。source 分岐ゼロ (Phase M と整合)、`evaporate_mass` 純粋関数。詳細: [Plans — Phase N candidate β](Plans-Phase-N-Mass-Evaporation.md)。
+
+| パラメータ | 既定 | 影響 |
+|---|---|---|
+| mass_evaporation_enabled | `False` | Stage 1 は merge 安全のため default OFF。Stage 1.5 で本番 opt-in PR。 |
+| mass_evaporation_floor (M_floor) | 1.0 | 初期質量。下まで decay しない (新規ノード保護)。変更非推奨 (Phase G 初期化と一致)。|
+| mass_evaporation_grace_seconds (τ_grace) | 7d = 604800 | recall 直後の即時 decay 抑止窓。短くすると aggressive、長くすると "使ったらしばらく守られる" 挙動。|
+| mass_evaporation_idle_normalize_seconds (τ_idle) | 30d = 2592000 | 1 単位の decay が起こる基準 idle 期間。`t_idle/τ_idle` の正規化。 |
+| mass_evaporation_rate (ε) | 0.01 | excess^β · idle_ratio^γ にかかる係数。Stage 1 placeholder、観測で 1 桁単位調整。 |
+| mass_evaporation_mass_exponent (β) | 1.5 | mass 増幅。1.0 = excess 比例、2.0 = excess² で hub に強く効く。 |
+| mass_evaporation_time_exponent (γ) | 1.0 | time 増幅。1.0 = linear、>1 で長期 idle に急峻。 |
+| mass_evaporation_eager_cron_seconds | 0.0 | Stage 2 用 — `>0` で background sweep cron loop を起動。Stage 1 は lazy + startup sweep のみ。 |
+
+> **D2=C hybrid 評価**: lazy 経路は `engine._update_simulation` 内 Hebbian 更新の直前で 1 回呼び (touch 時に dt 補正)、startup 経路は `engine.startup` 末尾で全 active node に 1 回適用 (engine 停止中の "cold-start mass debt" を一括清算)。lazy だけだと touch されないノードが永遠に stale になるので両方必要。Idempotent: 同じ `last_access` を基準にする限り再実行で同じ結果。
+
+> **本番ロールアウト手順 (Stage 1.5、Phase M Stage 2 後)**: (1) `scripts/mass_distribution.py` (要新設) で production の p50/p90/p99 mass を測定 → (2) `ε / β / γ / τ_idle` の本決め → (3) 他 MCP / REST プロセス停止 → (4) DB backup → (5) `mass_evaporation_enabled=True` で engine 起動 → startup sweep で cold-start debt 一括清算 → (6) 1-2 週 monitor して `hot_topics` 上位陣の入れ替わり / Phase O Stage 5 dormant の母集団復元 / 新規 `agent` memo の top1 取得確率 を観測。仮説 4 件は [Plans — Phase N β §5](Plans-Phase-N-Mass-Evaporation.md#5-副次予測--検証可能な仮説) 参照。
+
+> **チューニング助言**: `ε=0.01, β=1.5, γ=1.0` の初期値 sanity check — `mass=5.0` で 30d idle なら decay = `0.01 · 4^1.5 · 1 = 0.08` → 5.0 → 4.92 (∝ 1.6% loss)。`mass=10.0` で 30d idle なら decay = `0.01 · 9^1.5 = 0.27` → 10.0 → 9.73 (∝ 2.7% loss)。`mass=2.0` で 30d idle なら decay = `0.01 · 1^1.5 = 0.01` → 2.0 → 1.99 (塵レベルはほぼ不変)。Stage 1.5 で本番 mass 分布測定後、p99 が 1-2 週で 10% 程度 evaporate するレートに ε を調整するのが現在の目安。
+
 ## 重力波伝播
 
 | パラメータ | 既定 | 影響 |
