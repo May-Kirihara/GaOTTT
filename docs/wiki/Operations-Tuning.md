@@ -35,17 +35,20 @@
 | orbital_max_velocity | 0.05 | 速度の上限ノルム |
 | orbital_anchor_strength | 0.02 | アンカー復元力（Hooke's k） |
 
-## Query 引力（Phase I — Stage 2 + Stage 3）
+## Query 引力（Phase I — Stage 2 + Stage 3 + Stage 4）
 
-`compute_acceleration` の 4 番目の項。recall 時に retrieved nodes へ query 方向の小さな引力を加える。`F = α · score · gate · (q - pos)`, `a = F / m_i` で **mass damping** が自動で効く (BH 化 node はほぼ動かない)。**Stage 3** では `gate = tanh(m_i / θ)` で新規 (低 mass) ノードが anchor (Hooke) に守られる — 単一アトラクタ pathology の防止策。**transient force** — Hooke が raw embedding を anchor として引き続き保持するので anchor migration ではない。詳細: [Plans — Phase I](Plans-Phase-I-Free-Star-Movement.md) §Stage 2-3。
+`compute_acceleration` の 2 番目と 4 番目の項。recall 時に retrieved nodes へ query 方向の小さな引力 (kick、4 項目) を加える一方、anchor (raw embedding) への復元力 (Hooke、2 項目) を低 mass で増幅する (Stage 4)。`F_kick = α · score · gate · (q - pos)`, `a_kick = F_kick / m_i` で **mass damping** が自動で効く (BH 化 node はほぼ動かない)。**Stage 3** では `gate = tanh(m_i / θ)` で新規 (低 mass) ノードが anchor に守られる — 単一アトラクタ pathology の防止策。**Stage 4** はその対称形 — Hooke の effective k を `k · (1 + β · (1 - tanh(m / θ)))` に拡張し、軽い星を anchor 側からも守る。**transient force** — Hooke が raw embedding を anchor として引き続き保持するので anchor migration ではない。詳細: [Plans — Phase I](Plans-Phase-I-Free-Star-Movement.md) §Stage 2-4。
 
 | パラメータ | 既定 | 影響 | 上げると | 下げると |
 |---|---|---|---|---|
 | query_kick_strength | 0.01 | 結合定数 α (G に類似) | recall ごとの drift ↑（短期で query 方向に集まる） | drift が緩慢、長期累積でしか効かない。`0` で完全 no-op (roll-back) |
 | query_kick_enabled | `True` | グローバル off スイッチ | n/a | `False` で 4 項目を完全 skip (config 即時 off) |
-| mass_anchor_threshold (θ) | 3.0 | Stage 3 gate の特徴点 (`tanh(1)≈0.76` が ここ) | 攻撃的 (`θ=1` → 新規 m=1 で gate=0.76、ほぼ満額)。新規ノードの drift 即時化 | 保守的 (`θ=10` → 新規 m=1 で gate=0.10、ほぼ動かない)。`0` で Stage 2 へ rollback (gate=1.0 強制) |
+| mass_anchor_threshold (θ) | 3.0 | Stage 3/4 の gate 特徴点 (`tanh(1)≈0.76` が ここ)。kick と Hooke で共有 | 攻撃的 (`θ=1` → 新規 m=1 で gate=0.76、ほぼ満額)。新規ノードの drift 即時化 | 保守的 (`θ=10` → 新規 m=1 で gate=0.10、ほぼ動かない)。`0` で Stage 2 へ rollback (gate=1.0 強制、Stage 4 も `θ_eff=1.0` の安全 fallback) |
+| **mass_anchor_extra_strength (β)** | **`0.0`** | **Stage 4 — 低 mass 系の Hooke 増幅倍率** | `1.0` で m=1 ノード anchor 1.7×、`2.0` で 2.4×。低 mass 系の displacement 均衡点が下がる、軽い星の drift が更に抑制される | `0.0` で完全 no-op (Stage 1-3 へ rollback、bit-for-bit) |
 
-> **チューニング助言**: per-step acceleration は `orbital_max_velocity=0.05` で cap されるので、`α / m × score × gate × \|q-pos\|` が ~0.05 を超えると効きが頭打ち。質量 1 の新規 node + score=1 + |q-pos|=1.4 (unit-norm 直交) + θ=3 で gate=0.32 → α=0.11 が cap 境界 (Stage 2 単体の 0.035 から余裕拡大)。`α=0.01` (既定) は安全側、`mass_anchor_threshold=3.0` で **新規ノードは ~32%、mature ノード (mass≥10) はほぼ満額** という世代論的挙動。pathology が再発したら θ を上げる、新規ノードの surface が遅すぎたら θ を下げる。
+> **チューニング助言 (Stage 3 kick)**: per-step acceleration は `orbital_max_velocity=0.05` で cap されるので、`α / m × score × gate × \|q-pos\|` が ~0.05 を超えると効きが頭打ち。質量 1 の新規 node + score=1 + |q-pos|=1.4 (unit-norm 直交) + θ=3 で gate=0.32 → α=0.11 が cap 境界 (Stage 2 単体の 0.035 から余裕拡大)。`α=0.01` (既定) は安全側、`mass_anchor_threshold=3.0` で **新規ノードは ~32%、mature ノード (mass≥10) はほぼ満額** という世代論的挙動。pathology が再発したら θ を上げる、新規ノードの surface が遅すぎたら θ を下げる。
+>
+> **チューニング助言 (Stage 4 Hooke β)**: 既定 `β=0` は opt-in 安全側 — `mass_anchor_threshold` を 1-2 週間運用した上で本番 `tests/perf/test_tier4_*.py` で displacement 分布を見て活性化を判断。低 mass 系 (`mass≤2`) の `|d|` p99 が anchor 側からまだ過剰に見えるなら β=1 を試す (anchor 1.7× 増、mature 系は影響ほぼ無し)。**θ は Stage 3 と共有** なので、両者を別々に持つ場合は Stage 5 候補 (`source-aware θ` と並列でロードマップ)。`β` を変えた後の検証は `scripts/perf_baseline.py --label "stage4-β1"` で before/after baseline 取って `perf_diff.py` で 25% gate を超えないか確認するのが運用 pattern。
 
 ## 馴化・温度脱出
 

@@ -164,6 +164,29 @@ class GaOTTTConfig:
     # Set θ=0.0 for clean rollback to Stage 2 behaviour (gate forced to 1.0).
     mass_anchor_threshold: float = 3.0
 
+    # Phase I Stage 4 — Mass-dependent Hooke (symmetric form of Stage 3).
+    # Stage 3 gated the query-attraction kick by mass so brand-new nodes are
+    # protected from one-shot drift. Stage 4 is the dual move: the Hooke
+    # restoring force itself is amplified for low-mass nodes — the anchor is
+    # stronger when the node hasn't yet earned a gravity well of its own.
+    #   k_eff(m) = k · (1 + β · (1 - tanh(m / θ)))
+    #     mass=1, θ=3, β=1   → 1 + 0.68  → 1.68× anchor   (newborn)
+    #     mass=3, θ=3, β=1   → 1 + 0.24  → 1.24× anchor   (gate point)
+    #     mass=10, θ=3, β=1  → 1 + 0.003 → ~1.00×        (mature)
+    #     mass=50, θ=3, β=1  → 1 + 1e-15 → 1.00×        (BH)
+    # β shares θ with Stage 3 so the two halves keep a single notion of
+    # "newborn" — light nodes get strong anchor *and* damped kick; mature
+    # nodes get base anchor *and* full kick. The asymmetric pair was the
+    # learning of Phase I Stage 3 (protection short-fall = same homogenization
+    # symptom as over-driving); Stage 4 closes the symmetry.
+    #
+    # Default β=0.0 — opt-in. Unlike Stage 3 (which fixed a directly observed
+    # single-attractor pathology), Stage 4 is a prophylactic refinement.
+    # Activate after 1-2 weeks of running with Stage 3 alone to confirm the
+    # added anchor doesn't over-restrict mature drift. Set β=0.0 for a
+    # bit-for-bit rollback to Stage 1-3 behaviour.
+    mass_anchor_extra_strength: float = 0.0
+
     # Phase J Stage 1 — Persona-anchored retrieval (graph traversal seed boost).
     # Boosts seed-pool ranking for nodes within N hops of an actively-declared
     # value / intention / commitment, via fulfills / derived_from edges.

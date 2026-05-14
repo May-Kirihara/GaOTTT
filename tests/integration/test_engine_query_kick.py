@@ -46,6 +46,7 @@ def _make_engine(
     *,
     kick_strength: float,
     mass_anchor_threshold: float = 0.0,
+    mass_anchor_extra_strength: float = 0.0,
 ):
     config = GaOTTTConfig(
         data_dir=str(tmp_path),
@@ -57,6 +58,8 @@ def _make_engine(
         # Phase I Stage 3 — default to 0 here so existing Stage 2 tests
         # keep their pure F=ma semantics. New Stage 3 tests pass θ=3.0.
         mass_anchor_threshold=mass_anchor_threshold,
+        # Phase I Stage 4 — Mass-dependent Hooke (β, default 0 = legacy).
+        mass_anchor_extra_strength=mass_anchor_extra_strength,
         # Suppress unrelated noise so the kick is the dominant signal
         genesis_kick_enabled=False,
         dream_enabled=False,
@@ -242,3 +245,123 @@ async def test_stage3_gate_dampens_drift_for_new_nodes(tmp_path):
         f"proj_stage2={proj_stage2:.4f}, proj_stage3={proj_stage3:.4f}, "
         f"expected ratio ≈ tanh(1/3) ≈ 0.32 modulo mass-accretion over 20 steps"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase I Stage 4 — Mass-dependent Hooke (integration via update_orbital_state)
+#
+# The engine.query() path is timing-fragile (age_friction depends on real-time
+# elapsed between recalls, varying with system load). Stage 4's Hooke
+# amplification is also masked by the velocity cap when kick magnitude is
+# large. We therefore test Stage 4 at the orchestration layer directly:
+# update_orbital_state takes explicit dicts (no real-time, no FAISS, no
+# wave), exercising compute_acceleration in the same shape the engine does.
+# Determinism: same inputs → same outputs.
+# ---------------------------------------------------------------------------
+
+def test_stage4_amplified_hooke_shrinks_displacement_in_orbital_step():
+    """One full update_orbital_state step with β > 0 produces smaller
+    post-step displacement on a low-mass node than β = 0, given identical
+    inputs and no query attraction. Direct verification that Stage 4's
+    Hooke amplification reaches the orbital integrator."""
+    from gaottt.core.gravity import update_orbital_state
+
+    dim = 768
+    node_ids = ["target", "neighbor"]
+    raw = {
+        "target": np.array([1.0] + [0.0] * (dim - 1), dtype=np.float32),
+        "neighbor": np.array([0.0, 1.0] + [0.0] * (dim - 2), dtype=np.float32),
+    }
+    initial_disp = np.zeros(dim, dtype=np.float32)
+    initial_disp[2] = 0.5  # large initial displacement so Hooke is the dominant force
+
+    masses = {"target": 1.0, "neighbor": 1.0}  # low-mass: Stage 4 should engage
+    last_accesses = {"target": 0.0, "neighbor": 0.0}
+
+    def run_one_step(beta: float) -> np.ndarray:
+        config = GaOTTTConfig(
+            mass_anchor_extra_strength=beta,
+            mass_anchor_threshold=3.0,
+            query_kick_strength=0.0,
+            query_kick_enabled=False,
+            mass_bh_enabled=False,
+            # Fix to a high cap so velocity isn't the limiter — we want
+            # Hooke to be the dominant force shaping the next displacement.
+            orbital_max_velocity=10.0,
+            max_displacement_norm=1e6,
+        )
+        displacements = {
+            "target": initial_disp.copy(),
+            "neighbor": np.zeros(dim, dtype=np.float32),
+        }
+        velocities = {
+            "target": np.zeros(dim, dtype=np.float32),
+            "neighbor": np.zeros(dim, dtype=np.float32),
+        }
+        new_disps, _ = update_orbital_state(
+            node_ids, raw, displacements, velocities,
+            masses, last_accesses, now=1.0, config=config,
+        )
+        return new_disps["target"]
+
+    legacy = run_one_step(beta=0.0)
+    stage4 = run_one_step(beta=2.0)
+
+    # The displacement-axis component (axis 2) should be smaller in magnitude
+    # under Stage 4 because anchor pulls harder back toward 0.
+    legacy_axis = float(legacy[2])
+    stage4_axis = float(stage4[2])
+
+    assert legacy_axis > 0, "test setup: initial disp on axis 2 should survive one step under β=0"
+    assert 0 < stage4_axis < legacy_axis, (
+        f"Stage 4 (β=2) should pull axis-2 disp back harder than β=0: "
+        f"legacy={legacy_axis:.6f}, stage4={stage4_axis:.6f}"
+    )
+
+
+def test_stage4_beta_zero_matches_legacy_in_orbital_step():
+    """β=0 with mass_i passed must produce bit-for-bit identical displacement
+    to the constant-k Hooke baseline. This is the rollback guarantee — any
+    drift between β=0 and the pre-Stage-4 codepath indicates the anchor_factor
+    branch is leaking state.
+    """
+    from gaottt.core.gravity import update_orbital_state
+
+    dim = 768
+    node_ids = ["a", "b"]
+    raw = {
+        "a": np.array([1.0] + [0.0] * (dim - 1), dtype=np.float32),
+        "b": np.array([0.0, 1.0] + [0.0] * (dim - 2), dtype=np.float32),
+    }
+    initial_disp = np.zeros(dim, dtype=np.float32)
+    initial_disp[3] = 0.2
+    masses = {"a": 1.0, "b": 1.0}
+    last_accesses = {"a": 0.0, "b": 0.0}
+
+    def run(beta: float, theta: float) -> np.ndarray:
+        config = GaOTTTConfig(
+            mass_anchor_extra_strength=beta,
+            mass_anchor_threshold=theta,
+            query_kick_strength=0.0,
+            query_kick_enabled=False,
+            mass_bh_enabled=False,
+            orbital_max_velocity=10.0,
+            max_displacement_norm=1e6,
+        )
+        displacements = {
+            "a": initial_disp.copy(),
+            "b": np.zeros(dim, dtype=np.float32),
+        }
+        velocities = {
+            "a": np.zeros(dim, dtype=np.float32),
+            "b": np.zeros(dim, dtype=np.float32),
+        }
+        new_disps, _ = update_orbital_state(
+            node_ids, raw, displacements, velocities,
+            masses, last_accesses, now=1.0, config=config,
+        )
+        return new_disps["a"]
+
+    legacy = run(beta=0.0, theta=3.0)
+    legacy_with_zero_theta = run(beta=0.0, theta=0.0)  # also force the early-out
+    assert np.array_equal(legacy, legacy_with_zero_theta)
