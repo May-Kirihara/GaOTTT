@@ -21,6 +21,7 @@ from gaottt.core.types import (
     RememberResponse,
     RestoreResponse,
     RevalidateResponse,
+    TrainingDelta,
 )
 
 
@@ -115,6 +116,25 @@ def _to_memory_item(engine: GaOTTTEngine, r) -> MemoryItem:
     )
 
 
+def _delta_from_dict(d: dict | None) -> TrainingDelta | None:
+    """Phase O Stage 2 — convert the engine-populated out-dict to TrainingDelta.
+
+    Returns None when delta capture is disabled (empty / not populated dict).
+    """
+    if not d:
+        return None
+    return TrainingDelta(
+        displacement_changes=d.get("displacement_changes", {}),
+        mass_changes=d.get("mass_changes", {}),
+        wave_reached_count=d.get("wave_reached_count", 0),
+        wave_max_depth=d.get("wave_max_depth", 0),
+        persona_hop_reached=d.get("persona_hop_reached", 0),
+        supernova_triggered=d.get("supernova_triggered", False),
+        cache_hit=d.get("cache_hit", False),
+        topk_only=d.get("topk_only", True),
+    )
+
+
 async def recall(
     engine: GaOTTTEngine,
     query: str,
@@ -133,6 +153,7 @@ async def recall(
     # engine.query and applied as additive seed injection in the wave (they
     # bypass source_filter's restrictive semantic — the caller explicitly
     # asked for these tags or persona ids).
+    delta_out: dict | None = {} if engine.config.training_delta_enabled else None
     raw = await engine.query(
         text=query,
         top_k=top_k * 10 if source_filter else top_k,
@@ -142,6 +163,7 @@ async def recall(
         source_filter=source_filter,
         persona_context=persona_context,
         tag_filter=tag_filter,
+        out_training_delta=delta_out,
     )
     if source_filter:
         sf = set(source_filter)
@@ -160,7 +182,10 @@ async def recall(
                 filtered.append(r)
         raw = filtered[:top_k]
     items = [_to_memory_item(engine, r) for r in raw]
-    return RecallResponse(items=items, count=len(items))
+    return RecallResponse(
+        items=items, count=len(items),
+        training_delta=_delta_from_dict(delta_out),
+    )
 
 
 async def explore(
@@ -177,18 +202,23 @@ async def explore(
     explore_depth = config.wave_max_depth + int(diversity * 2)
     explore_k = config.wave_initial_k + int(diversity * 4)
 
+    delta_out: dict | None = {} if engine.config.training_delta_enabled else None
     try:
         raw = await engine.query(
             text=query, top_k=top_k,
             wave_depth=explore_depth, wave_k=explore_k,
             persona_context=persona_context,
             tag_filter=tag_filter,
+            out_training_delta=delta_out,
         )
     finally:
         config.gamma = original_gamma
 
     items = [_to_memory_item(engine, r) for r in raw]
-    return ExploreResponse(items=items, count=len(items), diversity=diversity)
+    return ExploreResponse(
+        items=items, count=len(items), diversity=diversity,
+        training_delta=_delta_from_dict(delta_out),
+    )
 
 
 async def forget(

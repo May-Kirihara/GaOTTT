@@ -106,6 +106,47 @@ def _format_breakdown(b) -> str:
     )
 
 
+def _format_training_delta(td) -> str:
+    """Phase O Stage 2 — TTT update visibility trailer.
+
+    Reports state changes induced by this recall — backward-pass equivalent of
+    the forward-pass breakdown. Emits a compact ``## 訓練差分`` section so the
+    caller sees what their recall *changed* in the gravity field.
+    """
+    if td is None:
+        return ""
+    if td.cache_hit:
+        # No simulation ran — be explicit so the caller doesn't mis-attribute
+        # zero deltas to "nothing moved" (it's "nothing was tried").
+        return (
+            "\n\n## 訓練差分\n"
+            "(cache hit — no simulation ran; mass / displacement unchanged)"
+        )
+    # Top movers — sort by absolute change, then trim to a small fixed budget.
+    def _top(d: dict[str, float], n: int = 3) -> list[tuple[str, float]]:
+        return sorted(d.items(), key=lambda t: abs(t[1]), reverse=True)[:n]
+
+    lines = ["\n\n## 訓練差分"]
+    mass_top = _top(td.mass_changes)
+    disp_top = _top(td.displacement_changes)
+    coverage = "top-k only" if td.topk_only else "full reached set"
+    lines.append(
+        f"wave_reached={td.wave_reached_count} "
+        f"depth={td.wave_max_depth} "
+        f"persona_hop={td.persona_hop_reached} "
+        f"({coverage})"
+    )
+    if mass_top:
+        parts = [f"{nid[:8]}.. {d:+.4f}" for nid, d in mass_top]
+        lines.append("Δmass top: " + ", ".join(parts))
+    if disp_top:
+        parts = [f"{nid[:8]}.. {d:+.4f}" for nid, d in disp_top]
+        lines.append("Δ|disp| top: " + ", ".join(parts))
+    if not mass_top and not disp_top:
+        lines.append("(no state changes captured)")
+    return "\n".join(lines)
+
+
 def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
     """Format recall results for MCP output.
 
@@ -146,7 +187,9 @@ def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
                 block += f"\n{breakdown_line}"
             block += f"\n{item.content}"
             lines.append(block)
-    return "\n\n---\n\n".join(lines)
+    body = "\n\n---\n\n".join(lines)
+    trailer = _format_training_delta(result.training_delta)
+    return body + trailer
 
 
 def format_explore(result: ExploreResponse) -> str:
@@ -158,7 +201,8 @@ def format_explore(result: ExploreResponse) -> str:
             f"[{i+1}] (score={item.final_score:.4f}, source={item.source})\n"
             f"{item.content[:200]}"
         )
-    return "\n\n---\n\n".join(lines)
+    body = "\n\n---\n\n".join(lines)
+    return body + _format_training_delta(result.training_delta)
 
 
 # --- Relations ---

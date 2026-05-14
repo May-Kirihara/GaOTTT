@@ -67,6 +67,17 @@ async def test_remember_then_forget_then_restore_roundtrip(engine_singleton):
     assert "uv over pip" in recall_out
 
 
+async def test_recall_mcp_output_includes_training_delta_trailer(engine_singleton):
+    """Phase O Stage 2 — MCP recall formatter appends the ## 訓練差分 trailer."""
+    await srv.remember(content="stage-2 trailer probe alpha gamma", source="user")
+    out = await srv.recall(query="trailer probe alpha", top_k=3)
+    assert "## 訓練差分" in out
+    assert "wave_reached=" in out
+    # depth marker shows config / requested wave depth
+    assert "depth=" in out
+    assert "persona_hop=" in out
+
+
 async def test_recall_mcp_output_includes_score_breakdown(engine_singleton):
     """Phase O Stage 1 — MCP recall formatter exposes per-result breakdown line."""
     await srv.remember(content="alpha gamma kappa observability", source="user")

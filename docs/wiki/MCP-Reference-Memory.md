@@ -70,6 +70,28 @@ recall(
 
 REST (`POST /recall`) では `items[].score_breakdown` に上記 11 field がそのまま JSON で返る。`expose_score_breakdown=false` で全体 off (legacy 互換用)。
 
+**Training delta trailer (Phase O Stage 2):** recall 出力の末尾に `## 訓練差分` セクションが付く。caller (LLM) が起こした state 変化 (backward pass) を可視化:
+
+```
+## 訓練差分
+wave_reached=12 depth=2 persona_hop=3 (top-k only)
+Δmass top: abc12345.. +0.0034, def67890.. +0.0012, fed09876.. +0.0008
+Δ|disp| top: abc12345.. +0.0124, def67890.. -0.0050, fed09876.. +0.0021
+```
+
+| field | 意味 |
+|---|---|
+| `displacement_changes` | dict<node_id, Δ\|displacement\|> — post − pre (signed)。Phase I Stage 2 query attraction の literal な観測 |
+| `mass_changes` | dict<node_id, Δmass> — Phase M self-force filter 適用後 |
+| `wave_reached_count` | wave が触れた node 数 (informational) |
+| `wave_max_depth` | 設定 / 要求された wave depth |
+| `persona_hop_reached` | persona graph (Phase J) 経由で触れた node 数 (`persona_proximity > 0`) |
+| `supernova_triggered` | recall path では常に `False` (parity field、ingest path で意味を持つ) |
+| `cache_hit` | `True` のとき simulation 走らず (prefetch cache served)、delta dicts は空 |
+| `topk_only` | default `True`、top-K 結果の node のみ delta dict に含める (context 経済)。`False` で reached 全体 |
+
+REST (`POST /recall` / `POST /explore`) では `training_delta` フィールドにそのまま JSON で返る。`training_delta_enabled=false` で全体 off。
+
 ## explore
 
 温度を上げた創発的探索。離れた記憶も引き寄せる。

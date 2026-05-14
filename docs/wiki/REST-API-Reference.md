@@ -179,6 +179,25 @@ ReDoc: http://localhost:8000/redoc
 
 **Phase O Stage 1 — Score breakdown**: 各 item に `score_breakdown` が attach され、`final_score` の additive な内訳が露出する。`final_score ≈ (virtual_cosine · decay_factor + wave_score + mass_boost + emotion_term + certainty_term) × saturation`。`raw_cosine` / `persona_proximity` / `bm25_contributed` / `forced_inclusion` は informational (sum に入らない)。`config.expose_score_breakdown=false` で `score_breakdown=null` 返却 (legacy 互換)。
 
+**Phase O Stage 2 — Training delta**: response root に `training_delta` field が attach される (recall + explore で同じ shape)。caller が起こした state 変化 (backward pass) を JSON で受け取れる:
+
+```json
+{
+  "training_delta": {
+    "displacement_changes": {"abc12345...": 0.0124, "def67890...": -0.0050},
+    "mass_changes": {"abc12345...": 0.0034, "def67890...": 0.0012},
+    "wave_reached_count": 12,
+    "wave_max_depth": 2,
+    "persona_hop_reached": 3,
+    "supernova_triggered": false,
+    "cache_hit": false,
+    "topk_only": true
+  }
+}
+```
+
+`topk_only=true` (default) で delta dicts は top-K 結果の node のみ。`training_delta_topk_only=false` で全 reached node を含める (debug 用)。`cache_hit=true` のとき simulation 走らず、dicts は空 (caller は「ガード hit で update 抑止された」と「触れた node が無かった」を区別できる)。`training_delta_enabled=false` で `training_delta=null` 返却。
+
 ### POST /explore
 
 発散的探索。`diversity` ∈ [0.0, 1.0] で gamma と wave depth/k をブースト。

@@ -90,6 +90,10 @@ recall(query="any past notes on X", top_k=10, output_mode="ids")     # existence
 - `[forced]` → memo was force-injected by your `tag_filter` / `persona_context`, not earned.
 - `[bm25]` → BM25 surface-form match contributed to the seed ranking.
 
+**Training delta (Phase O Stage 2):** every recall ends with a `## 訓練差分` trailer showing what your recall *changed* in the gravity field — `wave_reached`, `depth`, `persona_hop`, then top movers by `Δmass` and `Δ|disp|`. You're not just reading memory; you're training it. Two practical implications:
+- A memo you keep recalling accumulates mass (`Δmass +0.003, +0.002, +0.001…`) — deliberate rehearsal works.
+- `cache hit` trailer means **no simulation ran** — useful to distinguish "I touched the field" from "I got a free read".
+
 ### explore
 
 ```

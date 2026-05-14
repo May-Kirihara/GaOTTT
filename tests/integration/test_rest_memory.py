@@ -83,6 +83,29 @@ async def test_recall_returns_items_with_source_and_displacement(rest_client):
     assert "tags" in item
 
 
+async def test_recall_training_delta_in_rest_response(rest_client):
+    """Phase O Stage 2 — REST JSON response carries TrainingDelta."""
+    await rest_client.post(
+        "/remember", json={"content": "phase-o-stage-2 alpha gamma", "source": "user"},
+    )
+    resp = await rest_client.post("/recall", json={"query": "alpha gamma", "top_k": 3})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "training_delta" in data
+    td = data["training_delta"]
+    assert td is not None
+    for field in [
+        "displacement_changes", "mass_changes", "wave_reached_count",
+        "wave_max_depth", "persona_hop_reached", "supernova_triggered",
+        "cache_hit", "topk_only",
+    ]:
+        assert field in td, f"missing training_delta field: {field}"
+    assert td["cache_hit"] is False
+    assert td["supernova_triggered"] is False
+    assert isinstance(td["displacement_changes"], dict)
+    assert isinstance(td["mass_changes"], dict)
+
+
 async def test_recall_score_breakdown_in_rest_response(rest_client):
     """Phase O Stage 1 — REST JSON response carries ScoreBreakdown."""
     await rest_client.post(

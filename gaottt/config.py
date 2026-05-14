@@ -312,6 +312,16 @@ class GaOTTTConfig:
     # workaround. set False for legacy clients or to shave a few bytes.
     expose_score_breakdown: bool = True
 
+    # Phase O Stage 2 — Training delta trailer (TTT update visibility).
+    # When True, recall/explore responses carry a ``training_delta`` field
+    # exposing displacement/mass changes induced by this recall + wave reach
+    # counts. ``training_delta_topk_only`` (default True) limits the per-node
+    # delta dicts to the top-K returned nodes for context economy; set False
+    # for full reached-node coverage (debug mode). Cache hits emit a
+    # ``cache_hit=True`` delta with empty dicts (no simulation ran).
+    training_delta_enabled: bool = True
+    training_delta_topk_only: bool = True
+
     # Similarity history
     sim_buffer_size: int = 20  # Ring buffer size
 

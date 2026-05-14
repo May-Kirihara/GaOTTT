@@ -245,15 +245,52 @@ class RevalidateResponse(BaseModel):
     emotion_weight: float | None = None
 
 
+class TrainingDelta(BaseModel):
+    """Phase O Stage 2 — TTT update visibility for the caller.
+
+    State changes induced by this recall — the *backward pass* of the
+    forward-pass that ScoreBreakdown describes (Phase I Stage 2's
+    ``a = (α · score / m_i) · (q - pos_i)`` term lands here as signed
+    displacement_changes).
+
+    - ``displacement_changes`` — node_id → Δ|displacement| (post − pre, signed).
+      Positive means the node drifted *away* from its original embedding by
+      more after this recall; negative means closer.
+    - ``mass_changes`` — node_id → Δmass (Phase M self-force filter applied).
+    - ``wave_reached_count`` — total reached nodes (informational).
+    - ``wave_max_depth`` — requested / configured wave depth (not actual reach).
+    - ``persona_hop_reached`` — count of reached nodes with persona_proximity > 0
+      (Phase J graph traversal landed there).
+    - ``supernova_triggered`` — always ``False`` for recall path; kept for
+      parity with ingest path (where batch ``remember`` can trigger
+      Phase K cohort supernova).
+    - ``cache_hit`` — when ``True``, no simulation ran (prefetch cache served
+      the result), so all delta dicts/counts are zero by definition.
+    - ``topk_only`` — ``displacement_changes`` / ``mass_changes`` cover only the
+      top-K returned nodes (default ``True`` for context economy). ``False``
+      means full reached-node coverage (debug / observability mode).
+    """
+    displacement_changes: dict[str, float] = Field(default_factory=dict)
+    mass_changes: dict[str, float] = Field(default_factory=dict)
+    wave_reached_count: int = 0
+    wave_max_depth: int = 0
+    persona_hop_reached: int = 0
+    supernova_triggered: bool = False
+    cache_hit: bool = False
+    topk_only: bool = True
+
+
 class RecallResponse(BaseModel):
     items: list[MemoryItem] = Field(default_factory=list)
     count: int = 0
+    training_delta: TrainingDelta | None = None  # Phase O Stage 2
 
 
 class ExploreResponse(BaseModel):
     items: list[MemoryItem] = Field(default_factory=list)
     count: int = 0
     diversity: float = 0.0
+    training_delta: TrainingDelta | None = None  # Phase O Stage 2
 
 
 # --- Relations service ---
