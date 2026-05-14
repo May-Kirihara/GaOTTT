@@ -58,6 +58,7 @@
 - [Phase K — Stellar Supernova Cohort](Plans-Phase-K-Stellar-Supernova-Cohort.md)
 - [Phase L — Hybrid Retrieval](Plans-Phase-L-Hybrid-Retrieval.md)
 - [Phase M — Mass Conservation](Plans-Phase-M-Mass-Conservation.md)
+- [Phase N candidate β — Mass Evaporation](Plans-Phase-N-Mass-Evaporation.md)
 - [Phase O — TTT Observability](Plans-Phase-O-TTT-Observability.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
 
