@@ -326,6 +326,7 @@ class IngestRequest(BaseModel):
     recursive: bool = False
     pattern: str = "*.md,*.txt"
     chunk_size: int = Field(default=2000, ge=100)
+    include_tool_results: bool = False
 
 
 class IngestResponse(BaseModel):

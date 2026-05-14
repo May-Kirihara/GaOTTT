@@ -775,10 +775,13 @@ async def ingest(
     recursive: bool = False,
     pattern: str = "*.md,*.txt",
     chunk_size: int = 2000,
+    include_tool_results: bool = False,
 ) -> str:
     """Bulk-load files or directories into memory.
 
-    Supports Markdown (.md), plain text (.txt), and CSV (.csv).
+    Supports Markdown (.md), plain text (.txt), CSV (.csv), and Claude Code
+    transcript JSONL (.jsonl). For chat-history ingestion pass
+    ``pattern="*.jsonl"`` and ``source="claude-code"``.
 
     Args:
         path: File or directory path
@@ -786,11 +789,15 @@ async def ingest(
         recursive: Recursively scan directories
         pattern: Glob patterns (comma-separated)
         chunk_size: Max characters per chunk for long documents
+        include_tool_results: For .jsonl chat transcripts only — include
+            raw tool stdout/stderr in the exchange body (default: off;
+            usually noisy and inflates the DB).
     """
     engine = await get_engine()
     result = await ingest_service.ingest(
         engine, path=path, source=source, recursive=recursive,
         pattern=pattern, chunk_size=chunk_size,
+        include_tool_results=include_tool_results,
     )
     return formatters.format_ingest(result)
 

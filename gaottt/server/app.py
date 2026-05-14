@@ -384,6 +384,7 @@ async def ingest_files(request: IngestRequest):
         recursive=request.recursive,
         pattern=request.pattern,
         chunk_size=request.chunk_size,
+        include_tool_results=request.include_tool_results,
     )
 
 

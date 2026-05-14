@@ -13,10 +13,12 @@ async def ingest(
     recursive: bool = False,
     pattern: str = "*.md,*.txt",
     chunk_size: int = 2000,
+    include_tool_results: bool = False,
 ) -> IngestResponse:
     documents = ingest_path(
         path, source=source, recursive=recursive,
         pattern=pattern, chunk_size=chunk_size,
+        include_tool_results=include_tool_results,
     )
     if not documents:
         return IngestResponse(path=path, ingested=0, skipped=0, found=0)

@@ -40,13 +40,15 @@ uv pip install -e ".[dev]"
 
 ```bash
 # 起動
-.venv/bin/uvicorn gaottt.server.app:app --host 0.0.0.0 --port 8000
+.venv/bin/python -m uvicorn gaottt.server.app:app --host 0.0.0.0 --port 8000
 
 # 開発時（自動リロード）
-.venv/bin/uvicorn gaottt.server.app:app --reload
+.venv/bin/python -m uvicorn gaottt.server.app:app --reload
 
 # 停止: Ctrl+C → graceful shutdown → dirty フラッシュ → FAISS 保存
 ```
+
+> **`.venv/bin/uvicorn` を直接呼ぶと動かない場合**: venv のエントリポイント (shebang) が古い `/mnt/holyland/Project/GER-RAG/.venv/bin/python3` を指していると、`bash: cannot execute: required file not found` で失敗する（GER-RAG → GaOTTT への rename の名残）。上のように `python -m uvicorn` で呼ぶか、一度だけ `sed -i 's|/mnt/holyland/Project/GER-RAG|/mnt/holyland/Project/GaOTTT|g' .venv/bin/*` で全 shebang を修正する。`uv run` を使う場合は `--no-extra gpu`（`pyproject.toml` の optional `gpu` extra は `faiss-gpu>=1.8.0` で PyPI 未公開のため、デフォルトの resolve で失敗する）。
 
 Swagger UI: http://localhost:8000/docs
 

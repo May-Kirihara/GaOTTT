@@ -93,10 +93,20 @@ ingest(
   recursive: bool = False,
   pattern: str = "*.md,*.txt",
   chunk_size: int = 2000,
+  include_tool_results: bool = False,
 )
 ```
 
-対応形式: `.md`（`##` 見出し or サイズで分割）、`.txt`（段落で分割）、`.csv`（行単位、`content`/`text`/`body` 列を自動検出）
+対応形式:
+
+- `.md` — `##` 見出し or サイズで分割
+- `.txt` — 段落で分割
+- `.csv` — 行単位、`content`/`text`/`body`/`message` 列を自動検出（`id` 列があれば `original_id` に使う）
+- `.jsonl` — Claude Code 形式のチャット履歴（user prompt + 続く assistant 群を **1 exchange** にまとめて 1 document、CLI 注入や `permission-mode` / synthetic 行は skip、`tool_use` は `[tool:<name>]` で要約）
+
+`include_tool_results` は `.jsonl` 専用。`true` にすると `tool_result` の生 stdout/stderr も exchange 本文に追記する（DB 容量が増えるので既定 `false`）。チャット履歴を流し込むときは `pattern="*.jsonl"`, `source="claude-code"` を渡す。詳細は [Operations — Ingestion](Operations-Ingestion.md)。
+
+> **既存 backend は再起動が必要**: `.jsonl` ディスパッチと `include_tool_results` は loader 改修後の機能。古いプロセスがメモリにロードしていると `.jsonl` をプレーンテキスト扱いする。
 
 ## auto_remember
 
