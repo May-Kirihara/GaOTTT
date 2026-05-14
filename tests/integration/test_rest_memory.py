@@ -137,6 +137,53 @@ async def test_recall_score_breakdown_in_rest_response(rest_client):
     assert abs(expected - final) <= max(1e-6, abs(final) * 1e-4)
 
 
+async def test_recall_routing_hint_in_rest_response(rest_client):
+    """Phase O Stage 3 — REST JSON response carries RoutingHint when auto-routed."""
+    await rest_client.post(
+        "/remember",
+        json={
+            "content": "Phase O Stage 3 を完了する",
+            "source": "commitment",
+        },
+    )
+    resp = await rest_client.post(
+        "/recall",
+        json={"query": "現在 active な commitment は?", "top_k": 3},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "routing_hint" in data
+    h = data["routing_hint"]
+    assert h is not None
+    for field in ("aspect", "pattern_matched", "auto_routed", "reflect_summary"):
+        assert field in h, f"missing routing_hint field: {field}"
+    assert h["pattern_matched"] is True
+    assert h["aspect"] == "commitments"
+    assert h["auto_routed"] is True
+    assert h["reflect_summary"] is not None
+    assert "Phase O Stage 3" in h["reflect_summary"]
+
+
+async def test_recall_auto_route_false_no_summary(rest_client):
+    """auto_route=False on the request suppresses the reflect run."""
+    await rest_client.post(
+        "/remember", json={"content": "no-route check", "source": "commitment"},
+    )
+    resp = await rest_client.post(
+        "/recall",
+        json={
+            "query": "現在 active な commitment",
+            "top_k": 3,
+            "auto_route": False,
+        },
+    )
+    data = resp.json()
+    h = data.get("routing_hint")
+    if h is not None:
+        assert h["auto_routed"] is False
+        assert h["reflect_summary"] is None
+
+
 async def test_recall_source_filter_narrows_results(rest_client):
     await rest_client.post(
         "/remember", json={"content": "agent note alpha", "source": "agent"},

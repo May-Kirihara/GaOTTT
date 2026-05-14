@@ -68,10 +68,13 @@
 | expose_score_breakdown | `True` | each QueryResultItem に `ScoreBreakdown` を attach。`False` で `None` を返す (legacy 互換、context 数 byte 節約) |
 | training_delta_enabled | `True` | recall/explore response に `TrainingDelta` (state 変化 trailer) を attach。`False` で `None` を返す (legacy 互換) |
 | training_delta_topk_only | `True` | delta dicts (`displacement_changes` / `mass_changes`) を top-K 結果の node のみに限定 (context 経済)。`False` で全 reached node を含める (debug / observability mode) |
+| auto_route_enabled | `True` | recall/explore の query 形式が構造化 aspect に match したら `reflect` を並走実行して `routing_hint.reflect_summary` に attach。`False` で完全 off (legacy 自由文 recall のみ) |
 
 > **チューニング助言 (Stage 1)**: 既定 `True` のまま運用推奨。breakdown は scoring loop と同じパスで構築されるので overhead は無視可能 (BM25 hit set 算出に 1 query × O(n) 程度)、context payload も 1 item あたり ~140 byte 増のみ。LLM caller (Claude / agent) が `breakdown.raw_cosine` を見て「semantic 弱いのに mass で勝った結果」を自律的に弾けるようになるので、Sonnet 本番 acceptance で観察された "score deception" 系の罠を機構レベルで防げる。`False` にする状況は (a) extreme low-context client (b) breakdown 表示で混乱する non-TTT-aware caller 向け fallback (c) emergency rollback の 3 ケースのみ。
 
 > **チューニング助言 (Stage 2)**: 既定 `True` + `topk_only=True` のまま運用推奨。delta capture は `_update_simulation` の前後で `displacement_norm` + `mass` を snapshot するだけなので overhead は O(top_k) で無視可能、payload も top_k=5 で ~250 byte 増程度。`topk_only=False` は **デバッグ専用** — `wave_initial_k × max_depth^depth` の reached node 全件 (大規模 DB で数百件) が delta dict に乗るので context を消費する。「mass が累積していく感覚」を LLM caller が掴めるのは Hebbian deliberate rehearsal の literal な前提条件、`cache_hit=True` の trailer は「自分が field を訓練できる時 / できない時」の境界を明示する効果。`training_delta_enabled=False` は emergency rollback 用、`expose_score_breakdown` と同じ判断基準。
+
+> **チューニング助言 (Stage 3)**: 既定 `True` のまま運用推奨。classifier 自体は O(patterns) 個の compiled regex を 1 query に走らせるだけ (現在 ~15 pattern、< 10 µs)、pattern が match した場合のみ並走で `reflect` aspect 1 件を走らせる。`reflect` aspect は最大で `cache.get_all_nodes()` を一巡 + `store.get_document()` を最大 limit=10 回叩く程度なので 1k node 規模で数 ms、22k node 規模でも 100ms 以下。`False` にする状況は (a) classifier の誤 routing が頻発する environment (現状の Japanese + English pattern では未観測) (b) 並走で別 path を走らせたくない low-latency 用途 (c) reflect summary が context 圧迫する extreme tight loop。per-call の `auto_route=False` で test / 一時診断にも対応。**Phase M の「source 分岐ゼロの単一規則」を侵さない**: pattern は caller の query 形式 (surface form) を classify するだけで、physics rule (mass update / Hooke / kick) は一切触らない — query intent layer の routing。
 
 ## Mass Conservation + mass-based BH (Phase M Stage 1)
 

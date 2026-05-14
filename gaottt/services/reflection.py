@@ -368,3 +368,74 @@ async def persona_snapshot(engine: GaOTTTEngine) -> PersonaSnapshotResponse:
         styles=styles,
         relationships=rels,
     )
+
+
+# ----- Aspect dispatcher (Phase O Stage 3) -----
+
+async def dispatch_aspect(
+    engine: GaOTTTEngine,
+    aspect: str,
+    limit: int = 10,
+) -> str:
+    """Run an aspect by name and return the formatted MCP-style string.
+
+    Shared by the MCP ``reflect`` tool and by ``services.memory.recall`` /
+    ``services.memory.explore`` when query-routing matches a structured aspect
+    (Phase O Stage 3). Returns ``"Unknown aspect: ..."`` for unrecognised
+    names so callers (including the auto-router) can surface the failure
+    without raising.
+    """
+    # Import locally to avoid the formatters module re-importing this one.
+    from gaottt.services import formatters
+
+    if aspect == "summary":
+        return formatters.format_reflect_summary(await summary(engine))
+    if aspect == "hot_topics":
+        return formatters.format_reflect_hot_topics(await hot_topics(engine, limit=limit))
+    if aspect == "connections":
+        return formatters.format_reflect_connections(await connections(engine, limit=limit))
+    if aspect == "dormant":
+        return formatters.format_reflect_dormant(await dormant(engine, limit=limit))
+    if aspect == "duplicates":
+        return formatters.format_reflect_duplicates(
+            await duplicates(engine, limit=limit), limit=limit,
+        )
+    if aspect == "relations":
+        return formatters.format_reflect_relations_overview(
+            await relations_overview(engine, limit=limit),
+        )
+    if aspect == "tasks_todo":
+        return formatters.format_reflect_tasks_todo(
+            await tasks_todo(engine, limit=limit), limit=limit,
+        )
+    if aspect == "tasks_doing":
+        return formatters.format_reflect_tasks_doing(
+            await tasks_doing(engine, limit=limit),
+        )
+    if aspect == "tasks_completed":
+        return formatters.format_reflect_tasks_completed(
+            await tasks_completed(engine, limit=limit), limit=limit,
+        )
+    if aspect == "tasks_abandoned":
+        return formatters.format_reflect_tasks_abandoned(
+            await tasks_abandoned(engine, limit=limit), limit=limit,
+        )
+    if aspect == "commitments":
+        return formatters.format_reflect_commitments(
+            await commitments(engine, limit=limit), limit=limit,
+        )
+    if aspect == "intentions":
+        return formatters.format_reflect_intentions(
+            await intentions(engine, limit=limit), limit=limit,
+        )
+    if aspect == "values":
+        return formatters.format_reflect_values(
+            await values_(engine, limit=limit), limit=limit,
+        )
+    if aspect == "relationships":
+        return formatters.format_reflect_relationships(
+            await relationships(engine, limit=limit),
+        )
+    if aspect == "persona":
+        return formatters.format_persona_snapshot(await persona_snapshot(engine))
+    return f"Unknown aspect: {aspect}"

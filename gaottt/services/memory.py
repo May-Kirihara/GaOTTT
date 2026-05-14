@@ -21,8 +21,10 @@ from gaottt.core.types import (
     RememberResponse,
     RestoreResponse,
     RevalidateResponse,
+    RoutingHint,
     TrainingDelta,
 )
+from gaottt.services import query_routing, reflection as reflection_service
 
 
 async def save_memory(
@@ -116,6 +118,41 @@ def _to_memory_item(engine: GaOTTTEngine, r) -> MemoryItem:
     )
 
 
+async def _build_routing_hint(
+    engine: GaOTTTEngine,
+    query: str,
+    auto_route: bool,
+    limit: int = 10,
+) -> RoutingHint | None:
+    """Phase O Stage 3 — classify ``query``; optionally run matching reflect.
+
+    Returns ``None`` when both the per-call flag and the config switch are off
+    (caller opted out completely — no hint to attach). Returns a populated
+    ``RoutingHint`` otherwise so the caller can distinguish:
+      - ``pattern_matched=False`` — router was on, no aspect matched (free-form)
+      - ``auto_routed=True``      — aspect matched and reflect summary attached
+      - ``auto_routed=False, pattern_matched=True`` — surfaced because the
+        config switch was off after a per-call ``auto_route=True``
+    """
+    config_on = engine.config.auto_route_enabled
+    if not auto_route and not config_on:
+        return None
+    aspect = query_routing.detect_aspect(query)
+    pattern_matched = aspect is not None
+    will_run = bool(pattern_matched and auto_route and config_on)
+    summary: str | None = None
+    if will_run:
+        summary = await reflection_service.dispatch_aspect(
+            engine, aspect, limit=limit,
+        )
+    return RoutingHint(
+        aspect=aspect,
+        pattern_matched=pattern_matched,
+        auto_routed=will_run,
+        reflect_summary=summary,
+    )
+
+
 def _delta_from_dict(d: dict | None) -> TrainingDelta | None:
     """Phase O Stage 2 — convert the engine-populated out-dict to TrainingDelta.
 
@@ -145,6 +182,7 @@ async def recall(
     force_refresh: bool = False,
     persona_context: list[str] | None = None,
     tag_filter: list[str] | None = None,
+    auto_route: bool = True,
 ) -> RecallResponse:
     # Phase H Stage 2: source_filter is applied at the wave seed step inside
     # propagate_gravity_wave (engine.query → _query_internal). The post-filter
@@ -182,9 +220,11 @@ async def recall(
                 filtered.append(r)
         raw = filtered[:top_k]
     items = [_to_memory_item(engine, r) for r in raw]
+    routing_hint = await _build_routing_hint(engine, query, auto_route)
     return RecallResponse(
         items=items, count=len(items),
         training_delta=_delta_from_dict(delta_out),
+        routing_hint=routing_hint,
     )
 
 
@@ -195,6 +235,7 @@ async def explore(
     top_k: int = 10,
     persona_context: list[str] | None = None,
     tag_filter: list[str] | None = None,
+    auto_route: bool = True,
 ) -> ExploreResponse:
     config = engine.config
     original_gamma = config.gamma
@@ -215,9 +256,11 @@ async def explore(
         config.gamma = original_gamma
 
     items = [_to_memory_item(engine, r) for r in raw]
+    routing_hint = await _build_routing_hint(engine, query, auto_route)
     return ExploreResponse(
         items=items, count=len(items), diversity=diversity,
         training_delta=_delta_from_dict(delta_out),
+        routing_hint=routing_hint,
     )
 
 

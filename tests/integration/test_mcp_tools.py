@@ -93,6 +93,32 @@ async def test_recall_mcp_output_includes_score_breakdown(engine_singleton):
     assert "persona_prox=" in out
 
 
+async def test_recall_mcp_output_includes_routing_hint_for_aspect_query(engine_singleton):
+    """Phase O Stage 3 — MCP recall formatter appends auto-routed reflect summary."""
+    # Plant a commitment-source memory directly; ``reflect(aspect='commitments')``
+    # surfaces it without needing a parent intention.
+    await srv.remember(
+        content="Phase O Stage 3 MCP trailer probe を完了する",
+        source="commitment",
+    )
+    out = await srv.recall(
+        query="現在 active な commitment は?", top_k=3,
+    )
+    assert "auto-routed" in out
+    # The trailer marker — written as "## 関連 reflect サマリ (auto-routed)"
+    assert "関連 reflect サマリ" in out
+    assert "commitments" in out
+
+
+async def test_recall_mcp_output_no_routing_hint_for_free_form_query(engine_singleton):
+    """Free-form query → no routing trailer (legacy free-form path)."""
+    await srv.remember(content="free-form routing probe", source="user")
+    out = await srv.recall(
+        query="free-form routing probe", top_k=3,
+    )
+    assert "auto-routed" not in out
+
+
 async def test_remember_hypothesis_assigns_default_ttl(engine_singleton):
     out = await srv.remember(
         content="hypothesis: gravity collision could merge similar memories",

@@ -69,7 +69,7 @@ remember(content="Finally fixed the FAISS leak", emotion=0.8, certainty=0.9)
 ```
 recall(query, top_k=5, source_filter=None, wave_depth=None, wave_k=None,
        force_refresh=False, persona_context=None, tag_filter=None,
-       output_mode="full")
+       output_mode="full", auto_route=True)
 ```
 
 - `output_mode` — `"compact"` (content truncated at 300 chars; **prefer this for triage**), `"ids"` (header only — id, scores, tags), `"full"` (complete content, default).
@@ -77,6 +77,7 @@ recall(query, top_k=5, source_filter=None, wave_depth=None, wave_k=None,
 - `persona_context` — list of declared value / intention / commitment ids. Force-injects them into both the seed pool AND the final top-K, bypassing `source_filter`.
 - `tag_filter` — list of tag substrings; force-injects matching nodes into both seed and final top-K, bypassing `source_filter`. Use when query and target memo live in different vocabularies.
 - `force_refresh=True` — bypass the prefetch cache (rare; cache is auto-invalidated on destructive ops).
+- `auto_route=False` — disable Phase O Stage 3 auto-routing for this call (otherwise queries phrased as structured aspect questions auto-attach a matching `reflect` summary; see "Auto-routed reflect" below).
 
 ```
 recall(query="design decisions", top_k=5, output_mode="compact")
@@ -94,11 +95,13 @@ recall(query="any past notes on X", top_k=10, output_mode="ids")     # existence
 - A memo you keep recalling accumulates mass (`Δmass +0.003, +0.002, +0.001…`) — deliberate rehearsal works.
 - `cache hit` trailer means **no simulation ran** — useful to distinguish "I touched the field" from "I got a free read".
 
+**Auto-routed reflect (Phase O Stage 3, default on):** when your query phrasing matches a structured persona / task aspect — e.g. "現在 active な commitment は?", "持っている value", "今やってる task", "my intentions" — `recall` runs the matching `reflect` aspect in parallel and appends a `## 関連 reflect サマリ (auto-routed)` section. You don't need to switch tools manually. Pattern-based on the query surface form (not source class), so it never gates physics — it only routes which aspect summary rides along. Pass `auto_route=False` to suppress for one call (debugging, or you want pure free-form output).
+
 ### explore
 
 ```
 explore(query, top_k=5, diversity=0.5, source_filter=None,
-        persona_context=None, tag_filter=None)
+        persona_context=None, tag_filter=None, auto_route=True)
 ```
 
 Higher-temperature search; pulls in cross-domain neighbors a normal recall would miss. `diversity`: `0.0` (near-normal) → `0.5` (default) → `1.0` (maximum).

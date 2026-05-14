@@ -179,6 +179,11 @@ class RecallRequest(BaseModel):
     # Phase J Stage 2: explicit pool injection.
     persona_context: list[str] | None = None  # node ids of declared value/intention/commitment; None → auto-detect (Stage 1)
     tag_filter: list[str] | None = None       # additive injection — substrings (OR match) of metadata.tags entries
+    # Phase O Stage 3: when True, the service classifies the query surface form
+    # and runs the matching ``reflect`` aspect in parallel, attaching summary
+    # to ``RecallResponse.routing_hint``. Default True (engine-side off via
+    # config.auto_route_enabled). Pass False to suppress for a single call.
+    auto_route: bool = True
 
 
 class ExploreRequest(BaseModel):
@@ -188,6 +193,9 @@ class ExploreRequest(BaseModel):
     # Phase J Stage 3: parity with recall — explicit pool injection for explore.
     persona_context: list[str] | None = None
     tag_filter: list[str] | None = None
+    # Phase O Stage 3: parity with recall — auto-route to reflect when surface
+    # form matches a structured aspect.
+    auto_route: bool = True
 
 
 class ForgetRequest(BaseModel):
@@ -280,10 +288,32 @@ class TrainingDelta(BaseModel):
     topk_only: bool = True
 
 
+class RoutingHint(BaseModel):
+    """Phase O Stage 3 — auto-routed reflect summary attached to recall/explore.
+
+    Set when the query surface form matched a structured persona/task aspect
+    (e.g. "現在 active な commitment" → ``aspect="commitments"``) and the
+    service ran the matching ``reflect`` aspect in parallel. The free-form
+    recall result is still returned in ``items``; the reflect summary lives
+    here so the caller sees both layers without having to switch tools.
+
+    ``reflect_summary`` is the same human-readable string that ``reflect``
+    would produce for the matched aspect (via ``services.formatters``).
+    ``auto_routed=False`` means the caller passed ``auto_route=False`` or the
+    config switch was off — the field is set so the caller can tell the
+    difference between "router was off" and "router didn't match".
+    """
+    aspect: str | None = None              # matched aspect name (e.g. "commitments"), or None when no match
+    pattern_matched: bool = False          # True iff detect_aspect returned non-None
+    auto_routed: bool = False              # True iff service actually ran the reflect call
+    reflect_summary: str | None = None     # formatted aspect output, or None if no run
+
+
 class RecallResponse(BaseModel):
     items: list[MemoryItem] = Field(default_factory=list)
     count: int = 0
     training_delta: TrainingDelta | None = None  # Phase O Stage 2
+    routing_hint: RoutingHint | None = None      # Phase O Stage 3
 
 
 class ExploreResponse(BaseModel):
@@ -291,6 +321,7 @@ class ExploreResponse(BaseModel):
     count: int = 0
     diversity: float = 0.0
     training_delta: TrainingDelta | None = None  # Phase O Stage 2
+    routing_hint: RoutingHint | None = None      # Phase O Stage 3
 
 
 # --- Relations service ---

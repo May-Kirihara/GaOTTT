@@ -139,11 +139,12 @@ ReDoc: http://localhost:8000/redoc
   "wave_k": null,
   "force_refresh": false,
   "persona_context": null,
-  "tag_filter": null
+  "tag_filter": null,
+  "auto_route": true
 }
 ```
 
-`tag_filter` は `source_filter` を bypass する（呼び出し側の明示的指定が優先）。`output_mode` は MCP 専用（REST は常に構造化 JSON を返すため不要）。
+`tag_filter` は `source_filter` を bypass する（呼び出し側の明示的指定が優先）。`output_mode` は MCP 専用（REST は常に構造化 JSON を返すため不要）。`auto_route` (Phase O Stage 3) は default `true`。
 
 **レスポンス 200**:
 ```json
@@ -198,15 +199,30 @@ ReDoc: http://localhost:8000/redoc
 
 `topk_only=true` (default) で delta dicts は top-K 結果の node のみ。`training_delta_topk_only=false` で全 reached node を含める (debug 用)。`cache_hit=true` のとき simulation 走らず、dicts は空 (caller は「ガード hit で update 抑止された」と「触れた node が無かった」を区別できる)。`training_delta_enabled=false` で `training_delta=null` 返却。
 
+**Phase O Stage 3 — Routing hint**: query 形式が構造化された aspect 問い合わせ (例 `"現在 active な commitment"`, `"持っている value"`, `"今やってる task"`) に match したら、対応する `reflect` aspect を並走実行して `routing_hint` に summary を attach する:
+
+```json
+{
+  "routing_hint": {
+    "aspect": "commitments",
+    "pattern_matched": true,
+    "auto_routed": true,
+    "reflect_summary": "Active commitments (3 total, showing top 10):\n  id=abc12345 deadline=2026-05-31 (+17.0d) | ...\n  ..."
+  }
+}
+```
+
+`pattern_matched=false` (自由文 query) → 並走無し、`reflect_summary=null`。`auto_routed=false` (per-call `auto_route=false` or `auto_route_enabled=false`) でも `pattern_matched` だけは true で返り、caller は「router が off だった」と「pattern に一致しなかった」を区別できる。`auto_route` を request body に省略すると default `true`。
+
 ### POST /explore
 
 発散的探索。`diversity` ∈ [0.0, 1.0] で gamma と wave depth/k をブースト。
 
 ```json
-{"query": "connections between themes", "diversity": 0.7, "top_k": 10}
+{"query": "connections between themes", "diversity": 0.7, "top_k": 10, "auto_route": true}
 ```
 
-**レスポンス 200**: `items`（recall と同じ shape）+ `diversity`。
+**レスポンス 200**: `items`（recall と同じ shape）+ `diversity` + `training_delta` + `routing_hint` (Phase O Stage 2 / 3 — recall と parity)。
 
 ### POST /forget
 

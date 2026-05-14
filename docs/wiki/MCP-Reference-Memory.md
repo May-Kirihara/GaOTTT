@@ -34,6 +34,7 @@ recall(
   persona_context: list[str] | None = None, # Phase J Stage 2: 明示的 ID リスト。seed pool に強制注入 + persona boost
   tag_filter: list[str] | None = None,   # Phase J Stage 2: タグ substring (OR 一致) の node を seed pool に強制注入。source_filter を bypass
   output_mode: str = "full",             # MCP 専用トークン節約。"full"=全文, "compact"=300字切詰, "ids"=ID+スコアのみ
+  auto_route: bool = True,               # Phase O Stage 3: 構造化質問なら reflect 並走 + summary 添付
 )
 → 各結果に id=<uuid> が含まれる
 ```
@@ -92,6 +93,28 @@ wave_reached=12 depth=2 persona_hop=3 (top-k only)
 
 REST (`POST /recall` / `POST /explore`) では `training_delta` フィールドにそのまま JSON で返る。`training_delta_enabled=false` で全体 off。
 
+**Auto-routed reflect (Phase O Stage 3):** query 形式 (surface form) が構造化された aspect 問い合わせに一致したら (例: 「現在 active な commitment」「持っている value」「今やってる task」「my intentions」) `recall` / `explore` は **対応する `reflect` aspect を並走実行** し、結果を末尾に append:
+
+```
+## 関連 reflect サマリ (auto-routed)
+_aspect_: `commitments` (query 形式から自動判定 — 関連した state snapshot を併走実行)
+
+Active commitments (3 total, showing top 10):
+  id=abc12345 deadline=2026-05-31 (+17.0d) | niceboat self-knowledge を完了する
+  ...
+```
+
+| field (`routing_hint`) | 意味 |
+|---|---|
+| `aspect` | 一致した aspect 名 (例 `"commitments"`, `"values"`) — 一致なしは `null` |
+| `pattern_matched` | classifier がパターン一致したか (bool) |
+| `auto_routed` | 実際に `reflect` が並走実行されたか (bool) — `auto_route=False` か config off だと `false` |
+| `reflect_summary` | 並走実行された場合の整形済み summary 文字列、なしなら `null` |
+
+判定は **query 形式 (surface form) ベース、source 分岐ゼロ** — Phase M の単一規則を侵さない (caller の質問形式を見るだけで、physics rule は一切触らない)。一致しない自由文 query は legacy free-form recall のまま動作。`auto_route=False` で単発無効化、`config.auto_route_enabled=False` で全体無効化。
+
+REST (`POST /recall` / `POST /explore`) では `routing_hint` フィールドにそのまま JSON で返る。
+
 ## explore
 
 温度を上げた創発的探索。離れた記憶も引き寄せる。
@@ -103,6 +126,7 @@ explore(
   top_k=10,
   persona_context: list[str] | None = None,  # recall と同じ注入引数
   tag_filter: list[str] | None = None,
+  auto_route: bool = True,                    # Phase O Stage 3: recall と parity
 )
 ```
 

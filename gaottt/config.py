@@ -322,6 +322,17 @@ class GaOTTTConfig:
     training_delta_enabled: bool = True
     training_delta_topk_only: bool = True
 
+    # Phase O Stage 3 — Query routing (recall + reflect auto-merge).
+    # When True, ``recall`` / ``explore`` heuristically classify the query
+    # surface form (e.g. "現在 active な commitment", "持っている value") and run
+    # the corresponding ``reflect`` aspect in parallel, attaching the summary to
+    # ``routing_hint``. caller can ask free-form questions about declared
+    # persona / task state without remembering to switch tools. Pattern-based
+    # (query syntax) — *not* source-based — so it stays compatible with Phase M
+    # "source 分岐ゼロの単一規則". Disable to suppress for all calls; per-call
+    # opt-out via ``auto_route=False`` on the recall request.
+    auto_route_enabled: bool = True
+
     # Similarity history
     sim_buffer_size: int = 20  # Ring buffer size
 

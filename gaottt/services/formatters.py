@@ -147,6 +147,25 @@ def _format_training_delta(td) -> str:
     return "\n".join(lines)
 
 
+def _format_routing_hint(h) -> str:
+    """Phase O Stage 3 — auto-routed reflect summary trailer.
+
+    Emits a ``## 関連 reflect サマリ (auto-routed)`` section when the surface
+    form of the query matched a structured aspect and the reflect summary
+    was attached. Keeps existing recall substrings untouched (CLAUDE.md
+    "MCP formatter の出力文字列を変えない").
+    """
+    if h is None or not h.auto_routed or h.reflect_summary is None:
+        return ""
+    aspect_label = h.aspect or "?"
+    return (
+        f"\n\n## 関連 reflect サマリ (auto-routed)\n"
+        f"_aspect_: `{aspect_label}` "
+        f"(query 形式から自動判定 — 関連した state snapshot を併走実行)\n\n"
+        f"{h.reflect_summary}"
+    )
+
+
 def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
     """Format recall results for MCP output.
 
@@ -156,7 +175,12 @@ def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
       "ids"     — header line only, no content
     """
     if not result.items:
-        return "No memories found."
+        # Even with no memories, surface the auto-routed reflect summary so
+        # the caller still gets the structured answer the surface form asked
+        # for (Phase O Stage 3 — the whole point of routing is to substitute
+        # when free-form recall would have come back empty).
+        routing_trailer = _format_routing_hint(result.routing_hint)
+        return "No memories found." + routing_trailer
     lines = []
     for i, item in enumerate(result.items):
         tag_str = f" [{', '.join(item.tags)}]" if item.tags else ""
@@ -189,12 +213,15 @@ def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
             lines.append(block)
     body = "\n\n---\n\n".join(lines)
     trailer = _format_training_delta(result.training_delta)
-    return body + trailer
+    routing_trailer = _format_routing_hint(result.routing_hint)
+    return body + trailer + routing_trailer
 
 
 def format_explore(result: ExploreResponse) -> str:
     if not result.items:
-        return "No memories found for exploration."
+        return "No memories found for exploration." + _format_routing_hint(
+            result.routing_hint,
+        )
     lines = [f"Exploration (diversity={result.diversity:.1f}):"]
     for i, item in enumerate(result.items):
         lines.append(
@@ -202,7 +229,11 @@ def format_explore(result: ExploreResponse) -> str:
             f"{item.content[:200]}"
         )
     body = "\n\n---\n\n".join(lines)
-    return body + _format_training_delta(result.training_delta)
+    return (
+        body
+        + _format_training_delta(result.training_delta)
+        + _format_routing_hint(result.routing_hint)
+    )
 
 
 # --- Relations ---

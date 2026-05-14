@@ -215,6 +215,7 @@ async def recall(
     persona_context: list[str] | None = None,
     tag_filter: list[str] | None = None,
     output_mode: str = "full",
+    auto_route: bool = True,
 ) -> str:
     """Search long-term memory with gravitational wave propagation.
 
@@ -257,12 +258,20 @@ async def recall(
                      read in full. Saves significant tokens on large recalls.
                      "ids" — header line only (id, scores, tags), no content;
                      use when you only need to know which memories exist.
+        auto_route: Phase O Stage 3 — when True (default), the service
+                    detects queries phrased as structured aspect questions
+                    (e.g. "現在 active な commitment", "持っている value") and
+                    runs the matching ``reflect`` aspect in parallel. The
+                    summary is appended to the response so you do not have to
+                    switch to ``reflect`` manually. Pass False to suppress for
+                    this call (debugging, or you want pure free-form recall).
     """
     engine = await get_engine()
     result = await memory_service.recall(
         engine, query=query, top_k=top_k, source_filter=source_filter,
         wave_depth=wave_depth, wave_k=wave_k, force_refresh=force_refresh,
         persona_context=persona_context, tag_filter=tag_filter,
+        auto_route=auto_route,
     )
     return formatters.format_recall(result, output_mode=output_mode)
 
@@ -274,6 +283,7 @@ async def explore(
     top_k: int = 10,
     persona_context: list[str] | None = None,
     tag_filter: list[str] | None = None,
+    auto_route: bool = True,
 ) -> str:
     """Explore memories serendipitously with increased randomness.
 
@@ -291,11 +301,15 @@ async def explore(
         top_k: Number of results
         persona_context: Explicit persona ids (Phase J Stage 2 semantics)
         tag_filter: Tag substring list (OR match) for additive injection
+        auto_route: Phase O Stage 3 — auto-attach a matching ``reflect``
+                    summary when the query phrasing maps to a structured
+                    aspect. Same semantics as ``recall.auto_route``.
     """
     engine = await get_engine()
     result = await memory_service.explore(
         engine, query=query, diversity=diversity, top_k=top_k,
         persona_context=persona_context, tag_filter=tag_filter,
+        auto_route=auto_route,
     )
     return formatters.format_explore(result)
 
@@ -331,53 +345,14 @@ async def reflect(
 
 
 async def _reflect_dispatch(engine, aspect: str, limit: int) -> str:
-    """Dispatch a reflect aspect through the service + formatter layers."""
-    if aspect == "summary":
-        r = await reflection_service.summary(engine)
-        return formatters.format_reflect_summary(r)
-    if aspect == "hot_topics":
-        r = await reflection_service.hot_topics(engine, limit=limit)
-        return formatters.format_reflect_hot_topics(r)
-    if aspect == "connections":
-        r = await reflection_service.connections(engine, limit=limit)
-        return formatters.format_reflect_connections(r)
-    if aspect == "dormant":
-        r = await reflection_service.dormant(engine, limit=limit)
-        return formatters.format_reflect_dormant(r)
-    if aspect == "duplicates":
-        r = await reflection_service.duplicates(engine, limit=limit)
-        return formatters.format_reflect_duplicates(r, limit=limit)
-    if aspect == "relations":
-        r = await reflection_service.relations_overview(engine, limit=limit)
-        return formatters.format_reflect_relations_overview(r)
-    if aspect == "tasks_todo":
-        r = await reflection_service.tasks_todo(engine, limit=limit)
-        return formatters.format_reflect_tasks_todo(r, limit=limit)
-    if aspect == "tasks_doing":
-        r = await reflection_service.tasks_doing(engine, limit=limit)
-        return formatters.format_reflect_tasks_doing(r)
-    if aspect == "tasks_completed":
-        r = await reflection_service.tasks_completed(engine, limit=limit)
-        return formatters.format_reflect_tasks_completed(r, limit=limit)
-    if aspect == "tasks_abandoned":
-        r = await reflection_service.tasks_abandoned(engine, limit=limit)
-        return formatters.format_reflect_tasks_abandoned(r, limit=limit)
-    if aspect == "commitments":
-        r = await reflection_service.commitments(engine, limit=limit)
-        return formatters.format_reflect_commitments(r, limit=limit)
-    if aspect == "intentions":
-        r = await reflection_service.intentions(engine, limit=limit)
-        return formatters.format_reflect_intentions(r, limit=limit)
-    if aspect == "values":
-        r = await reflection_service.values_(engine, limit=limit)
-        return formatters.format_reflect_values(r, limit=limit)
-    if aspect == "relationships":
-        r = await reflection_service.relationships(engine, limit=limit)
-        return formatters.format_reflect_relationships(r)
-    if aspect == "persona":
-        r = await reflection_service.persona_snapshot(engine)
-        return formatters.format_persona_snapshot(r)
-    return f"Unknown aspect: {aspect}"
+    """Thin wrapper for backward-compat — delegates to the service dispatcher.
+
+    The actual aspect → service-fn + formatter mapping lives in
+    ``gaottt.services.reflection.dispatch_aspect`` so the recall auto-router
+    (Phase O Stage 3) can reuse the same table without re-importing the
+    server layer.
+    """
+    return await reflection_service.dispatch_aspect(engine, aspect, limit=limit)
 
 
 @mcp.tool()
