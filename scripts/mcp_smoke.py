@@ -343,7 +343,12 @@ async def run_all(data_dir: Path) -> int:
 
     params = StdioServerParameters(
         command=str(PYTHON),
-        args=["-m", "gaottt.server.mcp_server"],
+        # Force --transport=stdio explicitly: the server's default is
+        # proxy mode (2026-05-13), which would route calls to the
+        # production HTTP backend at localhost:7878 and ignore
+        # GAOTTT_DATA_DIR. Stdio mode is what the smoke wants — direct,
+        # isolated, talking only to the just-spawned process.
+        args=["-m", "gaottt.server.mcp_server", "--transport=stdio"],
         env=env,
         cwd=str(PROJECT_ROOT),
     )
