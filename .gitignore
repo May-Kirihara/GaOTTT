@@ -215,6 +215,7 @@ data/
 
 eval_output
 input/documents.csv
+input/projects
 .mcp.json
 .specify
 .claude

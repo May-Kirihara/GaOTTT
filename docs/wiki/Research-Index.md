@@ -14,6 +14,7 @@ GaOTTT の設計根拠、評価、実験レポートの目次。
 | レポート | 内容 |
 |---|---|
 | [Gravity as Optimizer (TTT)](Research-Gravity-As-Optimizer.md) | 重力式更新と Heavy ball SGD / Hebbian / SOM / TTT の**構造的対応関係**の分析（解釈の前提つき） |
+| [Muon as Thought Experiment](Research-Muon-Thought-Experiment.md) | SGD 同型関係を Muon (spectral whitening) に拡張する場合の設計問題と緊張関係 — 思考実験 |
 
 ## 設計根拠
 

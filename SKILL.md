@@ -59,7 +59,7 @@ remember(content, source="agent", tags=None, context=None,
 
 ```
 remember(content="No pip; use uv", source="user", tags=["preference"])
-remember(content="Phase L Stage 1 完遬 (BM25 union seed)", source="compaction")
+remember(content="Phase L Stage 1 完了 (BM25 union seed)", source="compaction")
 remember(content="Idea: learnable temperature for explore", source="hypothesis")
 remember(content="Finally fixed the FAISS leak", emotion=0.8, certainty=0.9)
 ```
