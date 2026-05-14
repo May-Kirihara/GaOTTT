@@ -2,11 +2,11 @@
 
 > **読者**: 次のセッションでこのリポジトリを触る Claude / 保守者
 > **前回の handover**: [`handover-2026-05-14-phase-l-stage-1.md`](handover-2026-05-14-phase-l-stage-1.md)
-> **本セッション**: Phase L Stage 1 完遬後の本番 acceptance で観察された「書けているが読めていない」構造的問題の根を追跡し、**1 file = 91 chunks 平均の内輪取引による mass inflation** を発見。「自己関与は mass を生まない」単一規則 (= 質量保存則の literal な物理実装、Articulation as Carrier の literal な実装) として **Phase M = Mass Conservation** を起草。実装は未着手、次セッションで Stage 1 (D1-D7) 実装着手予定。
+> **本セッション**: Phase L Stage 1 完了後の本番 acceptance で観察された「書けているが読めていない」構造的問題の根を追跡し、**1 file = 91 chunks 平均の内輪取引による mass inflation** を発見。「自己関与は mass を生まない」単一規則 (= 質量保存則の literal な物理実装、Articulation as Carrier の literal な実装) として **Phase M = Mass Conservation** を起草。実装は未着手、次セッションで Stage 1 (D1-D7) 実装着手予定。
 
 ## 1. 何が起きたか — 流れ
 
-1. **セッション開始** — Phase L Stage 1 完遬直後の状況、Phase L Stage 2 (BGE-M3 ensemble) は起草済だが「複数モデル ensemble への美的躊躇い」note (commit `f2fafee`) で実装着手前
+1. **セッション開始** — Phase L Stage 1 完了直後の状況、Phase L Stage 2 (BGE-M3 ensemble) は起草済だが「複数モデル ensemble への美的躊躇い」note (commit `f2fafee`) で実装着手前
 2. **6 プロジェクト acceptance test を依頼** — めいさんから「各プロジェクトごとに登録した remember が読める状態になっているかを opencode を使ってテストしたい」
 3. **opencode workflow の確立過程で 2 回ハング** — `run_in_background=true` の bash 起動で stdin が socket となり、interactive prompt で詰まる現象を再現。**`</dev/null`** で stdin を閉じれば動くこと、`opencode.json` に `"model": "zai-coding-plan/glm-5.1"` を 1 行加えれば flag 不要なことを確立。詳細 §6
 4. **opencode による 18 query acceptance 完走** — 6 プロジェクト × 3 query。存在確認 (tag_filter) は **全て 10/10**、想起品質は LMS が唯一 3/3 top1、harakiriworks が 0/3 top1 (最弱)。「書けているが読めていない」構造的問題が明示化
@@ -26,7 +26,7 @@
 
 - **branch: `dev`、commit 直前**
 - **コード変更ゼロ** (Plans 起草のみ)
-- pytest / ruff / smoke / bench は未走 (Phase L Stage 1 完遬時点の status を継承)
+- pytest / ruff / smoke / bench は未走 (Phase L Stage 1 完了時点の status を継承)
 
 ### 新規ファイル
 

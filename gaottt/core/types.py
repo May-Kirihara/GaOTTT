@@ -318,6 +318,24 @@ class ResetMassesResponse(BaseModel):
     value: float
 
 
+class WarmDisplacementRequest(BaseModel):
+    overwrite: bool = Field(
+        default=False,
+        description=(
+            "If True, also seed nodes that already have a non-zero "
+            "displacement (replacing it with velocity). Default False — "
+            "only NULL / near-zero displacements are touched."
+        ),
+    )
+
+
+class WarmDisplacementResponse(BaseModel):
+    seeded: int
+    skipped_no_velocity: int
+    skipped_already_displaced: int
+    active_total: int
+
+
 # --- Ingest service ---
 
 class IngestRequest(BaseModel):
@@ -326,6 +344,7 @@ class IngestRequest(BaseModel):
     recursive: bool = False
     pattern: str = "*.md,*.txt"
     chunk_size: int = Field(default=2000, ge=100)
+    include_tool_results: bool = False
 
 
 class IngestResponse(BaseModel):

@@ -9,6 +9,7 @@ from gaottt.core.types import (
     PrefetchResponse,
     PrefetchStatusResponse,
     ResetMassesResponse,
+    WarmDisplacementResponse,
 )
 
 
@@ -93,3 +94,23 @@ async def reset_masses(
     """
     affected = await engine.reset_masses(value)
     return ResetMassesResponse(nodes_reset=affected, value=value)
+
+
+async def warm_displacement(
+    engine: GaOTTTEngine,
+    overwrite: bool = False,
+) -> WarmDisplacementResponse:
+    """Phase M follow-up — one-shot displacement seeding from velocity.
+
+    Used to close the gap between M004 (writes velocity to every active
+    node) and the dream loop's slow per-node coverage (~20h for a 24k
+    corpus). Calls ``engine.warm_displacement`` which sets
+    ``displacement = velocity`` for every active node that has velocity
+    but no meaningful displacement.
+
+    MCP-non-exposed — bulk write under ``/admin/`` mirroring
+    ``/admin/reset_masses``. Safe to call repeatedly; default
+    ``overwrite=False`` leaves naturally-accumulated displacement alone.
+    """
+    stats = await engine.warm_displacement(overwrite=overwrite)
+    return WarmDisplacementResponse(**stats)

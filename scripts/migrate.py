@@ -539,6 +539,13 @@ async def _m004_apply(engine, config):
     Velocities are added to existing cache values (preserves any
     accumulation since M002), then clamped again so the final magnitude
     never exceeds orbital_max_velocity.
+
+    Also seeds ``displacement = velocity`` (one orbital timestep) for
+    every node that ends up with velocity but no meaningful displacement.
+    Without this step the dream loop would spend ~20h slowly filling
+    displacement one batch at a time and most observers see "velocity
+    arrows on stationary nodes" until coverage catches up (M005 exists
+    to repair that condition on DBs that ran M004 without it).
     """
     from gaottt.core.supernova import compute_supernova_velocities
 
@@ -573,12 +580,18 @@ async def _m004_apply(engine, config):
         engine.cache.set_velocity(nid, combined)
         n_seeded += 1
 
+    # Seed displacement = velocity for every node that now has velocity but
+    # no meaningful displacement. Same effect as M005 catch-up; keeps fresh
+    # rollouts from inheriting the "velocity-only" gap.
+    warm = await engine.warm_displacement(overwrite=False)
+
     await engine.cache.flush_to_store(engine.store)
     elapsed = time.time() - t0
     return (
         f"ignited corpus-scale supernova on {n_seeded}/{len(valid_ids)} "
         f"nodes (centroid + α={config.supernova_velocity_alpha} × radial, "
-        f"clamped to {config.orbital_max_velocity}) in {elapsed:.1f}s"
+        f"clamped to {config.orbital_max_velocity}); "
+        f"seeded displacement on {warm['seeded']} of them; {elapsed:.1f}s"
     )
 
 
@@ -617,11 +630,111 @@ M004 = Migration(
         "  thermal temperature. Once applied, the system has kinetic energy\n"
         "  to support Hooke / friction equilibrium, orbital dynamics, and\n"
         "  comet-like trajectories. Without this, the corpus stays at rest\n"
-        "  forever and creative emergence is starved for momentum."
+        "  forever and creative emergence is starved for momentum.\n"
+        "  Also seeds displacement = velocity for nodes that end up with\n"
+        "  velocity but no meaningful displacement (one orbital timestep).\n"
+        "  Without this, dream loop coverage takes ~20h on a 24k corpus\n"
+        "  and visualisations show 'velocity arrows on stationary nodes'."
     ),
     needs_apply=_m004_needs_apply,
     apply=_m004_apply,
     verify=_m004_verify,
+)
+
+
+# ---------------------------------------------------------------------
+# M005 — Phase M follow-up: warm displacement from velocity (catch-up)
+# ---------------------------------------------------------------------
+# Earlier M004 implementations wrote velocity but left displacement
+# untouched. The dream loop slowly fills displacement at ~10 nodes per
+# 30s (≈ 20 hours for a 24k corpus, far longer with server restarts),
+# so for days after a cosmic-bang most nodes sit at velocity ≠ 0 and
+# displacement = NULL — visually "velocity arrows but the position
+# never moves". M005 closes that gap by writing displacement = velocity
+# (one orbital timestep) on every active node that has velocity but no
+# meaningful displacement. The forward-correct path is now baked into
+# M004's apply, but M005 fixes already-migrated DBs.
+
+M005_TRIGGER_FRACTION = 0.10     # >X% velocity-only nodes → PENDING
+M005_VELOCITY_TOLERANCE = 1e-6
+M005_VERIFY_TOLERANCE = 1e-6
+M005_VERIFY_FRACTION = 0.05      # ≤X% velocity-only allowed after apply
+
+
+def _velocity_only_stats(engine) -> tuple[int, int]:
+    """Return (active_count, velocity_only_count) — velocity ≠ 0 but
+    displacement effectively absent."""
+    total = 0
+    vonly = 0
+    for state in engine.cache.get_all_nodes():
+        if state.is_archived:
+            continue
+        total += 1
+        v = engine.cache.get_velocity(state.id)
+        if v is None or float(np.linalg.norm(v)) < M005_VELOCITY_TOLERANCE:
+            continue
+        d = engine.cache.get_displacement(state.id)
+        if d is None or float(np.linalg.norm(d)) < M005_VERIFY_TOLERANCE:
+            vonly += 1
+    return total, vonly
+
+
+async def _m005_needs_apply(engine, config):
+    total, vonly = _velocity_only_stats(engine)
+    if total == 0:
+        return False, "DB has no active nodes — nothing to warm"
+    frac = vonly / total
+    msg = (
+        f"{vonly}/{total} ({frac:.0%}) active nodes have velocity ≠ 0 "
+        f"but displacement ≈ 0 — dream loop coverage gap from earlier M004"
+    )
+    if frac > M005_TRIGGER_FRACTION:
+        return True, msg
+    return False, msg + " — already below threshold"
+
+
+async def _m005_apply(engine, config):
+    t0 = time.time()
+    stats = await engine.warm_displacement(overwrite=False)
+    elapsed = time.time() - t0
+    return (
+        f"seeded displacement on {stats['seeded']}/{stats['active_total']} "
+        f"active nodes from their existing velocity "
+        f"(skipped {stats['skipped_no_velocity']} no-velocity, "
+        f"{stats['skipped_already_displaced']} already-displaced) "
+        f"in {elapsed:.1f}s"
+    )
+
+
+async def _m005_verify(engine, config):
+    total, vonly = _velocity_only_stats(engine)
+    frac = vonly / total if total else 0.0
+    if frac <= M005_VERIFY_FRACTION:
+        return True, (
+            f"{vonly}/{total} ({frac:.0%}) velocity-only nodes remain "
+            f"— at or below {M005_VERIFY_FRACTION:.0%} threshold"
+        )
+    return False, (
+        f"{vonly}/{total} ({frac:.0%}) velocity-only nodes remain "
+        f"— above {M005_VERIFY_FRACTION:.0%} threshold; warm did not take"
+    )
+
+
+M005 = Migration(
+    version="M005",
+    name="phase-m-warm-displacement",
+    description=(
+        "Seed ``displacement = velocity`` (one orbital timestep) for every "
+        "active node that has velocity but no meaningful displacement. "
+        "Closes the gap left by earlier M004 runs which wrote velocity "
+        "but relied on the dream loop to populate displacement (~20h "
+        "for a 24k corpus, longer across restarts). Idempotent: skips "
+        "nodes that already have non-zero displacement."
+    ),
+    critical=False,
+    needs_apply=_m005_needs_apply,
+    apply=_m005_apply,
+    verify=_m005_verify,
 )
 
 
@@ -634,6 +747,7 @@ MIGRATIONS: list[Migration] = [
     M002,
     M003,
     M004,
+    M005,
 ]
 
 

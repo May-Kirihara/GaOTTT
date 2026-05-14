@@ -43,9 +43,9 @@ Phase J で「declared identity (persona) が retrieval geometry を曲げる」
 
 - **120 unique file → 11,002 chunks** = 平均 **91.7×** に膨らんでいる (1 file = 91 ノード)
 - **top 50 高 mass ノードは 8 ファイルから** — 同一書物の chunk 同士が互いを引き合って mass を膨らませている
-  - 例: 「万国奇人博覧館」(174 chunks) → top 50 中 9 件
-  - 「京都大学(文系)」(378 chunks) → top 50 中 5 件
-  - 「脳はいかに」(96 chunks) → top 50 中 7 件
+  - 例: 「ドキュメントA」(174 chunks) → top 50 中 9 件
+  - 「ドキュメントB」(378 chunks) → top 50 中 5 件
+  - 「ドキュメントC」(96 chunks) → top 50 中 7 件
 
 mass update site `gaottt/core/engine.py:845`:
 
@@ -319,13 +319,14 @@ pkill -f gaottt.server.app
 .venv/bin/python scripts/migrate.py --apply
 ```
 
-**Wizard が聞いてくる 3 つ (順序)**:
+**Wizard が聞いてくる 3 つ + 1 catch-up (順序)**:
 
 | version | 何をするか | 既存ノードへの効果 |
 |---|---|---|
 | **M002 phase-m-bh-residue-cleanup** | 全 active node の `displacement + velocity` を 0 に | 旧共起 BH が引いていた centroid 方向の歪みが消える。Phase G/I/J の蓄積も同時に消える (同じベクトル内で分離不可) |
 | **M003 phase-m-mass-reset** | 全 active node の `mass` を 1.0 に | 旧規則下の chunk 内輪取引 inflation が解消。Phase L baseline の retrieval geometry を一度失う (1-2 週で新規則下の新しい gradient が形成) |
-| **M004 phase-m-cosmic-bang** | Phase K supernova の outward velocity (`α × (emb - centroid)`) を corpus 全体に 1 回適用 | M002 直後の cold state (全 v=0) に初期運動量を点火。これがないと Newton 1 法則で永遠に静止 (recall の query-attraction kick だけだと emergent dynamics 不足) |
+| **M004 phase-m-cosmic-bang** | Phase K supernova の outward velocity (`α × (emb - centroid)`) を corpus 全体に 1 回適用 + 同時に `displacement = velocity` を 1 timestep seed | M002 直後の cold state (全 v=0) に初期運動量を点火。これがないと Newton 1 法則で永遠に静止 (recall の query-attraction kick だけだと emergent dynamics 不足)。displacement seed (2026-05-14 追加) がないと dream loop が ~20h かけて埋めるまで「velocity arrow はあるのに位置が動かない」状態 |
+| **M005 phase-m-warm-displacement** | 旧 M004 (displacement 非対応版) を走らせた DB の coverage gap を catch-up: `displacement IS NULL AND velocity IS NOT NULL` な active node に `displacement = velocity` を seed | 2026-05-14 本番 DB 適用実績: 15,441 → 0 velocity-only node / displacement 行 8,603 → 24,061。`overwrite=False` 既定で自然蓄積を保存。**非 critical**。ライブ系では `POST /admin/warm_displacement` (REST 専用) で migration ledger なしの同等効果 |
 
 `--yes` で全 critical 自動承認、`--skip-critical` で安全な step だけ landing。詳細: [Operations — Migration](Operations-Migration.md)。
 

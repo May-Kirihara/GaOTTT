@@ -39,14 +39,48 @@ class FaissIndex:
         return results
 
     def save(self, path: str) -> None:
-        faiss.write_index(self._index, path)
+        """Atomically persist the FAISS index + id map.
+
+        Writes to ``path.tmp`` first, then ``os.replace`` to the final
+        location. ``os.replace`` is atomic on POSIX and on Windows
+        (Python 3.3+), so a kill / crash mid-write leaves the previous
+        valid file at ``path`` intact — the partial write only damages
+        the orphan ``.tmp`` file, which the next save overwrites.
+
+        Why: the previous implementation called ``faiss.write_index``
+        directly against ``path``, truncating the existing file before
+        the new contents were fully written. A SIGTERM/SIGKILL during
+        the ~100 MB write of a 30k-vector index left ``gaottt.faiss`` /
+        ``gaottt.virtual.faiss`` as 0-byte stubs that the next startup
+        could not load (``Error: 'ret == (1)' failed: read error``).
+        Observed twice on 2026-05-14 during routine backend restarts;
+        the virtual_faiss_save_loop fires every 60 s, so any kill
+        roughly during that window risks corruption.
+        """
+        tmp = path + ".tmp"
+        faiss.write_index(self._index, tmp)
+        os.replace(tmp, path)
+
         id_map_path = path + ".ids"
-        with open(id_map_path, "w") as f:
+        id_map_tmp = id_map_path + ".tmp"
+        with open(id_map_tmp, "w") as f:
             for node_id in self._id_map:
                 f.write(node_id + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(id_map_tmp, id_map_path)
 
     def load(self, path: str) -> None:
         if not os.path.exists(path):
+            return
+        # Defensive: a 0-byte file is the signature of an interrupted
+        # atomic save. faiss.read_index() raises RuntimeError on it,
+        # which would break engine.startup() before diagnostics could
+        # intervene. Skip the read and leave the index empty — the
+        # Stage 1 startup diagnostic (gaottt/diagnostics/startup.py)
+        # detects the empty state + nonzero SQLite and triggers a
+        # rebuild from the store.
+        if os.path.getsize(path) == 0:
             return
         self._index = faiss.read_index(path)
         id_map_path = path + ".ids"

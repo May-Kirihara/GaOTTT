@@ -334,7 +334,21 @@ class GaOTTTConfig:
     # `raw + α * log(1+mass)`, then take the top initial_k. With α=0
     # the behaviour is identical to legacy raw cosine top-K seeding,
     # so existing setups can opt out by setting it to 0.
-    wave_seed_mass_alpha: float = 0.1
+    #
+    # 2026-05-14 — set to 0.0 (Phase H Stage 1 disabled in seed step).
+    # Diagnostic discovery: when Phase L Stage 1 hybrid retrieval is on
+    # (hybrid_bm25_enabled=True, bm25_score_mode="rrf"), the `raw` value
+    # passed to `_seed_boost` is an RRF score (~0.02-0.05 range), not a
+    # raw cosine (0.0-1.0). The mass term `α × log(1+mass)` was tuned
+    # for cosine scale, so in RRF mode mass dominates: e.g. heavy chunk
+    # (RRF 0.018, mass 22) boost = 0.018+0.02·log(23) = 0.080, vs
+    # book chunk (RRF 0.033, mass 1.4) boost = 0.033+0.02·log(2.4) =
+    # 0.055 — semantically wrong chunk wins. Disabling the mass term
+    # restores RRF as the seed-ranking signal (RRF already combines
+    # raw cosine + virtual cosine + BM25 in a scale-invariant way).
+    # The Phase H Stage 1 intent (heavy-node lift in seed) needs a
+    # proper rescaling for RRF mode — tracked as Phase N tuning target.
+    wave_seed_mass_alpha: float = 0.0
     wave_seed_pool_size: int = 50
 
     # Phase H Stage 3 — Density-aware dynamic wave_k:

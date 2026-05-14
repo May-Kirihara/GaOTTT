@@ -1,0 +1,68 @@
+[
+  {
+    "query": "Eleventy Pipeline",
+    "expected_top": ["chunk_001"],
+    "axis": "surface",
+    "note": "Lexical surface match — BM25 dominates"
+  },
+  {
+    "query": "Sicily naval landing",
+    "expected_top": ["chunk_002"],
+    "axis": "surface",
+    "note": "Lexical surface match"
+  },
+  {
+    "query": "guanciale pecorino eggs",
+    "expected_top": ["chunk_005"],
+    "axis": "surface",
+    "note": "Lexical multi-token match"
+  },
+  {
+    "query": "Hebbian learning",
+    "expected_top": ["chunk_031"],
+    "axis": "surface",
+    "note": "Lexical exact-word match"
+  },
+  {
+    "query": "Reciprocal Rank Fusion",
+    "expected_top": ["chunk_043"],
+    "axis": "surface",
+    "note": "Lexical exact-phrase match"
+  },
+  {
+    "query": "static-site generator configuration .eleventy.js",
+    "expected_top_any": ["chunk_001", "chunk_011", "chunk_013"],
+    "axis": "semantic-cluster",
+    "note": "Any of the Eleventy cluster acceptable in top-K"
+  },
+  {
+    "query": "1943 Mediterranean WWII campaign",
+    "expected_top_any": ["chunk_002", "chunk_021", "chunk_022", "chunk_023"],
+    "axis": "semantic-cluster",
+    "note": "Any of the Sicily/Italy/Mediterranean cluster"
+  },
+  {
+    "query": "BM25 lexical scoring",
+    "expected_top_any": ["chunk_041", "chunk_043"],
+    "axis": "semantic-cluster",
+    "note": "Retrieval cluster — BM25 / RRF"
+  },
+  {
+    "query": "11ty 静的サイト",
+    "expected_top_any": ["chunk_001", "chunk_061"],
+    "axis": "cross-vocabulary",
+    "note": "Mixed JP/EN — either English or Japanese Eleventy doc"
+  },
+  {
+    "query": "シチリア 1943 上陸",
+    "expected_top_any": ["chunk_002", "chunk_062"],
+    "axis": "cross-vocabulary",
+    "note": "JP query, EN+JP corpus — either form acceptable"
+  },
+  {
+    "query": "Italian cooking technique",
+    "expected_top_any": ["chunk_005", "chunk_051", "chunk_052", "chunk_053", "chunk_054"],
+    "axis": "source-mix",
+    "note": "Generic — cooking cluster must not be entirely shut out"
+  }
+]

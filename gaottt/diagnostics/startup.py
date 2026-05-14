@@ -1,0 +1,307 @@
+"""Startup-time self-diagnostics — Tier A + B (Stage 1).
+
+Called from ``engine.startup()`` after FAISS / BM25 are loaded. Each
+check returns a :class:`DiagnosticResult` with a level
+(INFO / WARN / ERROR) and a human-readable detail string. The combined
+:class:`DiagnosticReport` is logged at the appropriate level and
+returned so callers (e.g. CLI tools) can decide what to do with it.
+
+Tier A — **FAISS integrity** (per index: raw + virtual):
+  - File presence / readability
+  - 0-byte detection → triggers a lazy rebuild via the engine
+  - ``.tmp`` residual cleanup (interrupted atomic save)
+
+Tier B — **Size consistency**:
+  - ``faiss.size`` vs ``len(active SQLite nodes)`` — 5% drift → WARN
+  - ``bm25.size`` vs ``len(active SQLite nodes)`` — 5% drift → WARN
+
+Stage 2 (deferred): WAL audit / physics dynamics drift / JSON report
+endpoint. Stage 3 (deferred): migration ledger / config sanity / CLI.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gaottt.config import GaOTTTConfig
+    from gaottt.core.engine import GaOTTTEngine
+
+logger = logging.getLogger(__name__)
+
+
+class DiagnosticLevel(Enum):
+    INFO = "INFO"
+    WARN = "WARN"
+    ERROR = "ERROR"
+
+
+@dataclass(frozen=True)
+class DiagnosticResult:
+    """Single check outcome.
+
+    ``name`` is the stable identifier (e.g. ``"tier_a_faiss_zero_bytes"``)
+    so callers can match on it programmatically. ``detail`` is the
+    human-readable message; ``level`` is the severity.
+    """
+    name: str
+    level: DiagnosticLevel
+    detail: str
+
+    def log(self) -> None:
+        msg = "[diagnostics:%s] %s"
+        if self.level is DiagnosticLevel.ERROR:
+            logger.error(msg, self.name, self.detail)
+        elif self.level is DiagnosticLevel.WARN:
+            logger.warning(msg, self.name, self.detail)
+        else:
+            logger.info(msg, self.name, self.detail)
+
+
+@dataclass
+class DiagnosticReport:
+    """Bundle of results from one ``run_startup_checks`` invocation."""
+    results: list[DiagnosticResult] = field(default_factory=list)
+
+    def add(self, name: str, level: DiagnosticLevel, detail: str) -> None:
+        r = DiagnosticResult(name=name, level=level, detail=detail)
+        self.results.append(r)
+        r.log()
+
+    def by_level(self, level: DiagnosticLevel) -> list[DiagnosticResult]:
+        return [r for r in self.results if r.level is level]
+
+    @property
+    def has_errors(self) -> bool:
+        return any(r.level is DiagnosticLevel.ERROR for r in self.results)
+
+    @property
+    def has_warnings(self) -> bool:
+        return any(r.level is DiagnosticLevel.WARN for r in self.results)
+
+    def summary(self) -> str:
+        n_err = len(self.by_level(DiagnosticLevel.ERROR))
+        n_warn = len(self.by_level(DiagnosticLevel.WARN))
+        n_info = len(self.by_level(DiagnosticLevel.INFO))
+        return f"{len(self.results)} checks ({n_err} error, {n_warn} warn, {n_info} info)"
+
+
+# ---------------------------------------------------------------------------
+# Tier A — FAISS integrity
+# ---------------------------------------------------------------------------
+
+def _cleanup_tmp_residuals(directory: Path, report: DiagnosticReport) -> None:
+    """Delete leftover ``*.tmp`` files in ``directory``.
+
+    GaOTTT's atomic FAISS save writes ``<index>.tmp`` then renames. If the
+    process was killed mid-write, the .tmp file persists and only wastes
+    disk. Stage 1 just deletes them and logs INFO; Stage 2 may correlate
+    them with mtime / size to detect repeated kills.
+    """
+    if not directory.exists() or not directory.is_dir():
+        return
+    for tmp in directory.glob("*.tmp"):
+        try:
+            tmp_size = tmp.stat().st_size
+            tmp.unlink()
+            report.add(
+                "tier_a_tmp_residual_cleaned",
+                DiagnosticLevel.INFO,
+                f"removed residual {tmp.name} ({tmp_size} bytes) — likely from an interrupted atomic save",
+            )
+        except OSError as e:
+            report.add(
+                "tier_a_tmp_residual_cleanup_failed",
+                DiagnosticLevel.WARN,
+                f"could not delete {tmp}: {e}",
+            )
+
+
+async def _check_faiss_index(
+    engine: "GaOTTTEngine",
+    report: DiagnosticReport,
+    *,
+    label: str,
+    path_str: str,
+    is_virtual: bool,
+) -> None:
+    """Run Tier A checks for one FAISS index (raw or virtual)."""
+    path = Path(path_str)
+
+    # Index object presence on the engine (virtual is optional)
+    index = engine.virtual_faiss_index if is_virtual else engine.faiss_index
+    if index is None:
+        report.add(
+            f"tier_a_{label}_disabled",
+            DiagnosticLevel.INFO,
+            f"{label} FAISS index disabled by config — skipping integrity check",
+        )
+        return
+
+    # File-level checks
+    if not path.exists():
+        report.add(
+            f"tier_a_{label}_missing",
+            DiagnosticLevel.INFO,
+            f"{label} FAISS file does not exist at {path} — fresh DB or pre-first-save state",
+        )
+    else:
+        size = path.stat().st_size
+        if size == 0:
+            report.add(
+                f"tier_a_{label}_zero_bytes",
+                DiagnosticLevel.ERROR,
+                f"{label} FAISS file at {path} is 0 bytes — corrupted save, triggering rebuild",
+            )
+            try:
+                if is_virtual:
+                    await engine._rebuild_virtual_faiss_index()  # noqa: SLF001
+                else:
+                    await engine._rebuild_faiss_index()  # noqa: SLF001
+                report.add(
+                    f"tier_a_{label}_rebuilt",
+                    DiagnosticLevel.INFO,
+                    f"{label} FAISS rebuilt: size={index.size}",
+                )
+            except Exception as e:
+                report.add(
+                    f"tier_a_{label}_rebuild_failed",
+                    DiagnosticLevel.ERROR,
+                    f"{label} FAISS rebuild raised: {type(e).__name__}: {e}",
+                )
+        else:
+            report.add(
+                f"tier_a_{label}_present",
+                DiagnosticLevel.INFO,
+                f"{label} FAISS file ok ({size} bytes, in-memory size={index.size})",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Tier B — size consistency
+# ---------------------------------------------------------------------------
+
+WARN_DRIFT_FRACTION = 0.05
+
+
+def _drift_fraction(observed: int, expected: int) -> float:
+    """Return the absolute drift as a fraction of expected (0.0 if expected is 0)."""
+    if expected <= 0:
+        return 1.0 if observed > 0 else 0.0
+    return abs(observed - expected) / expected
+
+
+async def _check_size_consistency(
+    engine: "GaOTTTEngine",
+    report: DiagnosticReport,
+) -> None:
+    """Compare engine index sizes against the SQLite active-doc ground truth."""
+    states = await engine.store.get_all_node_states()
+    active = sum(1 for s in states if not s.is_archived)
+
+    # FAISS raw
+    faiss_size = engine.faiss_index.size
+    faiss_drift = _drift_fraction(faiss_size, active)
+    if faiss_drift > WARN_DRIFT_FRACTION:
+        report.add(
+            "tier_b_faiss_size_drift",
+            DiagnosticLevel.WARN,
+            f"faiss.size={faiss_size} vs SQLite active={active} "
+            f"({faiss_drift:.1%} drift > {WARN_DRIFT_FRACTION:.0%}) — run compact(rebuild_faiss=True)",
+        )
+    else:
+        report.add(
+            "tier_b_faiss_size_ok",
+            DiagnosticLevel.INFO,
+            f"faiss.size={faiss_size} matches SQLite active={active} (drift={faiss_drift:.1%})",
+        )
+
+    # BM25
+    if engine.bm25_index is not None:
+        bm25_size = engine.bm25_index.size
+        bm25_drift = _drift_fraction(bm25_size, active)
+        if bm25_drift > WARN_DRIFT_FRACTION:
+            report.add(
+                "tier_b_bm25_size_drift",
+                DiagnosticLevel.WARN,
+                f"bm25.size={bm25_size} vs SQLite active={active} "
+                f"({bm25_drift:.1%} drift > {WARN_DRIFT_FRACTION:.0%}) — restart or compact(rebuild_faiss=True)",
+            )
+        else:
+            report.add(
+                "tier_b_bm25_size_ok",
+                DiagnosticLevel.INFO,
+                f"bm25.size={bm25_size} matches SQLite active={active} (drift={bm25_drift:.1%})",
+            )
+
+    # Virtual FAISS — informational only (it can legitimately lag raw FAISS
+    # by the write-behind interval; only flag if it's empty when raw is not).
+    if engine.virtual_faiss_index is not None:
+        virtual_size = engine.virtual_faiss_index.size
+        if virtual_size == 0 and faiss_size > 0:
+            report.add(
+                "tier_b_virtual_faiss_empty",
+                DiagnosticLevel.WARN,
+                f"virtual_faiss.size=0 but raw faiss.size={faiss_size} — "
+                "rebuild will be triggered or run compact(rebuild_faiss=True)",
+            )
+        else:
+            report.add(
+                "tier_b_virtual_faiss_ok",
+                DiagnosticLevel.INFO,
+                f"virtual_faiss.size={virtual_size} (raw faiss.size={faiss_size})",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+async def run_startup_checks(
+    engine: "GaOTTTEngine",
+    config: "GaOTTTConfig",
+) -> DiagnosticReport:
+    """Run all Stage 1 startup checks. Returns a populated report.
+
+    Intended to be called from the end of ``engine.startup()``; failure
+    of any individual check is captured in the report, not raised — the
+    engine should remain bootable even if diagnostics raise WARN/ERROR.
+    """
+    report = DiagnosticReport()
+
+    # Tier A — FAISS integrity (raw + virtual)
+    faiss_dir = Path(config.faiss_index_path).parent
+    _cleanup_tmp_residuals(faiss_dir, report)
+
+    await _check_faiss_index(
+        engine, report,
+        label="raw",
+        path_str=config.faiss_index_path,
+        is_virtual=False,
+    )
+    if engine.virtual_faiss_index is not None:
+        await _check_faiss_index(
+            engine, report,
+            label="virtual",
+            path_str=config.virtual_faiss_index_path,
+            is_virtual=True,
+        )
+
+    # Tier B — size consistency
+    try:
+        await _check_size_consistency(engine, report)
+    except Exception as e:
+        report.add(
+            "tier_b_size_check_failed",
+            DiagnosticLevel.ERROR,
+            f"size consistency check raised: {type(e).__name__}: {e}",
+        )
+
+    logger.info(
+        "Startup diagnostics complete: %s",
+        report.summary(),
+    )
+    return report

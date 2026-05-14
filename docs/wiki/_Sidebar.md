@@ -40,9 +40,11 @@
 ### ⚙ Operations
 - [Server Setup](Operations-Server-Setup.md)
 - [Tuning](Operations-Tuning.md)
+- [Ingestion (files & chat history)](Operations-Ingestion.md)
 - [Migration (upgrade)](Operations-Migration.md)
 - [Compact & Backup](Operations-Compact-And-Backup.md)
 - [Isolated Benchmark](Operations-Isolated-Benchmark.md)
+- [Performance Testing (7-tier)](Operations-Performance-Testing.md)
 - [Troubleshooting](Operations-Troubleshooting.md)
 
 ### 🗺 Plans
@@ -63,6 +65,7 @@
 - [Multi-Agent Experiment](Research-Multi-Agent-Experiment.md)
 - [User Exploration (10 Rounds)](Research-User-Exploration-10-Rounds.md)
 - [Gravity as Optimizer (TTT)](Research-Gravity-As-Optimizer.md)
+- [Muon as Thought Experiment](Research-Muon-Thought-Experiment.md)
 - [Design Documents](Research-Design-Documents.md)
 - [Phase 2 Evaluation](Research-Phase-2-Evaluation.md)
 

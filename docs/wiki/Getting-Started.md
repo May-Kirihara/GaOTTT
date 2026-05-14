@@ -89,6 +89,14 @@ recall(query="GaOTTT のインストール", top_k=3)
 ingest(path="~/path/to/notes/", pattern="*.md", recursive=true)
 ```
 
+Claude Code のチャット履歴 (`~/.claude/projects/<proj>/<sessionId>.jsonl`) も取り込めます:
+
+```bash
+.venv/bin/python scripts/load_chat.py ~/.claude/projects/<proj>/ -r
+```
+
+詳細は [Operations — Ingestion](Operations-Ingestion.md)。
+
 ## 7. 状態を眺める
 
 ```

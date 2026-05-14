@@ -2,6 +2,25 @@
 
 既知の問題と対処。
 
+## 起動時に異常が出る — まずログを見る
+
+GaOTTT は `engine.startup()` の最後で **Stage 1 セルフ診断** (`gaottt/diagnostics/startup.py`) を自動実行します。
+3 つの代表的な事故 (FAISS 空 / 0 bytes / index ↔ SQLite ntotal 乖離) は起動直後の
+`[diagnostics:tier_a_*]` / `[diagnostics:tier_b_*]` ログで即検知されます。
+
+```
+[diagnostics:tier_a_raw_zero_bytes] raw FAISS file at /.../gaottt.faiss is 0 bytes — corrupted save, triggering rebuild
+[diagnostics:tier_a_raw_rebuilt] raw FAISS rebuilt: size=24050
+[diagnostics:tier_b_faiss_size_drift] faiss.size=15 vs SQLite active=24050 (99.9% drift > 5%) — run compact(rebuild_faiss=True)
+```
+
+- **`tier_a_raw_zero_bytes` ERROR + `tier_a_raw_rebuilt` INFO** が連続で出ればその場で復旧済み (自動 lazy rebuild)。
+- **`tier_b_*_size_drift` WARN** が出たら `compact(rebuild_faiss=True)` を一度走らせる。
+- **`tier_a_tmp_residual_cleaned` INFO** は `.tmp` 残骸 (atomic save の中断痕跡) を掃除した記録。頻発するなら kill タイミングや disk full を疑う。
+
+検知範囲は Tier A (FAISS integrity) + Tier B (FAISS↔SQLite + BM25 size 一致)。
+Stage 2 候補 (WAL audit / physics dynamics drift / JSON endpoint) と Stage 3 (migration ledger / config sanity / CLI) は別 commitment。
+
 ## クエリスコアが初回だけ極端に低い
 
 正常動作。初回クエリ時、`last_access` がインデックス時刻のため `decay = exp(-δ × 経過時間)` が非常に小さくなる。2 回目以降は decay ≈ 1.0。
@@ -161,3 +180,42 @@ pkill -f gaottt.server.app
 ```
 
 **注意**: `--all --apply` は全ノードの累積 recall 履歴をリセットするため不可逆。対象を `--tag` や `--min-displacement` で絞るか、`scripts/migrate.py --apply` で自動バックアップ後に実行することを推奨。
+
+## ファイルで登録した文書が recall に出てこない
+
+**症状**: `scripts/load_files.py` 等で `source="file"` として登録したはずの書籍 / ノート / ドキュメントが、明らかにヒットするはずの自然文 query でも `recall(source_filter=["file"])` の top-K に出てこない。直接 SQL で確認すると documents/nodes table にはあり、内容も合っている。
+
+**典型ケース** (2026-05-14 観測):
+- query: 「あの航空機事故はこうして起きた」
+- 期待: 同名書籍の chunks が top に
+- 実際: 京都大学入試、会社四季報、無修正でも合法本など **無関係なファイル chunk** が top を占め、書籍は top-10 圏外
+- 書籍 chunks の cosine sim は raw FAISS 直接検索だと 0.92 と十分高い
+
+**原因 — Phase L Stage 1 (RRF) と Phase H Stage 1 (seed mass boost) の score scale 不整合**:
+
+Phase L Stage 1 で BM25 RRF fusion を導入したとき、`_seed_boost(raw + α × log(1+mass))` の式は更新されなかった。RRF score は ~0.018–0.033 範囲、`α × log(1+mass)` は cosine scale (~0.9 max) 想定 → α=0.02 でも mass=22 の chunk で boost 0.062 = RRF max の 2 倍。**mass の重い無関係 chunk が semantic 距離を完全に上書き**する。
+
+**診断スクリプト** (read-only、副作用なし):
+
+`/tmp/diag_seed_pool.py` のように、`_union_pool` と `_seed_boost` を直接呼んで stage 別に target chunks の位置を追う。コードは `gaottt.core.gravity._union_pool` / `_seed_boost` をそのまま使う:
+
+```python
+from gaottt.core.gravity import _union_pool, _seed_boost
+# ... load components (RuriEmbedder, SqliteStore, FaissIndex, BM25Index, CacheLayer) ...
+qv = embedder.encode_query("<problem query>").reshape(-1).astype(np.float32)
+pool = _union_pool(qv, raw_faiss, virt_faiss, 1000,
+                   query_text="<query>", bm25_index=bm25, ...)
+# Stage 5: source_filter
+filtered = [(nid, s) for nid, s in pool if cache.get_source(nid) in {"file"}]
+# Stage 6: _seed_boost — observe whether targets fall here
+rescored = sorted(((nid, _seed_boost(nid, raw, cache, config, None), raw)
+                   for nid, raw in filtered),
+                  key=lambda t: t[1], reverse=True)
+# Print top 15 with mass / boost / raw
+```
+
+target chunk が **Stage 4-5 (RRF union + source filter) で top に居る** が **Stage 6 (`_seed_boost`) で陥落** していれば scale 不整合バグ。
+
+**対処**: `gaottt/config.py:wave_seed_mass_alpha` を `0.0` に固定(2026-05-14 以降 default)。RRF fusion が既に raw + virtual + BM25 を scale-invariant に組み合わせているため、seed boost で更に mass を加える必要はない。
+
+**Phase N tuning target**(未着手): RRF-mode を検出して mass term を score scale に正規化するか、rank-based boost に切り替える。詳細: [Plans — Roadmap](Plans-Roadmap.md)。

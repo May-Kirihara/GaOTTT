@@ -1,0 +1,30 @@
+{"id": "chunk_001", "content": "Eleventy is a simpler static-site generator focused on the 11ty pipeline.", "source": "synthetic", "tags": ["eleventy", "static-site"]}
+{"id": "chunk_011", "content": "The Eleventy data cascade resolves variables from front-matter, data files, and global directories.", "source": "synthetic", "tags": ["eleventy", "data-cascade"]}
+{"id": "chunk_012", "content": "Eleventy supports Nunjucks, Liquid, Markdown, and JavaScript as template languages.", "source": "synthetic", "tags": ["eleventy", "templates"]}
+{"id": "chunk_013", "content": "An Eleventy plugin extends the .eleventy.js config with filters, shortcodes, or collections.", "source": "synthetic", "tags": ["eleventy", "plugins"]}
+{"id": "chunk_014", "content": "Static-site generators precompute HTML at build time and serve it from a CDN with no runtime.", "source": "synthetic", "tags": ["static-site", "build"]}
+{"id": "chunk_002", "content": "Operation Husky was the Allied naval landing on Sicily during 1943.", "source": "synthetic", "tags": ["history", "sicily"]}
+{"id": "chunk_021", "content": "After the Sicily landings, General Patton's Seventh Army raced westward to Palermo.", "source": "synthetic", "tags": ["history", "sicily", "patton"]}
+{"id": "chunk_022", "content": "The Italian campaign followed the Sicilian operation and toppled the Mussolini regime.", "source": "synthetic", "tags": ["history", "italy", "wwii"]}
+{"id": "chunk_023", "content": "Allied Mediterranean strategy in 1943 aimed to knock Italy out of the Axis.", "source": "synthetic", "tags": ["history", "mediterranean", "wwii"]}
+{"id": "chunk_024", "content": "Sicilian mountainous terrain shaped the tempo of the 1943 ground campaign.", "source": "synthetic", "tags": ["history", "sicily", "terrain"]}
+{"id": "chunk_003", "content": "Astrocytes coordinate slow tripartite synapses; they are not the gradient.", "source": "synthetic", "tags": ["neuro", "gaottt-philosophy"]}
+{"id": "chunk_031", "content": "Hebbian learning strengthens connections between co-active neurons over time.", "source": "synthetic", "tags": ["neuro", "hebbian"]}
+{"id": "chunk_032", "content": "Glia outnumber neurons in many brain regions but serve support and modulation roles.", "source": "synthetic", "tags": ["neuro", "glia"]}
+{"id": "chunk_033", "content": "GaOTTT borrows the astrocyte analogy: slow, shared, structural modulation rather than gradient steps.", "source": "synthetic", "tags": ["gaottt-philosophy", "neuro"]}
+{"id": "chunk_034", "content": "Synaptic plasticity is the biological substrate that TTT optimizers mirror in software.", "source": "synthetic", "tags": ["neuro", "ttt"]}
+{"id": "chunk_004", "content": "FAISS IndexFlatIP performs inner-product search over float32 vectors.", "source": "synthetic", "tags": ["faiss", "retrieval"]}
+{"id": "chunk_041", "content": "BM25 ranks documents by token frequency normalized to document length.", "source": "synthetic", "tags": ["bm25", "retrieval", "lexical"]}
+{"id": "chunk_042", "content": "Embedding cosine similarity measures semantic closeness in a high-dimensional vector space.", "source": "synthetic", "tags": ["embedding", "retrieval", "semantic"]}
+{"id": "chunk_043", "content": "Reciprocal Rank Fusion combines disparate rankers scale-invariantly.", "source": "synthetic", "tags": ["rrf", "retrieval", "fusion"]}
+{"id": "chunk_044", "content": "Gravity waves propagate recursively through the knowledge graph in GaOTTT.", "source": "synthetic", "tags": ["gaottt-retrieval", "wave"]}
+{"id": "chunk_005", "content": "Carbonara pasta uses guanciale, pecorino, eggs — no cream involved.", "source": "synthetic", "tags": ["cooking", "italian"]}
+{"id": "chunk_051", "content": "Starchy pasta water emulsifies fats into a glossy Italian sauce.", "source": "synthetic", "tags": ["cooking", "italian", "technique"]}
+{"id": "chunk_052", "content": "Roman cuisine highlights cured pork, hard cheese, and minimal ingredient lists.", "source": "synthetic", "tags": ["cooking", "italian", "rome"]}
+{"id": "chunk_053", "content": "Tempering egg yolks with warm fat avoids scrambling them in a pan sauce.", "source": "synthetic", "tags": ["cooking", "technique", "eggs"]}
+{"id": "chunk_054", "content": "Guanciale is cured pig jowl; pancetta is its belly cousin with a milder flavor.", "source": "synthetic", "tags": ["cooking", "italian", "ingredients"]}
+{"id": "chunk_061", "content": "11ty 静的サイトジェネレーターは sitemap.xml を自動生成し SEO に強い。", "source": "synthetic", "tags": ["eleventy", "ja", "cross-vocabulary"]}
+{"id": "chunk_062", "content": "1943 年 シチリア 上陸 作戦 Operation Husky で連合軍が地中海戦線を開いた。", "source": "synthetic", "tags": ["history", "ja", "cross-vocabulary"]}
+{"id": "chunk_063", "content": "アストロサイト は 三者間 シナプス の sluggish 協調 を 担当 する 神経 細胞 である。", "source": "synthetic", "tags": ["neuro", "ja", "cross-vocabulary"]}
+{"id": "chunk_071", "content": "Random distractor about quantum entanglement and Bell inequalities.", "source": "synthetic", "tags": ["distractor", "physics"]}
+{"id": "chunk_072", "content": "Distractor: medieval Cordoba was a thriving center of Andalusian culture.", "source": "synthetic", "tags": ["distractor", "history"]}

@@ -76,6 +76,8 @@ from gaottt.core.types import (
     RevalidateResponse,
     StartResponse,
     UnrelateResponse,
+    WarmDisplacementRequest,
+    WarmDisplacementResponse,
 )
 from gaottt.services import (
     ingest_service,
@@ -283,6 +285,17 @@ async def admin_reset_masses(request: ResetMassesRequest):
     return await maintenance_service.reset_masses(engine, value=request.value)
 
 
+# --- Phase M follow-up: one-shot displacement seeding from velocity ---
+# Not exposed on MCP — see services.maintenance.warm_displacement docstring.
+
+@app.post("/admin/warm_displacement", response_model=WarmDisplacementResponse)
+async def admin_warm_displacement(request: WarmDisplacementRequest):
+    engine = _get_engine()
+    return await maintenance_service.warm_displacement(
+        engine, overwrite=request.overwrite,
+    )
+
+
 # -----------------------------------------------------------------------
 # Relations
 # -----------------------------------------------------------------------
@@ -384,6 +397,7 @@ async def ingest_files(request: IngestRequest):
         recursive=request.recursive,
         pattern=request.pattern,
         chunk_size=request.chunk_size,
+        include_tool_results=request.include_tool_results,
     )
 
 

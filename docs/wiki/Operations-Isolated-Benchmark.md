@@ -2,6 +2,8 @@
 
 ベンチマークを **本番 DB を触らずに** 走らせる隔離実行スクリプト。
 
+> **使い分け**: 仮説→実装→検証ループの **検証** は [Operations — Performance Testing](Operations-Performance-Testing.md) (`tests/perf/` の 7 階層、real RURI、~15 秒で 38 tests) が main path。**実 RURI で本番に近い corpus + REST/uvicorn 経由で latency を測りたいとき** (SC-001〜SC-007 シナリオを含む production-like e2e benchmark) に **このページの `scripts/run_benchmark_isolated.sh`** を使う。tests/perf/ は engine 直叩き unit-level、isolated_benchmark は server stack 込みの integration-level という関係。
+
 ## なぜ隔離するか
 
 通常のベンチマークは大量のクエリと記憶操作を行うため、本番 GaOTTT DB（数千〜数万件のあなた自身の記憶）を汚染する可能性がある。隔離スクリプトは `/tmp/gaottt-bench/` で完全に独立した DB を使用。
@@ -53,10 +55,15 @@ SC-005 Concurrency:    50 succeeded, 0 failed
 ## 開発フロー
 
 ```bash
-# テスト → ベンチで退行ゼロ確認
+# 1. 単体 + 統合テスト
 .venv/bin/python -m pytest tests/ -q
+
+# 2. ★ 7 階層 perf テストスイート (real RURI、仮説→実装→検証 ループの検証)
+.venv/bin/python -m pytest tests/perf/ -q
+
+# 3. このページの isolated bench (REST/uvicorn stack 込みの e2e)
 rm -rf /tmp/gaottt-bench
 .venv/bin/bash scripts/run_benchmark_isolated.sh
 ```
 
-→ 関連: [Tuning](Operations-Tuning.md), [Troubleshooting](Operations-Troubleshooting.md)
+→ 関連: [Performance Testing (7 階層)](Operations-Performance-Testing.md), [Tuning](Operations-Tuning.md), [Troubleshooting](Operations-Troubleshooting.md)

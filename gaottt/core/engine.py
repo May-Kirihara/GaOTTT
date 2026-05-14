@@ -165,6 +165,19 @@ class GaOTTTEngine:
             len(self.cache.displacement_cache),
         )
 
+        # Stage 1 startup self-diagnostics (commitment id=aaa6e7cc).
+        # Imported lazily so test fixtures that construct engines without
+        # the diagnostics module on the path don't break. Failures of
+        # individual checks are captured in the report, not raised.
+        try:
+            from gaottt.diagnostics import run_startup_checks
+            await run_startup_checks(self, self.config)
+        except Exception as e:
+            logger.warning(
+                "Startup diagnostics raised — engine remains operational: %s: %s",
+                type(e).__name__, e,
+            )
+
     async def shutdown(self) -> None:
         await self.prefetch_pool.drain(timeout=5.0)
         if self._dream_stop is not None:
@@ -1574,6 +1587,73 @@ class GaOTTTEngine:
         self.prefetch_cache.invalidate()
         logger.info("Mass reset: %d nodes set to mass=%s", affected, value)
         return affected
+
+    # --- Phase M follow-up: warm displacement from velocity ---
+
+    async def warm_displacement(
+        self, overwrite: bool = False,
+    ) -> dict[str, int]:
+        """Seed ``displacement = velocity`` (one orbital timestep) on every
+        active node that has velocity but no meaningful displacement.
+
+        Why this exists: M004 (corpus-scale cosmic-bang) writes velocity to
+        every active node but leaves displacement NULL by design — the
+        dream loop and natural recall events were supposed to fill it in
+        over time. In practice that takes ~20 hours of continuous uptime
+        for a 24k-node corpus and stalls across server restarts, so most
+        nodes sit at ``velocity ≠ 0`` / ``displacement = NULL`` for days
+        and visualisations show "velocity arrows but the position never
+        moves". This one-shot pass takes the same step the dream loop
+        would have taken on its first visit (``new_disp = old_disp +
+        new_vel`` with ``old_disp = 0``) and applies it everywhere at
+        once.
+
+        Default (``overwrite=False``) leaves nodes that already have a
+        non-zero displacement alone, so naturally-accumulated history
+        (Phase G genesis kicks, Phase I/J query attraction, dream loop
+        ticks since M004) is preserved. ``overwrite=True`` forces
+        ``displacement = velocity`` on every active node with velocity
+        — useful immediately after a fresh M002/M004 cycle.
+
+        Returns a dict ``{seeded, skipped_no_velocity, skipped_already_displaced,
+        active_total}`` so callers can verify how the corpus shifted.
+        """
+        tol = 1e-6
+        seeded = 0
+        skipped_no_velocity = 0
+        skipped_already_displaced = 0
+        active_total = 0
+        for state in self.cache.get_all_nodes():
+            if state.is_archived:
+                continue
+            active_total += 1
+            v = self.cache.get_velocity(state.id)
+            if v is None or float(np.linalg.norm(v)) < tol:
+                skipped_no_velocity += 1
+                continue
+            if not overwrite:
+                d = self.cache.get_displacement(state.id)
+                if d is not None and float(np.linalg.norm(d)) >= tol:
+                    skipped_already_displaced += 1
+                    continue
+            self.cache.set_displacement(state.id, v.astype(np.float32).copy())
+            seeded += 1
+
+        if seeded > 0:
+            await self.cache.flush_to_store(self.store)
+            self.prefetch_cache.invalidate()
+            logger.info(
+                "Warm displacement: seeded %d / %d active nodes "
+                "(skipped %d no-velocity, %d already-displaced)",
+                seeded, active_total,
+                skipped_no_velocity, skipped_already_displaced,
+            )
+        return {
+            "seeded": seeded,
+            "skipped_no_velocity": skipped_no_velocity,
+            "skipped_already_displaced": skipped_already_displaced,
+            "active_total": active_total,
+        }
 
     # --- US5: State Reset ---
 
