@@ -100,8 +100,8 @@ async def test_wal_size_stays_reasonable_after_bulk(tmp_path):
     finally:
         await eng.shutdown()
 
-    db_path = Path(tmp_path) / "test.db"
-    wal_path = Path(tmp_path) / "test.db-wal"
+    db_path = Path(tmp_path) / "gaottt.db"
+    wal_path = Path(tmp_path) / "gaottt.db-wal"
     if not db_path.exists():
         pytest.skip("DB file not at expected path; can't audit WAL")
     db_size = db_path.stat().st_size

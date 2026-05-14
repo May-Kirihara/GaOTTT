@@ -54,11 +54,14 @@ def make_config(tmp_path, **overrides) -> GaOTTTConfig:
     callers don't have to wrap the path themselves).
     """
     tmp_path = Path(tmp_path)
+    # Let GaOTTTConfig.__post_init__ derive db_path / faiss_index_path /
+    # virtual_faiss_index_path from data_dir so the file layout matches
+    # the production `build_engine` factory (gaottt.db / gaottt.faiss /
+    # gaottt.virtual.faiss). Without this, scripts/diag_recall.py and
+    # other tooling that defaults to gaottt.* prefixes can't find data
+    # populated via make_engine. (2026-05-14 opencode acceptance.)
     defaults = dict(
         data_dir=str(tmp_path),
-        db_path=str(tmp_path / "test.db"),
-        faiss_index_path=str(tmp_path / "test.faiss"),
-        virtual_faiss_index_path=str(tmp_path / "test.virtual.faiss"),
         virtual_faiss_enabled=True,
         hybrid_bm25_enabled=True,
         wave_initial_k=3,
