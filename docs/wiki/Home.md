@@ -26,6 +26,7 @@
 | TODO・タスク管理として | [Guides — Use as Task Manager](Guides-Use-As-Task-Manager.md) |
 | 人格保存基盤として | [Guides — Use as Persona Base](Guides-Use-As-Persona-Base.md) |
 | 複数エージェントの共有メモリとして | [Guides — Multi-Agent](Guides-Multi-Agent.md) |
+| プロジェクトごとに DB を分けたい (知識ドメイン分離) | [Guides — Per-Project DBs](Guides-Per-Project-DBs.md) |
 | 記憶宇宙を眺めたい | [Guides — Visualization](Guides-Visualization.md) |
 
 ### 🛠 GaOTTT の MCP ツールリファレンスを引きたい

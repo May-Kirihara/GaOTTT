@@ -20,6 +20,7 @@
 - [As Task Manager](Guides-Use-As-Task-Manager.md)
 - [As Persona Base](Guides-Use-As-Persona-Base.md)
 - [Multi-Agent Setup](Guides-Multi-Agent.md)
+- [Per-Project DBs](Guides-Per-Project-DBs.md)
 - [Visualization](Guides-Visualization.md)
 
 ### 🛠 MCP Reference
