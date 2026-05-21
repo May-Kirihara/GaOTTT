@@ -36,9 +36,12 @@ recall(
   output_mode: str = "full",             # MCP 専用トークン節約。"full"=全文, "compact"=300字切詰, "ids"=ID+スコアのみ
   auto_route: bool = True,               # Phase O Stage 3: 構造化質問なら reflect 並走 + summary 添付
   mode: str = "detail",                  # Phase O Stage 4: "list" で content を 80 字に切り詰め (REST にも効く)
+  passive: bool = False,                 # Ambient Recall: True で read-only (重力場を摂動しない)
 )
 → 各結果に id=<uuid> が含まれる
 ```
+
+**Passive recall (Ambient Recall):** `passive=True` で **read-only recall** になる。検索・wave 伝播・scoring はそのまま走り結果も同一だが、末尾の simulation update を丸ごとスキップする — **mass 更新なし・query attraction displacement なし・co-occurrence edge なし・`last_access` 更新なし**。`recall` を「重力勾配を供給する TTT ステップ」から「摂動なしの観察」に切り替える。自動/バックグラウンド recall（Claude Code の ambient-recall フックがこれを呼ぶ — [Ambient Recall](Guides-Ambient-Recall.md)）のためにあり、ノイズクエリが無制御の TTT シグナルになるのを防ぐ。`passive=True` の recall は prefetch キャッシュを **読む** が **書かない**（passive 結果が後続の active recall に cache hit させて simulation update を握り潰すのを防ぐ）。`training_delta` は全 0（場が動いていないことの正直な報告）。既定 `False` は legacy の「recall は訓練ステップ」挙動を保つ。MCP / REST 両対応。
 
 **`tag_filter` vs `source_filter` の使い分け:**
 - `source_filter` — 制限フィルタ。seed pool の範囲を絞る（source が一致しないノードは入場できない）
@@ -117,6 +120,29 @@ Active commitments (3 total, showing top 10):
 REST (`POST /recall` / `POST /explore`) では `routing_hint` フィールドにそのまま JSON で返る。
 
 **List mode (Phase O Stage 4):** `mode="list"` で各結果の `content` を `config.list_mode_excerpt_chars` (既定 80) 字に切り詰め、改行を空白に置換。`top_k=20, mode="list"` で 1 リクエスト ≈ 20 行のスキャン用インデックスを取得 → 興味ある id に対して `recall(query=..., top_k=1, mode="detail")` で深掘り、という 2-step pattern を支える。**MCP / REST 両方で同じ truncate が wire 上に乗る** (MCP 専用の `output_mode` とは独立、`output_mode` は文字列表示の控除、`mode="list"` は service 層の payload 控除)。
+
+## ambient_recall
+
+構造化された **passive (read-only) recall**。1 回の passive recall から `<gaottt-ambient-recall>` ブロックを組み立てる — [Ambient Recall](Guides-Ambient-Recall.md)（Claude Code `UserPromptSubmit` フックが毎ターンこれを呼ぶ）の本体。明示的に `recall` を呼ばなくても長期記憶が文脈に注入される。
+
+```
+ambient_recall(
+  query: str,
+  direct_k: int = 2,           # ① 直接ヒット件数
+  min_score: float | None = None,  # relevance gate しきい値。None → config.ambient_min_score (既定 0.70)
+)
+```
+
+組み立てるスロット:
+
+| スロット | 中身 |
+|---|---|
+| ▼ 直接ヒット | `final_score` 上位 `direct_k` 件 |
+| ▼ 重力レンズ | `virtual_cosine − raw_cosine` の gap 最大の 1 件 — embedding 的には query から遠いのに、Phase I/J の displacement が場の重力で query 近傍まで引き寄せた記憶。**場が学習した類推**で、素の embedding 検索には出せない枠 |
+| ▼ ⚠ 矛盾 | surface 記憶の `contradicts` エッジのペア |
+| ▼ いま誰として | active な declared value/intention 1 行（grounding） |
+
+各エントリは provenance メタ（`source · certainty · age`）付き。**relevance gate**: **語単位（Sudachi）BM25 の「強一致」gate** — corpus 専用の word-level BM25 index でプロンプトをスコアし、top BM25 が `config.ambient_bm25_min_score`（既定 32.0）未満なら応答は空。dense cosine の `virtual_score` も char-3gram BM25 も大規模コーパスで on/off-topic を分離できず（4 ラウンド校正、2026-05-21）、語単位 BM25 だけが「強一致」を弁別できた（`ambient_gate_use_bm25=False` or `bm25-sudachi` extra 未導入時は `virtual_score` gate にフォールバック、`min_score` 引数はこの時のみ効く）。MCP は空のとき `(関連する記憶なし)` センチネルを返す（フックはこれを見て注入しない）。REST は `AmbientRecallResponse` JSON（`count == 0`）。常に passive — 重力場を一切摂動しない。チューニングは [Operations — Tuning](Operations-Tuning.md) の `ambient_*`、設計は [Plans — Ambient Recall Enrichment](Plans-Ambient-Recall-Enrichment.md)。
 
 ## explore
 

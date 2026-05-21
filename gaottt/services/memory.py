@@ -12,7 +12,12 @@ from typing import Any
 
 from gaottt.core.engine import GaOTTTEngine
 from gaottt.core.extractor import extract_candidates
+from gaottt.core.persona_gravity import collect_active_persona_ids
 from gaottt.core.types import (
+    AmbientMemory,
+    AmbientPersona,
+    AmbientRecallResponse,
+    AmbientTension,
     AutoRememberCandidate,
     AutoRememberResponse,
     ExploreResponse,
@@ -195,6 +200,7 @@ async def recall(
     tag_filter: list[str] | None = None,
     auto_route: bool = True,
     mode: str = "detail",
+    passive: bool = False,
 ) -> RecallResponse:
     # Phase H Stage 2: source_filter is applied at the wave seed step inside
     # propagate_gravity_wave (engine.query → _query_internal). The post-filter
@@ -214,6 +220,7 @@ async def recall(
         persona_context=persona_context,
         tag_filter=tag_filter,
         out_training_delta=delta_out,
+        passive=passive,
     )
     if source_filter:
         sf = set(source_filter)
@@ -242,6 +249,270 @@ async def recall(
         items=items, count=len(items),
         training_delta=_delta_from_dict(delta_out),
         routing_hint=routing_hint,
+    )
+
+
+# --- Ambient Recall Enrichment -------------------------------------------------
+# Structured passive-recall injection. docs/wiki/Plans-Ambient-Recall-Enrichment.md
+
+def _excerpt(content: str, limit: int) -> str:
+    """Newline-collapsed, length-capped excerpt for an ambient slot."""
+    flat = (content or "").replace("\n", " ").replace("\r", " ").strip()
+    return flat[:limit] + "…" if len(flat) > limit else flat
+
+
+def _to_ambient_memory(
+    engine: GaOTTTEngine, item: MemoryItem, now: float, *,
+    excerpt_chars: int, lensing_gap: float | None = None,
+) -> AmbientMemory:
+    """``MemoryItem`` → ``AmbientMemory``, enriched with provenance metadata (③).
+
+    ``certainty`` / ``age_days`` come from the node's ``NodeState`` — the recall
+    that produced ``item`` just touched these nodes, so they are warm in cache.
+    """
+    state = engine.cache.get_node(item.id)
+    certainty = float(state.certainty) if state is not None else None
+    age_days = (
+        max(0.0, (now - state.last_access) / 86400.0)
+        if state is not None else None
+    )
+    return AmbientMemory(
+        id=item.id,
+        content=_excerpt(item.content, excerpt_chars),
+        source=item.source,
+        tags=list(item.tags),
+        certainty=certainty,
+        age_days=age_days,
+        virtual_score=item.raw_score,
+        final_score=item.final_score,
+        lensing_gap=lensing_gap,
+    )
+
+
+def _pick_lensing(
+    engine: GaOTTTEngine, items: list[MemoryItem], exclude: set[str],
+) -> tuple[MemoryItem, float] | None:
+    """② Gravitational lensing — the memory the field has bent onto the query's
+    path. Pick the largest ``virtual_cosine − raw_cosine`` gap: a memory
+    textually far from the query (low ``raw_cosine``) that Phase I/J
+    displacement has pulled near it (high ``virtual_cosine``) — an association
+    the field *learned*, not one the embedder sees.
+
+    Gated by ``ambient_lensing_min_score`` (the pick must still be virtually
+    relevant, not pure noise) and ``ambient_lensing_min_gap`` (the bend must be
+    meaningful). Returns ``(item, gap)`` or ``None``.
+    """
+    cfg = engine.config
+    if not cfg.ambient_lensing_enabled:
+        return None
+    best: tuple[MemoryItem, float] | None = None
+    for item in items:
+        if item.id in exclude:
+            continue
+        b = item.score_breakdown
+        if b is None:
+            continue  # score breakdown disabled → cannot measure the bend
+        if b.virtual_cosine < cfg.ambient_lensing_min_score:
+            continue
+        gap = b.virtual_cosine - b.raw_cosine
+        if gap < cfg.ambient_lensing_min_gap:
+            continue
+        if best is None or gap > best[1]:
+            best = (item, gap)
+    return best
+
+
+_REASON_EDGE_TYPES = ("derived_from", "supersedes")
+
+
+async def _excerpt_of(
+    engine: GaOTTTEngine, node_id: str, limit: int,
+) -> str | None:
+    """Fetch a node's content and return a compact excerpt (or None)."""
+    doc = await engine.store.get_document(node_id)
+    if not doc:
+        return None
+    return _excerpt(doc.get("content", ""), limit) or None
+
+
+async def _attach_reasoning_and_tension(
+    engine: GaOTTTEngine, memories: list[AmbientMemory], excerpt_chars: int,
+) -> list[AmbientTension]:
+    """Stage 2 — for each surfaced memory, attach the ``derived_from`` /
+    ``supersedes`` parent excerpt as ``because`` (④, mutated in place), and
+    collect ``contradicts``-edge pairs as tension cautions (⑤).
+
+    Typed-edge lookups hit the indexed ``directed_edges`` table — a handful of
+    small queries per ambient call, well within the ~0.5s budget.
+    """
+    cfg = engine.config
+    tensions: list[AmbientTension] = []
+    seen: set[tuple[str, str]] = set()
+    for m in memories:
+        out_edges = await engine.get_relations(m.id, direction="out")
+        if cfg.ambient_reasoning_enabled and m.because is None:
+            for e in out_edges:
+                if e.edge_type in _REASON_EDGE_TYPES:
+                    parent = await _excerpt_of(engine, e.dst, excerpt_chars)
+                    if parent:
+                        m.because = parent
+                        break
+        if cfg.ambient_tension_enabled:
+            in_edges = await engine.get_relations(
+                m.id, edge_type="contradicts", direction="in",
+            )
+            contradicts = [e for e in out_edges if e.edge_type == "contradicts"]
+            for e in contradicts + in_edges:
+                other = e.dst if e.src == m.id else e.src
+                key = (m.id, other) if m.id < other else (other, m.id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                other_excerpt = await _excerpt_of(engine, other, excerpt_chars)
+                if other_excerpt:
+                    tensions.append(AmbientTension(
+                        memory_id=m.id,
+                        memory_excerpt=m.content,
+                        contradicts_id=other,
+                        contradicts_excerpt=other_excerpt,
+                    ))
+    return tensions
+
+
+async def _pick_persona(
+    engine: GaOTTTEngine, excerpt_chars: int,
+) -> AmbientPersona | None:
+    """⑥ Stage 3 — surface one active declared value/intention for grounding.
+
+    Reuses Phase J's ``collect_active_persona_ids``; commitments (task-shaped)
+    are excluded — only value/intention ground "who I am working as". One is
+    chosen at random so the surfaced value rotates turn to turn rather than
+    fixating.
+    """
+    cfg = engine.config
+    if not cfg.ambient_persona_enabled:
+        return None
+    ids = collect_active_persona_ids(engine.cache, cfg, time.time())
+    candidates = sorted(
+        nid for nid in ids
+        if engine.cache.source_by_id.get(nid) in ("value", "intention")
+    )
+    if not candidates:
+        return None
+    nid = random.choice(candidates)
+    content = await _excerpt_of(engine, nid, excerpt_chars)
+    if not content:
+        return None
+    return AmbientPersona(
+        id=nid,
+        kind=engine.cache.source_by_id.get(nid, "value"),
+        content=content,
+    )
+
+
+def _bm25_gate(engine: GaOTTTEngine, query: str) -> bool | None:
+    """Word-level BM25 strong-match gate — the primary ambient-recall gate.
+
+    Scores the prompt against a dedicated word-tokenised (Sudachi) BM25 index
+    over the corpus. A prompt that *strongly* matches stored content clears
+    ``ambient_bm25_min_score``; weak / off-topic prompts stay below it. This
+    is what dense-cosine ``virtual_score`` and char-trigram BM25 both failed
+    to do — see the 4-round 2026-05-21 calibration in
+    Plans-Ambient-Recall-Enrichment.md. Returns:
+
+      ``True``  — top BM25 score clears the threshold → inject
+      ``False`` — below threshold → suppress
+      ``None``  — gate index unavailable (disabled / empty / bm25-sudachi
+                  extra missing) → the caller falls back to virtual_score
+    """
+    cfg = engine.config
+    if not cfg.ambient_gate_use_bm25:
+        return None
+    idx = engine.ambient_gate_index
+    if idx is None or idx.size == 0:
+        return None
+    hits = idx.search(query, 1)
+    top = hits[0][1] if hits else 0.0
+    return top >= cfg.ambient_bm25_min_score
+
+
+async def ambient_recall(
+    engine: GaOTTTEngine,
+    query: str,
+    direct_k: int = 2,
+    min_score: float | None = None,
+) -> AmbientRecallResponse:
+    """Ambient Recall Enrichment — structured passive-recall injection.
+
+    Composes a multi-slot block out of ONE passive recall:
+      ① direct hits  — top ``direct_k`` by final_score
+      ② lensing pick — largest virtual−raw gap (a field-learned association)
+      ③ provenance   — source / certainty / age on every slot entry
+    (Stage 2 adds ④ reasoning / ⑤ tension, Stage 3 adds ⑥ persona.)
+
+    Relevance gate: if the best ``virtual_score`` among candidates is below
+    ``min_score`` (default ``config.ambient_min_score``) the response is empty
+    (``count == 0``) — ambient injection stays silent on off-topic prompts.
+
+    ``passive=True`` throughout: ambient recall observes the gravity field
+    without perturbing it (see Plans-Ambient-Recall-Enrichment.md).
+    """
+    cfg = engine.config
+    threshold = cfg.ambient_min_score if min_score is None else min_score
+    now = time.time()
+
+    # Relevance gate — BM25 lexical (primary). Runs BEFORE the recall so an
+    # off-topic prompt skips the recall cost entirely. `None` means BM25 is
+    # unavailable → fall back to the virtual_score gate after the recall.
+    bm25_ok = _bm25_gate(engine, query)
+    if bm25_ok is False:
+        return AmbientRecallResponse(count=0)
+
+    # One passive recall — pool wide enough to host a lensing candidate.
+    pool_k = max(direct_k * 5, 10)
+    rr = await recall(
+        engine, query, top_k=pool_k, passive=True, auto_route=False,
+    )
+    items = rr.items
+    if not items:
+        return AmbientRecallResponse(count=0)
+    if bm25_ok is None:
+        # BM25 unavailable — fall back to the virtual_score gate (the pool's
+        # max raw_score). Known weak on large corpora; BM25 is preferred.
+        if max((it.raw_score for it in items), default=0.0) < threshold:
+            return AmbientRecallResponse(count=0)
+
+    direct_items = items[:direct_k]
+    direct_ids = {it.id for it in direct_items}
+    direct = [
+        _to_ambient_memory(
+            engine, it, now, excerpt_chars=cfg.ambient_excerpt_chars,
+        )
+        for it in direct_items
+    ]
+    lensing: AmbientMemory | None = None
+    picked = _pick_lensing(engine, items, exclude=direct_ids)
+    if picked is not None:
+        l_item, l_gap = picked
+        lensing = _to_ambient_memory(
+            engine, l_item, now,
+            excerpt_chars=cfg.ambient_excerpt_chars, lensing_gap=l_gap,
+        )
+
+    # Stage 2 — reasoning chain (④, mutates `because`) + tension flags (⑤).
+    surfaced = direct + ([lensing] if lensing is not None else [])
+    tensions = await _attach_reasoning_and_tension(
+        engine, surfaced, excerpt_chars=cfg.ambient_excerpt_chars,
+    )
+
+    # Stage 3 — persona grounding (⑥). Not counted toward `count`: it only
+    # rides along an injection the relevance gate already approved.
+    persona = await _pick_persona(engine, cfg.ambient_excerpt_chars)
+
+    count = len(direct) + (1 if lensing is not None else 0)
+    return AmbientRecallResponse(
+        direct=direct, lensing=lensing, tensions=tensions,
+        persona=persona, count=count,
     )
 
 
@@ -315,22 +586,25 @@ async def explore(
         return await _dormant_surface(engine, top_k=top_k, diversity=diversity)
 
     config = engine.config
-    original_gamma = config.gamma
-    config.gamma = config.gamma * (1.0 + diversity * 20.0)
+    # Hardening Stage 1 / C3 — do NOT monkey-patch the shared config.gamma.
+    # engine.config is a single process-wide instance and engine.query
+    # awaits (FAISS thread, store I/O); a concurrent recall/explore on the
+    # shared event loop would read or "restore" the temporarily-inflated
+    # gamma, permanently corrupting it. Pass the widened temperature scale
+    # as a per-call gamma_override instead (thread-safe, like wave_depth/k).
+    explore_gamma = config.gamma * (1.0 + diversity * 20.0)
     explore_depth = config.wave_max_depth + int(diversity * 2)
     explore_k = config.wave_initial_k + int(diversity * 4)
 
     delta_out: dict | None = {} if engine.config.training_delta_enabled else None
-    try:
-        raw = await engine.query(
-            text=query, top_k=top_k,
-            wave_depth=explore_depth, wave_k=explore_k,
-            persona_context=persona_context,
-            tag_filter=tag_filter,
-            out_training_delta=delta_out,
-        )
-    finally:
-        config.gamma = original_gamma
+    raw = await engine.query(
+        text=query, top_k=top_k,
+        wave_depth=explore_depth, wave_k=explore_k,
+        persona_context=persona_context,
+        tag_filter=tag_filter,
+        out_training_delta=delta_out,
+        gamma_override=explore_gamma,
+    )
 
     items = [_to_memory_item(engine, r) for r in raw]
     routing_hint = await _build_routing_hint(engine, query, auto_route)

@@ -87,7 +87,7 @@ open ~/Library/Application\ Support/Claude/
 
 ### 成功の目印 ✅
 
-入力欄の左下に **小さなハンマー🔨アイコン**（または「ツール」表示）が出ていて、クリックすると `gaottt` の名前と `remember` / `recall` など 25 個のツールが並びます。
+入力欄の左下に **小さなハンマー🔨アイコン**（または「ツール」表示）が出ていて、クリックすると `gaottt` の名前と `remember` / `recall` など 26 個のツールが並びます。
 
 → [ステップ 6: 動作確認](#-ステップ-6-ai-に話しかけて確認) に飛ぶ
 
@@ -162,7 +162,7 @@ OpenCode (https://opencode.ai) は `opencode.json` （または `opencode.jsonc`
 
 ### 成功の目印 ✅
 
-OpenCode の TUI で `/mcp` や `/tools` でツール一覧を見たとき、`gaottt` の 25 個のツールが見えていれば成功。
+OpenCode の TUI で `/mcp` や `/tools` でツール一覧を見たとき、`gaottt` の 26 個のツールが見えていれば成功。
 
 > 💡 **GaOTTT のデータは「どこに」保存される？**
 > OpenCode の設定には `cwd` がありませんが、GaOTTT は自動で `~/.local/share/gaottt/` (Linux/macOS) または `%LOCALAPPDATA%\gaottt\` (Windows) にデータを作ります。別の場所に置きたければ `"environment": {"GAOTTT_DATA_DIR": "/your/path"}` を同セクションに追加してください。
@@ -272,5 +272,5 @@ Memory Summary:
 ### 💡 何が起きたか（興味があれば）
 
 - MCP クライアントは起動時（または登録時）に `gaottt` サーバーを **子プロセスとして起動** し、stdio で JSON-RPC を話します
-- クライアント側から見ると、GaOTTT が提供する **25 種類のツール**（remember, recall, explore...）が自分の関数セットに増えた状態になります
+- クライアント側から見ると、GaOTTT が提供する **26 種類のツール**（remember, recall, explore...）が自分の関数セットに増えた状態になります
 - どのクライアントでも動作は同じ — 同じ DB (`~/.local/share/gaottt/gaottt.db`) を共有するので、Claude Desktop で保存した記憶を OpenCode から呼び出す、といった **クライアント横断の記憶** ができます（※同時起動時の注意は [Architecture-Concurrency](Architecture-Concurrency.md)）

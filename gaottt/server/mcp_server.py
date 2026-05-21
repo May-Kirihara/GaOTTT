@@ -82,7 +82,12 @@ mcp = FastMCP(
         "Use 'remember' to store knowledge (source='hypothesis' or ttl_seconds "
         "for ephemeral, emotion/certainty for affective weighting), 'recall' to "
         "search with gravitational relevance (transparently consumes 'prefetch' "
-        "cache), 'prefetch' to pre-warm the gravity well around an anticipated "
+        "cache; pass passive=true for a read-only recall that does not perturb "
+        "the gravity field — for automatic/background use), 'ambient_recall' "
+        "for a structured multi-slot context block (direct hits + "
+        "gravitational-lensing pick + provenance — what the Claude Code hook "
+        "injects each turn), 'prefetch' to "
+        "pre-warm the gravity well around an anticipated "
         "query, 'prefetch_status' to inspect cache health, 'explore' for "
         "serendipitous discovery, 'reflect' to analyze memory state "
         "(aspect='duplicates' for collision candidates, 'relations' for "
@@ -217,6 +222,7 @@ async def recall(
     output_mode: str = "full",
     auto_route: bool = True,
     mode: str = "detail",
+    passive: bool = False,
 ) -> str:
     """Search long-term memory with gravitational wave propagation.
 
@@ -273,15 +279,66 @@ async def recall(
               with ``top_k=20, output_mode="full"`` for a scannable index;
               follow up with a targeted ``recall(...)`` on the id you care
               about for the full payload.
+        passive: Ambient Recall — when True the search runs but the gravity
+                 field is NOT perturbed: no mass update, no query-attraction
+                 displacement, no co-occurrence edges. Use for automatic /
+                 background recall (the Claude Code UserPromptSubmit hook
+                 calls this) so ambient queries never become an uncontrolled
+                 TTT signal. Default False keeps recall a training step.
     """
     engine = await get_engine()
     result = await memory_service.recall(
         engine, query=query, top_k=top_k, source_filter=source_filter,
         wave_depth=wave_depth, wave_k=wave_k, force_refresh=force_refresh,
         persona_context=persona_context, tag_filter=tag_filter,
-        auto_route=auto_route, mode=mode,
+        auto_route=auto_route, mode=mode, passive=passive,
     )
     return formatters.format_recall(result, output_mode=output_mode)
+
+
+@mcp.tool()
+async def ambient_recall(
+    query: str,
+    direct_k: int = 2,
+    min_score: float | None = None,
+) -> str:
+    """Structured passive-recall injection — Ambient Recall Enrichment.
+
+    Composes a multi-slot ``<gaottt-ambient-recall>`` block out of ONE passive
+    (read-only, non-perturbing) recall:
+
+      ▼ direct hits — top results by gravitational final_score
+      ▼ gravitational lensing — a memory textually *far* from the query that
+        the field's displacement has bent onto its path: an association the
+        gravity field *learned*, which no plain embedding search would surface
+      ▼ ⚠ contradiction — surfaced ``contradicts``-edge pairs
+      ▼ persona — an active declared value/intention, for grounding
+
+    Every entry carries provenance metadata (source · certainty · age) so the
+    reader can weigh stale / low-certainty memories accordingly.
+
+    This is what the Claude Code ``UserPromptSubmit`` hook calls every turn —
+    it lets long-term memory surface *without* the model having to call
+    ``recall`` explicitly. Always passive: it never perturbs the gravity
+    field.
+
+    Relevance gate: a word-level (Sudachi) BM25 "strong-match" gate decides
+    whether to inject — only prompts that strongly match stored content fire.
+    When nothing clears it the result is the sentinel ``(関連する記憶なし)``
+    (no block), so ambient injection stays silent on off-topic / weak prompts.
+
+    Args:
+        query: The prompt / topic to pull ambient context for.
+        direct_k: Number of direct-hit results (default 2).
+        min_score: Threshold for the *fallback* virtual_score gate only — used
+                   when the BM25 gate index is unavailable. The primary BM25
+                   gate is tuned server-side (``config.ambient_bm25_min_score``).
+    """
+    engine = await get_engine()
+    result = await memory_service.ambient_recall(
+        engine, query=query, direct_k=direct_k, min_score=min_score,
+    )
+    return formatters.format_ambient(result)
 
 
 @mcp.tool()
@@ -909,15 +966,30 @@ def _install_idle_watcher(idle_timeout: float) -> None:
 
     from starlette.middleware.base import BaseHTTPMiddleware
 
-    state: dict[str, float | bool] = {
+    state: dict[str, object] = {
         "last_activity": time.monotonic(),
         "watchdog_started": False,
+        # H7 — number of HTTP requests currently executing. The watchdog
+        # must never SIGTERM the process while a request is in flight: a
+        # single `ingest` of a large directory or `compact(rebuild_faiss)`
+        # on a 24k corpus can run far longer than idle_timeout with no
+        # other traffic, and killing it mid-write (while the watchdog also
+        # flushes the cache) races the destructive op against shutdown.
+        "in_flight": 0,
+        # Hold the task reference so it isn't GC'd mid-run (fire-and-forget
+        # create_task can be collected) and so it is cancellable.
+        "task": None,
     }
 
     async def watchdog() -> None:
         check_every = max(5.0, idle_timeout / 10.0)
         while True:
             await asyncio.sleep(check_every)
+            # A request in flight (possibly a long ingest/compact) means
+            # the process is NOT idle — defer; its exit refreshes
+            # last_activity so the clock restarts cleanly.
+            if state["in_flight"]:  # type: ignore[truthy-bool]
+                continue
             idle_for = time.monotonic() - state["last_activity"]  # type: ignore[operator]
             if idle_for <= idle_timeout:
                 continue
@@ -944,10 +1016,22 @@ def _install_idle_watcher(idle_timeout: float) -> None:
         async def dispatch(self, request, call_next):
             if not state["watchdog_started"]:
                 state["watchdog_started"] = True
-                asyncio.get_event_loop().create_task(watchdog())
+                # H7 — get_running_loop()/create_task instead of the
+                # deprecated get_event_loop(); keep the handle so the task
+                # isn't GC'd and stays cancellable. `state` is a single
+                # shared closure, so even if FastMCP rebuilds the Starlette
+                # app the guard prevents a second watchdog.
+                state["task"] = asyncio.create_task(watchdog())
                 logger.info("Idle watchdog started (timeout=%ss)", int(idle_timeout))
             state["last_activity"] = time.monotonic()
-            return await call_next(request)
+            state["in_flight"] = state["in_flight"] + 1  # type: ignore[operator]
+            try:
+                return await call_next(request)
+            finally:
+                # Refresh on exit too: a long request must reset the idle
+                # clock when it *finishes*, not only when it started.
+                state["in_flight"] = state["in_flight"] - 1  # type: ignore[operator]
+                state["last_activity"] = time.monotonic()
 
     # Wrap the app factory so the middleware is installed every time
     # FastMCP rebuilds the Starlette app (FastMCP caches, so this

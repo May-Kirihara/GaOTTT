@@ -15,6 +15,7 @@ ReDoc: http://localhost:8000/redoc
 |---|---|---|
 | POST | `/remember` | `remember` |
 | POST | `/recall` | `recall` |
+| POST | `/ambient_recall` | `ambient_recall` |
 | POST | `/explore` | `explore` |
 | POST | `/forget` | `forget` |
 | POST | `/restore` | `restore` |
@@ -141,11 +142,14 @@ ReDoc: http://localhost:8000/redoc
   "persona_context": null,
   "tag_filter": null,
   "auto_route": true,
-  "mode": "detail"
+  "mode": "detail",
+  "passive": false
 }
 ```
 
 `tag_filter` は `source_filter` を bypass する（呼び出し側の明示的指定が優先）。`output_mode` は MCP 専用（REST は常に構造化 JSON を返すため不要）。`auto_route` (Phase O Stage 3) は default `true`。`mode` (Phase O Stage 4) は `"detail"` (既定、全文) / `"list"` (`config.list_mode_excerpt_chars` 字に切り詰め、改行を空白に置換 — `top_k=20` の scan + 興味ある id に対する `mode="detail"` の deep dive という 2-step に向く)。
+
+**`passive` (Ambient Recall)**: `true` で **read-only recall** — 検索結果は同一だが末尾の simulation update を丸ごとスキップ（mass 更新・query attraction displacement・co-occurrence edge・`last_access` 更新がすべて起きない）。自動/バックグラウンド recall がノイズで重力場を汚さないための「摂動なしの観察」モード。`passive=true` の応答では `training_delta` の `displacement_changes` / `mass_changes` がすべて 0 になる。既定 `false` は legacy の「recall は訓練ステップ」挙動。詳細は [Ambient Recall](Guides-Ambient-Recall.md)。
 
 **レスポンス 200**:
 ```json
@@ -214,6 +218,47 @@ ReDoc: http://localhost:8000/redoc
 ```
 
 `pattern_matched=false` (自由文 query) → 並走無し、`reflect_summary=null`。`auto_routed=false` (per-call `auto_route=false` or `auto_route_enabled=false`) でも `pattern_matched` だけは true で返り、caller は「router が off だった」と「pattern に一致しなかった」を区別できる。`auto_route` を request body に省略すると default `true`。
+
+### POST /ambient_recall
+
+構造化された passive (read-only) recall。1 回の passive recall から複数スロットの注入ブロックを組み立てる — [Ambient Recall](Guides-Ambient-Recall.md)（Claude Code フックが毎ターン呼ぶ）の本体。
+
+```json
+{
+  "query": "ambient recall の仕組み",
+  "direct_k": 2,
+  "min_score": null
+}
+```
+
+`direct_k` は直接ヒット件数（既定 2）。relevance gate は **語単位（Sudachi）BM25 の「強一致」gate**（`config.ambient_bm25_min_score`、既定 32.0）— dense cosine も char-3gram BM25 も大規模コーパスで分離できず、語単位 BM25 だけが機能した。`min_score` は **フォールバック** virtual_score gate のしきい値で、`ambient_gate_use_bm25=False` または `bm25-sudachi` extra 未導入時のみ効く（`null` → `config.ambient_min_score` 0.70）。
+
+**レスポンス 200** — `AmbientRecallResponse`:
+```json
+{
+  "direct": [
+    {
+      "id": "...", "content": "...(excerpt)", "source": "agent",
+      "tags": ["..."], "certainty": 0.8, "age_days": 12.3,
+      "virtual_score": 0.83, "final_score": 0.41,
+      "lensing_gap": null, "because": "派生元の決定の抜粋…"
+    }
+  ],
+  "lensing": {
+    "id": "...", "content": "...", "source": "tweet",
+    "certainty": 1.0, "age_days": 340.0,
+    "virtual_score": 0.71, "lensing_gap": 0.42, "because": null
+  },
+  "tensions": [
+    {"memory_id": "...", "memory_excerpt": "...",
+     "contradicts_id": "...", "contradicts_excerpt": "..."}
+  ],
+  "persona": {"id": "...", "kind": "value", "content": "最も literal な解を選ぶ"},
+  "count": 3
+}
+```
+
+`direct` ① は `final_score` 上位、`lensing` ② は `virtual_cosine − raw_cosine` の gap 最大（場が学習した類推、`lensing_gap` に gap 値）、`tensions` ⑤ は `contradicts` ペア、`persona` ⑥ は active な declared value/intention。各 `direct`/`lensing` の `because` ④ は `derived_from`/`supersedes` 親の抜粋。`count == 0` は relevance gate で抑制された状態（注入なし）。MCP (`ambient_recall`) は同じ内容を `<gaottt-ambient-recall>` 文字列ブロックに整形して返す。常に passive — 重力場を摂動しない。
 
 ### POST /explore
 

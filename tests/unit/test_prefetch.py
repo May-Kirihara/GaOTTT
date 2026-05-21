@@ -36,6 +36,29 @@ def test_different_top_k_is_separate_entry():
     assert cache.get("foo", 10) == ["ten"]
 
 
+def test_h6_different_wave_depth_is_a_miss():
+    """H6: a prefetch warmed at one wave_depth must not serve a recall
+    issued at a different wave_depth (the deeper recall would silently get
+    the shallower gravity reach and skip its TTT side effects)."""
+    cache = PrefetchCache()
+    cache.put("foo", 5, ["shallow"], wave_depth=1, wave_k=2)
+    # Same text+top_k but different reach → clean miss, not a wrong hit.
+    assert cache.get("foo", 5, wave_depth=5, wave_k=2) is None
+    assert cache.get("foo", 5, wave_depth=1, wave_k=20) is None
+    # Exact match still hits — prefetch stays useful.
+    assert cache.get("foo", 5, wave_depth=1, wave_k=2) == ["shallow"]
+
+
+def test_h6_legacy_none_args_backward_compatible():
+    """Callers that don't pass wave args (the common recall path) keep
+    working: (text, k, None, None) is internally consistent."""
+    cache = PrefetchCache()
+    cache.put("bar", 3, ["r"])
+    assert cache.get("bar", 3) == ["r"]
+    # A None-keyed entry must not be served to an explicit-depth recall.
+    assert cache.get("bar", 3, wave_depth=2) is None
+
+
 def test_ttl_expiry_returns_miss():
     cache = PrefetchCache(ttl_seconds=0.05)
     cache.put("foo", 5, ["x"])

@@ -268,3 +268,71 @@ def test_compute_mass_bh_acceleration_disabled_returns_zero():
     neighbors = [(np.array([1.0, 0.0, 0.0], dtype=np.float32), 100.0)]
     acc = compute_mass_bh_acceleration(pos_i, neighbors, config)
     assert np.allclose(acc, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# H8 — collision-resistant original_id fallback
+#
+# The implicit fallback (no explicit original_id) must NOT group two
+# unrelated docs that merely share a non-absolute file_path basename; doing
+# so would make is_self_force_by_id treat them as same-document and suppress
+# their genuine external-referral mass as "internal trade".
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_h8_ambiguous_file_path_does_not_group_unrelated_docs(tmp_path):
+    eng = _build_engine(tmp_path, mass_conservation=True)
+    await eng.startup()
+    try:
+        a = await eng.index_documents(
+            [{"content": "alpha project readme", "metadata": {"file_path": "README.md"}}]
+        )
+        b = await eng.index_documents(
+            [{"content": "beta project readme", "metadata": {"file_path": "README.md"}}]
+        )
+        oid_a = eng.cache.get_original(a[0])
+        oid_b = eng.cache.get_original(b[0])
+        # A bare basename is not a global identity → each falls back to its
+        # own node id, so the two unrelated docs are NOT self-force peers.
+        assert oid_a == a[0]
+        assert oid_b == b[0]
+        assert oid_a != oid_b, (
+            "unrelated docs sharing basename 'README.md' were grouped as "
+            "same-original — false self-force (H8 regression)"
+        )
+    finally:
+        await eng.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_h8_absolute_path_still_groups_siblings(tmp_path):
+    """Control: an UNAMBIGUOUS absolute file_path still groups chunks of
+    the same file (Phase M chunk-grouping preserved)."""
+    eng = _build_engine(tmp_path, mass_conservation=True)
+    await eng.startup()
+    try:
+        abs_fp = "/srv/corpus/doc.md"
+        ids = await eng.index_documents([
+            {"content": "chunk one body", "metadata": {"file_path": abs_fp}},
+            {"content": "chunk two body", "metadata": {"file_path": abs_fp}},
+        ])
+        assert eng.cache.get_original(ids[0]) == abs_fp
+        assert eng.cache.get_original(ids[1]) == abs_fp
+    finally:
+        await eng.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_h8_explicit_original_id_always_honored(tmp_path):
+    """An explicitly-supplied original_id is honored verbatim regardless of
+    file_path — the loader's normal path is unaffected by H8."""
+    eng = _build_engine(tmp_path, mass_conservation=True)
+    await eng.startup()
+    try:
+        ids = await eng.index_documents([{
+            "content": "explicit id doc",
+            "metadata": {"original_id": "session-42#3", "file_path": "notes.md"},
+        }])
+        assert eng.cache.get_original(ids[0]) == "session-42#3"
+    finally:
+        await eng.shutdown()

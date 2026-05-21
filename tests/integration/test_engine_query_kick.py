@@ -11,6 +11,8 @@ End-to-end through engine.query():
 """
 from __future__ import annotations
 
+import hashlib
+
 import numpy as np
 import pytest
 
@@ -22,10 +24,28 @@ from gaottt.store.sqlite_store import SqliteStore
 
 
 class StubEmbedder:
-    """Deterministic token-based embeddings — no GPU/network."""
+    """Deterministic embeddings with controlled wave connectivity.
+
+    L-flaky fix (2026-05-18): the previous implementation used
+    ``abs(hash(text))`` — Python's builtin ``hash`` is salted per process
+    via ``PYTHONHASHSEED``, so the embedding geometry changed every run and
+    ``test_query_kick_drifts_*`` / ``test_stage3_gate_dampens_*`` flapped
+    (for some seeds the probe's gravity wave never reached the target, so
+    the displacement assertion had nothing to assert on). Two changes make
+    it robust *and* preserve the tests' physical intent:
+
+      1. Seed from a stable cross-process hash (``hashlib.sha256``).
+      2. Every vector = a shared base direction + a small per-text
+         perturbation. High mutual cosine (~0.97) guarantees the wave
+         reliably connects every doc to every probe, while distinct
+         perturbations keep ``q - raw`` non-degenerate so the query-kick
+         direction is well-defined. This is the connectivity the tests
+         *assumed* but random near-orthogonal 768-d vectors didn't provide.
+    """
 
     def __init__(self, dim: int = 768):
         self.dim = dim
+        self._base = np.ones(dim, dtype=np.float32) / np.sqrt(dim)
 
     def encode_documents(self, contents):
         return np.array([self._embed(c) for c in contents], dtype=np.float32)
@@ -34,9 +54,11 @@ class StubEmbedder:
         return self._embed(text).reshape(1, -1).astype(np.float32)
 
     def _embed(self, text: str) -> np.ndarray:
-        seed = abs(hash(text)) & 0xFFFFFFFF
+        seed = int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big")
         rng = np.random.default_rng(seed)
-        v = rng.standard_normal(self.dim).astype(np.float32)
+        perturb = rng.standard_normal(self.dim).astype(np.float32)
+        perturb /= np.linalg.norm(perturb) + 1e-9
+        v = self._base + 0.15 * perturb
         v /= np.linalg.norm(v) + 1e-9
         return v
 

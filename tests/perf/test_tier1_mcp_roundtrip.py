@@ -1,7 +1,7 @@
 """Tier 1 smoke — every MCP tool is callable and returns a non-empty string.
 
 Two checks:
-  1. The MCP server exposes exactly 25 tools (matches the documented surface).
+  1. The MCP server exposes exactly 26 tools (matches the documented surface).
   2. Each tool runs end-to-end with sane args and returns a non-empty
      string. IDs from earlier calls thread into later calls so we exercise
      the realistic shape of a session.
@@ -26,8 +26,8 @@ from tests.perf._helpers import make_engine
 # Expected tool surface. Update this list intentionally if a tool is added
 # or removed — the count is a contract.
 EXPECTED_TOOLS = {
-    "remember", "revalidate", "forget", "restore", "recall", "explore",
-    "reflect", "prefetch", "prefetch_status", "relate", "unrelate",
+    "remember", "revalidate", "forget", "restore", "recall", "ambient_recall",
+    "explore", "reflect", "prefetch", "prefetch_status", "relate", "unrelate",
     "get_relations", "commit", "start", "complete", "abandon", "depend",
     "declare_value", "declare_intention", "declare_commitment",
     "inherit_persona", "merge", "compact", "auto_remember", "ingest",
@@ -47,11 +47,11 @@ async def engine_singleton(tmp_path, monkeypatch):
 
 
 def test_mcp_surface_count_matches_expected():
-    """The 25-tool surface is a contract — additions/removals are intentional."""
+    """The 26-tool surface is a contract — additions/removals are intentional."""
     source = Path(srv.__file__).read_text(encoding="utf-8")
     decorator_count = len(re.findall(r"^@mcp\.tool\(\)\s*$", source, re.MULTILINE))
-    assert decorator_count == 25, (
-        f"Found {decorator_count} @mcp.tool() decorators; expected 25"
+    assert decorator_count == 26, (
+        f"Found {decorator_count} @mcp.tool() decorators; expected 26"
     )
 
     discovered = set()
@@ -69,7 +69,7 @@ def _extract_id(text: str) -> str:
     return match.group(0)
 
 
-async def test_all_25_tools_round_trip(engine_singleton):
+async def test_all_26_tools_round_trip(engine_singleton):
     """Drive every tool through a single coherent workflow.
 
     The order is chosen so each tool gets realistic inputs from prior tool
@@ -143,6 +143,9 @@ async def test_all_25_tools_round_trip(engine_singleton):
 
     explore_out = await srv.explore(query="Tier-1 smoke", top_k=3)
     assert isinstance(explore_out, str) and len(explore_out) > 0
+
+    ambient_out = await srv.ambient_recall(query="Tier-1 smoke")
+    assert isinstance(ambient_out, str) and len(ambient_out) > 0
 
     # Auto-remember does not save — just extract candidates from a transcript
     auto_out = await srv.auto_remember(

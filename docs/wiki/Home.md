@@ -26,11 +26,13 @@
 | TODO・タスク管理として | [Guides — Use as Task Manager](Guides-Use-As-Task-Manager.md) |
 | 人格保存基盤として | [Guides — Use as Persona Base](Guides-Use-As-Persona-Base.md) |
 | 複数エージェントの共有メモリとして | [Guides — Multi-Agent](Guides-Multi-Agent.md) |
+| プロジェクトごとに DB を分けたい (知識ドメイン分離) | [Guides — Per-Project DBs](Guides-Per-Project-DBs.md) |
+| 明示的に呼ばなくても記憶を自動で効かせたい | [Guides — Ambient Recall](Guides-Ambient-Recall.md) |
 | 記憶宇宙を眺めたい | [Guides — Visualization](Guides-Visualization.md) |
 
 ### 🛠 GaOTTT の MCP ツールリファレンスを引きたい
 
-→ [MCP Reference Index](MCP-Reference-Index.md) — **25 ツール** の早見表
+→ [MCP Reference Index](MCP-Reference-Index.md) — **26 ツール** の早見表
 - [Memory](MCP-Reference-Memory.md) — remember/recall/explore/reflect/ingest/auto_remember
 - [Tasks & Persona](MCP-Reference-Tasks-and-Persona.md) — Phase D の 9 ツール
 - [Maintenance](MCP-Reference-Maintenance.md) — forget/restore/merge/compact/revalidate/relate*/prefetch*
@@ -77,7 +79,7 @@ REST API は [REST API Reference](REST-API-Reference.md)。
 ## クイックステータス
 
 - **実装フェーズ**: Phase A〜D 全完了
-- **MCP ツール数**: 25
+- **MCP ツール数**: 26
 - **テスト**: 112/112 緑
 - **ベンチ**: SC-001 p50 = **15.1ms** (200 docs)
 - **シードメモリ**: 23,000+（ユーザーさんの実 DB）

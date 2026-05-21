@@ -20,7 +20,7 @@ CLAUDE.md「実装フロー」の step 7 にあたる。新機能・hot path 変
 
 | 階層 | 目的 | 例 | カバー事件 | tests/perf/ ファイル |
 |---|---|---|---|---|
-| 1. Smoke | 動作する | サーバー起動 / 25 MCP tools / BM25 build / **Phase O trailers** | startup 失敗、tool 名 typo、observability 文字列の silent 変更 | `test_tier1_startup.py`, `test_tier1_mcp_roundtrip.py`, `test_tier1_bm25_build.py`, `test_tier1_phase_o_trailers.py` |
+| 1. Smoke | 動作する | サーバー起動 / 26 MCP tools / BM25 build / **Phase O trailers** | startup 失敗、tool 名 typo、observability 文字列の silent 変更 | `test_tier1_startup.py`, `test_tier1_mcp_roundtrip.py`, `test_tier1_bm25_build.py`, `test_tier1_phase_o_trailers.py` |
 | 2. Functional | 仕様通り | source_filter / tag_filter / dedup / Phase D | (既存 `tests/integration/` で網羅) | — |
 | 3. Retrieval Quality | 正しい結果 | surface top-5 厳格 / Semantic cluster / Source-mix / **forced flag visibility** | top1 hub 化、cluster 全滅、sparse-class injection の sigil 喪失 | `test_tier3_retrieval_quality.py`, `test_tier3_phase_o_forced_flag.py` |
 | 4. Dynamics | 時間で壊れない | anti-hub / displacement runaway / 世代安定性 / **driven resonance / diversity 配線** | hub chunk 独占、displacement 暴走、diversity no-op、Phase I Stage 2 query-kick 退行 | `test_tier4_dynamics.py`, `test_tier4_phase_o_resonance.py`, `test_tier4_phase_o_diversity.py` |

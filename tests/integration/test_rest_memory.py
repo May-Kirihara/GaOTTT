@@ -83,6 +83,58 @@ async def test_recall_returns_items_with_source_and_displacement(rest_client):
     assert "tags" in item
 
 
+async def test_recall_passive_is_read_only(rest_client):
+    """Ambient Recall — POST /recall with ``passive=true`` returns results
+    but reports zero field movement (no mass / displacement change)."""
+    await rest_client.post(
+        "/remember",
+        json={"content": "ambient passive recall probe vega", "source": "agent"},
+    )
+    resp = await rest_client.post(
+        "/recall",
+        json={"query": "passive probe vega", "top_k": 3, "passive": True},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] >= 1
+    td = data.get("training_delta")
+    if td is not None:
+        assert all(
+            v == 0.0 for v in (td.get("displacement_changes") or {}).values()
+        ), "passive recall moved displacement"
+        assert all(
+            v == 0.0 for v in (td.get("mass_changes") or {}).values()
+        ), "passive recall changed mass"
+
+
+async def test_ambient_recall_rest_roundtrip(rest_client):
+    """Ambient Recall Enrichment — POST /ambient_recall returns the structured
+    AmbientRecallResponse JSON; the min_score gate empties it."""
+    for i in range(4):
+        await rest_client.post(
+            "/remember",
+            json={"content": f"ambient rest probe {i}", "source": "agent"},
+        )
+    resp = await rest_client.post(
+        "/ambient_recall", json={"query": "ambient rest probe", "direct_k": 2},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] >= 1
+    assert 1 <= len(data["direct"]) <= 2
+    item = data["direct"][0]
+    assert item["source"] == "agent"
+    assert "certainty" in item and "age_days" in item
+    assert "lensing" in data and "tensions" in data and "persona" in data
+    # relevance gate — nothing clears 0.999 → empty response
+    gated = await rest_client.post(
+        "/ambient_recall",
+        json={"query": "ambient rest probe", "min_score": 0.999},
+    )
+    assert gated.status_code == 200
+    assert gated.json()["count"] == 0
+
+
 async def test_recall_training_delta_in_rest_response(rest_client):
     """Phase O Stage 2 — REST JSON response carries TrainingDelta."""
     await rest_client.post(

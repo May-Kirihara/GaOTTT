@@ -13,6 +13,8 @@ does **not** maintain a separate singleton; it is a factory only.
 """
 from __future__ import annotations
 
+import logging
+
 from gaottt.config import GaOTTTConfig
 from gaottt.core.engine import GaOTTTEngine
 from gaottt.embedding.ruri import RuriEmbedder
@@ -20,6 +22,8 @@ from gaottt.index.bm25_index import BM25Index
 from gaottt.index.faiss_index import FaissIndex
 from gaottt.store.cache import CacheLayer
 from gaottt.store.sqlite_store import SqliteStore
+
+logger = logging.getLogger(__name__)
 
 
 def build_engine(config: GaOTTTConfig) -> GaOTTTEngine:
@@ -45,6 +49,21 @@ def build_engine(config: GaOTTTConfig) -> GaOTTTEngine:
         )
         if config.hybrid_bm25_enabled else None
     )
+    # Ambient Recall Enrichment: a dedicated word-level (Sudachi) BM25 index
+    # for the relevance gate — kept separate from the Phase L hybrid-retrieval
+    # index above so the gate's tokenizer choice does not touch retrieval.
+    # If the bm25-sudachi extra is missing, construction raises ImportError —
+    # the gate then falls back to the virtual_score gate.
+    ambient_gate_index = None
+    if config.ambient_gate_use_bm25:
+        try:
+            ambient_gate_index = BM25Index(tokenizer=config.ambient_gate_tokenizer)
+        except ImportError as exc:
+            logger.warning(
+                "ambient gate index unavailable (%s) — ambient_recall falls "
+                "back to the virtual_score gate. Install the extra with "
+                "`uv pip install -e '.[bm25-sudachi]'`.", exc,
+            )
     store = SqliteStore(db_path=config.db_path)
     cache = CacheLayer(
         flush_interval=config.flush_interval_seconds,
@@ -58,4 +77,5 @@ def build_engine(config: GaOTTTConfig) -> GaOTTTEngine:
         store=store,
         virtual_faiss_index=virtual_faiss_index,
         bm25_index=bm25_index,
+        ambient_gate_index=ambient_gate_index,
     )

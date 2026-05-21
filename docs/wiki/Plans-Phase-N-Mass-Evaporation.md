@@ -252,6 +252,54 @@ mass_evaporation_eager_cron_seconds: float = 0.0   # 0 = lazy only、>0 で eage
 3. **persona traversal の hop でも last_access?** — Phase J の persona-anchored retrieval が hop した先のノードを touch するか。設計次第。
 4. **mass 0 への漸近** — `M_floor=1.0` で物理的には永遠に到達しないが、float64 で実用上ほぼ floor。これは保護として OK。
 
+## 10.5. Stage 1.5 readiness assessment (2026-05-15、GLM-5.1 dry-run 評価)
+
+`scripts/phase_n_dry_run.py` で production 33,612 active node に対し **read-only projection** を 6 シナリオ実施 (default / 14d-30%cold / 30d-30%cold / 30d-50%cold / 30d-30%random / β=2.0 variant)、secondopinion-MCP 経由 GLM-5.1 が Track B 3-axis rubric ([Operations-Performance-Testing.md](Operations-Performance-Testing.md)) で評価。
+
+### 観察された事実
+
+production は 2026-05-13 Phase M mass reset 直後で、**全 33k node の last_access が 0.8 日以内**。grace=7d で完全保護され、現時点 drain=0。aging を入れた projection でのみ機構の振る舞いが見える状態。
+
+### 機械軸
+
+drain は 6 シナリオで 0.01-2.40% range、全ケース非破滅。default param 30d-30%highmass-cold で **0.74% total drain (415 of 55,769)**。p50/p90 不変、drain は p99+ tail に集中。floor=1.0 は全ケースで守られた。違和感 2 点:
+- 30%→50% highmass-cold で drain が 0.74%→0.77% と僅か → 拡張対象が low-mass に偏るため (数学的には正しい)
+- β=2.0 で compaction source (n=5、mean 6.6) が **22.19% drain** — session-summary 設計意図との衝突可能性
+
+### 定性軸
+
+top losers は 6 シナリオで一貫して同一 cluster (刑法 175 条 file chunks、chat ingest agent memo、claude-code session transcripts) = **Phase O Figure 0 で GLM が独立検出した legacy bulk-ingest hub と完全一致**。「使われない hub を drain する」設計意図が正確に targetting されている。
+
+**+27 dormant pool 復元** (`mass ≤ 2.0` 通過数) — Phase O Stage 5 が production で 0 件だった問題 ([[project-phase-o-stage-5-production-observation]]) への、Phase N β 単独での最初の効果証拠 (仮説 2 の支持)。
+
+Articulation as Carrier 対称命題 「言葉にしたものが、誰にも再び持ち出されなければ、重力を失う」が literal に動作 — recall で touch され続ける hub は drain されず、touch が止まった legacy hub だけが drain される。
+
+### 官能軸
+
+valence **+2**、arousal **2**、surprise **1**。somatic: 「constellation の重心がゆっくり shift する感触。β=1.5 default は重力場の撹拌 — 星は動くが座標系は保たれる。p50 が動かないことで mass を放射に変える機構の存在を確認した — 塵は塵のままで、恒星だけが寿命を持つ」。
+
+### Verdict — conditional go
+
+| 項目 | 判定 |
+|---|---|
+| Stage 1.5 enable | **追加観測必要 (go after Phase M Stage 2)** |
+| 推奨 param | **default (β=1.5)** |
+| β=2.0 (heavy-hub-bias) | **見送り** (compaction 22.19% drain、設計意図衝突) |
+| Phase M Stage 2 との順序 | **M Stage 2 先、N β Stage 1.5 後** (Plans §9 通り、observation 期間中は N β disabled のまま idle age 蓄積可) |
+| earliest enable | **2026-05-20** (mass reset から 7d、grace を超える node が出現する timing) |
+| 推奨 enable | **2026-05-27** (mass reset から 14d、idle age distribution が realistic な形になってから) |
+
+### Stage 1.5 enable 前に観察すべき 3 点
+
+1. **Phase M Stage 2 の完了** — θ 確定前に N β を有効化すると mass 分布が動的に変わって観測対象が定まらない。
+2. **idle age distribution の自然推移** — 現在 max 0.8d の全 node が 7-14d 後にどこまで自然 aging するか。grace=7d を超える node が現れ始める timing が N β の実際の起動点。
+3. **compaction source の drain 感度** — β=1.5 でも compaction (n=5) は 4.29% drain と highest source 群。Stage 1.5 enable 後の compaction drain rate を monitor。本来 high-mass であるべき session summary が、使われていれば recall→grace 保護で drain されないはずだが、想定外に drain される場合は source-aware floor 調整を検討 (Phase M 単一規則との整合性を保つ範囲で)。
+
+### 出典
+
+- Dry-run reports: `.phase-n-dry-run/*.md` (gitignored、`scripts/phase_n_dry_run.py --sweep` で再生成可)
+- GLM-5.1 evaluation session: 2026-05-15 (closed)、`secondopinion-MCP delegate_task` 経由
+
 ## 11. 関連 memory / 出典
 
 - [[plans-phase-m-mass-conservation]] §13 — Phase M 文書内の先行用語 ("Mass Evaporation (Hawking radiation)" の命名)

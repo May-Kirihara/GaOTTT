@@ -22,7 +22,7 @@ GaOTTT の Phase 進捗と未実装機能の俯瞰。
 
 ## 累積 MCP ツール数
 
-**25 ツール** + **11 reflect aspect**
+**26 ツール** + **11 reflect aspect**
 
 詳細: [MCP Reference Index](MCP-Reference-Index.md)
 
@@ -42,7 +42,9 @@ GaOTTT の Phase 進捗と未実装機能の俯瞰。
   - **(N-β) Mass Evaporation (Hawking radiation 類比)** ✅ **起草済 (2026-05-15)** — [Plans](Plans-Phase-N-Mass-Evaporation.md)。Phase M で「自己関与は mass を生まない」(入力側) を literal 化したので、対称形として「使われない mass は自然減衰する」(出力側) を物理化する。命名は Hawking 類比だが数学は恒星 luminosity + Ebbinghaus の混合 (literal Hawking だと direction が逆になる罠を回避、Phase M の「source 分岐ゼロ」と同じ「名前は homage、数学は問題を解くもの」姿勢)。単一規則: `mass -= ε · (mass - M_floor)^β · (t_idle/τ_idle)^γ · dt`。動機は 2026-05-15 GLM playthrough Figure 0 が独立検出した「hot_topics 上位が legacy bulk-ingest debt で固まっている」観察。Phase O Stage 5 dormant の母集団復元も副次予測 (仮説 2)。**Stage 1 (lazy 実装 + default OFF) は Phase M Stage 2 を待たずに着手可能**、本番 opt-in (Stage 1.5) は Phase M Stage 2 後。
   - **(N-γ) Muon thought experiment** — query attraction の Muon 化思考実験 ([Research — Muon Thought Experiment](Research-Muon-Thought-Experiment.md))。`compute_acceleration` 第 4 項のみに toggle で適用、acceptance で「観測 conformism が和らぐか」を計測。Phase L acceptance の hybrid retrieval geometry が落ち着いてから着手するのが順序的に自然
 - [Phase O — TTT Observability](Plans-Phase-O-TTT-Observability.md) — LLM caller を TTT loop の participant に昇格させる observability layer。Phase I Stage 2 で literal 成立した「retrieval = gradient step」を caller-side に閉じる。5 stage: score breakdown / training delta trailer / query routing / list mode / dormant surface。**全 5 stage 完了 (2026-05-14)**: Stage 1 で forward pass (gradient) を、Stage 2 で backward pass (parameter update) を、Stage 3 で query routing (surface form classifier + reflect 並走) を、Stage 4 で list mode (service 層 80字 truncate で context 経済) を、Stage 5 で dormant surface (counter-importance sampling で「埋もれる自由」の対をなす「思い出される自由」) を caller に露出。`ScoreBreakdown` / `TrainingDelta` / `RoutingHint` Pydantic model、`RecallRequest.mode` / `ExploreRequest.mode` で opt-in モード、MCP/REST 両側 parity。`expose_score_breakdown=False` / `training_delta_enabled=False` / `auto_route_enabled=False` で legacy fallback、Stage 4-5 は default `detail` / `serendipity` (opt-in)。Stage 3 の classifier も Stage 5 の `dormant_source_classes` 列挙も **query intent layer の filter / routing** であって physics rule (mass / Hooke / kick) は一切触らない — Phase M の「source 分岐ゼロの単一規則」を全 stage で侵さない
-- [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md) — 二層語彙、パターンカタログ
+- [Hardening — Concurrency & Persistence](Plans-Hardening-Concurrency-Persistence.md) — 2026-05-18 網羅コードレビュー由来。proxy mode (N agents → engine 1 プロセス) で顕在化する並行性・永続化の正確性バグを機構で閉じる。physics Phase ではないので Phase レター非消費。**Stage 1 完了 (2026-05-18)**: C1 (displacement 消失 → column-preserving upsert) / C3 (explore の共有 gamma 破壊 → per-call gamma_override) / C4 (reset の prefetch 未無効化) を修正 + teeth-having 回帰、487 passed。C2 (並行 recall の lost-update 説) は調査の結果バグでないと判明 (mutation phase は asyncio 下でアトミック) し no-op 確定。Stage 2-4 = HIGH/MEDIUM/LOW catalogue
+- [Ambient Recall](Guides-Ambient-Recall.md) — `recall(passive=True)`（read-only / 摂動なしの観察 — mass・displacement・co-occurrence・`last_access` を一切書かない）+ Claude Code `UserPromptSubmit` フック / opencode `chat.message` プラグインによる受動的文脈注入。明示的に recall を呼ばなくても長期記憶が自動で効く。observer effect (P7-Z) を機構で閉じる。physics Phase ではないので Phase レター非消費。**完了（2026-05-21）**
+- [Ambient Recall Enrichment](Plans-Ambient-Recall-Enrichment.md) — 上記の read-side 拡張。注入を「フラットな top-k」から「構造化スロット」（直接ヒット / 重力レンズ枠 / 理由の連鎖 / 矛盾フラグ / 人格行 / メタ注釈）に。`services/memory.ambient_recall()` + 新 MCP ツール `ambient_recall` + REST `/ambient_recall`。physics Phase 非消費。**Stage 1-4 実装完了（2026-05-21）** — 538 passed。Stage 4 で relevance gate を本番校正に基づき `virtual_score` → BM25 語彙一致に差し替え（dense cosine は 32k コーパスで on/off-topic 分離不能と実証）。フックは `ambient_recall` 呼び出しに差し替え済
 - [REST × MCP Unification Plan (Phase S)](https://github.com/May-Kirihara/GaOTTT/blob/main/docs/maintainers/rest-mcp-unification-plan.md) — 保守者向け、Phase S0–S6 の作業計画
 
 ## 未実装 / 検討中

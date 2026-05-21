@@ -34,20 +34,73 @@ def test_drift_fraction_normal():
     assert _drift_fraction(80, 100) == 0.20
 
 
-def test_cleanup_tmp_residuals_removes_files(tmp_path):
-    """Tier A — leftover .tmp files in the FAISS dir are deleted."""
-    (tmp_path / "gaottt.faiss.tmp").write_bytes(b"partial")
-    (tmp_path / "gaottt.virtual.faiss.tmp").write_bytes(b"partial2")
+def _dead_pid() -> int:
+    """A pid that has certainly exited (reuse within the test window is
+    negligible) — for asserting dead-owner cleanup."""
+    import subprocess
+
+    p = subprocess.Popen(["true"])
+    p.wait()
+    return p.pid
+
+
+def test_cleanup_tmp_residuals_removes_dead_pid_orphans(tmp_path):
+    """Tier A / H3 — a pid-scoped .tmp whose owning process is dead is an
+    orphan from an interrupted atomic save and is deleted."""
+    dead = _dead_pid()
+    (tmp_path / f"gaottt.faiss.{dead}.tmp").write_bytes(b"partial")
+    (tmp_path / f"gaottt.faiss.ids.{dead}.tmp").write_bytes(b"partial2")
     (tmp_path / "keep_me.txt").write_text("not a tmp")
 
     report = DiagnosticReport()
     _cleanup_tmp_residuals(tmp_path, report)
 
-    assert not (tmp_path / "gaottt.faiss.tmp").exists()
-    assert not (tmp_path / "gaottt.virtual.faiss.tmp").exists()
+    assert not (tmp_path / f"gaottt.faiss.{dead}.tmp").exists()
+    assert not (tmp_path / f"gaottt.faiss.ids.{dead}.tmp").exists()
     assert (tmp_path / "keep_me.txt").exists()
     cleaned = [r for r in report.results if "tmp_residual_cleaned" in r.name]
     assert len(cleaned) == 2
+
+
+def test_cleanup_tmp_residuals_keeps_live_writer_scratch(tmp_path):
+    """H3 regression — a pid-scoped .tmp owned by a LIVE process must NOT
+    be deleted: that is a sibling backend mid-write, and unlinking it
+    turns its os.replace into FileNotFoundError (lost index snapshot)."""
+    import os
+
+    live = os.getpid()  # this test process is, definitionally, alive
+    scratch = tmp_path / f"gaottt.virtual.faiss.{live}.tmp"
+    scratch.write_bytes(b"in-flight 100MB write...")
+
+    report = DiagnosticReport()
+    _cleanup_tmp_residuals(tmp_path, report)
+
+    assert scratch.exists(), "live-process scratch file was wrongly deleted (H3 regression)"
+    assert any("tmp_residual_skipped_live" in r.name for r in report.results)
+
+
+def test_cleanup_tmp_residuals_unscoped_recent_kept_old_deleted(tmp_path):
+    """Legacy unscoped <path>.tmp (pre-H3): recent ones may be a pre-H3
+    writer mid-save → keep; clearly old ones are orphans → delete."""
+    import os
+    import time
+
+    from gaottt.diagnostics.startup import _STALE_TMP_AGE_SECONDS
+
+    recent = tmp_path / "gaottt.faiss.tmp"
+    recent.write_bytes(b"maybe in-flight")
+    old = tmp_path / "gaottt.virtual.faiss.tmp"
+    old.write_bytes(b"definitely orphan")
+    old_mtime = time.time() - (_STALE_TMP_AGE_SECONDS + 60)
+    os.utime(old, (old_mtime, old_mtime))
+
+    report = DiagnosticReport()
+    _cleanup_tmp_residuals(tmp_path, report)
+
+    assert recent.exists(), "recent unscoped tmp wrongly deleted (could be a pre-H3 writer)"
+    assert not old.exists(), "stale unscoped orphan should have been cleaned"
+    assert any("tmp_residual_skipped_recent" in r.name for r in report.results)
+    assert any("tmp_residual_cleaned" in r.name for r in report.results)
 
 
 def test_cleanup_tmp_residuals_silent_when_dir_missing(tmp_path):
@@ -136,13 +189,17 @@ async def test_startup_checks_tmp_residual_cleaned_after_startup(tmp_path):
     eng = make_engine(tmp_path)
     await eng.startup()
     try:
-        residual = Path(eng.config.faiss_index_path).with_suffix(".tmp")
+        # H3: only a clearly-orphaned scratch (dead owning pid) is cleaned;
+        # a recent unscoped name is kept (could be a pre-H3 live writer).
+        dead = _dead_pid()
+        faiss_path = Path(eng.config.faiss_index_path)
+        residual = faiss_path.with_name(f"{faiss_path.name}.{dead}.tmp")
         residual.write_bytes(b"stale partial save")
         assert residual.exists()
 
         report = await run_startup_checks(eng, eng.config)
 
-        assert not residual.exists(), "residual .tmp not cleaned"
+        assert not residual.exists(), "dead-pid residual .tmp not cleaned"
         cleaned = [r for r in report.results if r.name == "tier_a_tmp_residual_cleaned"]
         assert cleaned, "expected a tmp_residual_cleaned record"
     finally:

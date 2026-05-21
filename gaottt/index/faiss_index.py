@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import os
 
 import faiss
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class FaissIndex:
@@ -57,12 +60,21 @@ class FaissIndex:
         the virtual_faiss_save_loop fires every 60 s, so any kill
         roughly during that window risks corruption.
         """
-        tmp = path + ".tmp"
+        # H3: scope the scratch file to this pid. The FAISS dir is shared
+        # across processes; the Stage 1 startup diagnostic sweeps ``*.tmp``.
+        # With a single shared ``<path>.tmp`` name, process A booting while
+        # process B is mid-write (a ~100 MB write of a 30k index) would
+        # unlink B's scratch file out from under it, turning B's os.replace
+        # into FileNotFoundError and losing that snapshot. A pid-scoped
+        # name means no cleanup can target a live writer's file, and two
+        # processes saving concurrently never collide. ``<pid>`` also lets
+        # the cleanup tell a dead-process orphan from a live in-flight one.
+        tmp = f"{path}.{os.getpid()}.tmp"
         faiss.write_index(self._index, tmp)
         os.replace(tmp, path)
 
         id_map_path = path + ".ids"
-        id_map_tmp = id_map_path + ".tmp"
+        id_map_tmp = f"{id_map_path}.{os.getpid()}.tmp"
         with open(id_map_tmp, "w") as f:
             for node_id in self._id_map:
                 f.write(node_id + "\n")
@@ -87,6 +99,25 @@ class FaissIndex:
         if os.path.exists(id_map_path):
             with open(id_map_path) as f:
                 self._id_map = [line.strip() for line in f if line.strip()]
+        # H4: the index file and the .ids sidecar are persisted by two
+        # separate os.replace() calls in save(); a crash between them (or a
+        # cross-process .tmp interference) can pair a new index with a
+        # stale/short .ids map — or vice versa. A length mismatch means
+        # every search result id is suspect: search() would either silently
+        # drop the unmapped tail (bounds skip) or map vectors to the wrong
+        # ids. Refuse the load and leave the index empty so the Stage 1
+        # startup diagnostic detects empty-index + nonzero-SQLite and
+        # rebuilds from the store — the same self-healing path the 0-byte
+        # guard above defers to. Loud + recoverable beats silent + wrong.
+        if len(self._id_map) != self._index.ntotal:
+            logger.warning(
+                "FAISS id-map/index size mismatch on load (%s): "
+                "id_map=%d ntotal=%d — refusing load, deferring to "
+                "startup rebuild from store",
+                path, len(self._id_map), self._index.ntotal,
+            )
+            self.reset()
+            return
 
     def search_by_id(self, node_id: str, top_k: int) -> list[tuple[str, float]]:
         """Search nearest neighbors of a specific node's embedding."""
