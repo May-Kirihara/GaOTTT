@@ -48,6 +48,24 @@ sleep 3 && ps -ef | grep "gaottt.server.mcp_server.*streamable-http" | grep -v g
 
 **予防**: code 変更後の本番 acceptance ルーチンの **Step 0** として backend 起動時刻チェックを入れる。同じ pattern (process 内 state が外部 source-of-truth と乖離) は cache write-behind の「逆方向上書き罠」と同型 — CLAUDE.md の「bulk 書き換え時は他プロセス停止」ルールは **code update にも適用** する。memory: [[feedback-backend-kill-on-code-deploy]]。
 
+## ambient recall フックが何も注入しない
+
+**症状**: ambient recall フック / opencode プラグイン ([Guides — Ambient Recall](Guides-Ambient-Recall.md)) を登録したのに、プロンプトを送っても `<gaottt-ambient-recall>` ブロックが文脈に現れない。
+
+**フックは fail-safe 設計** — backend ダウン・タイムアウト・プロトコルエラーいずれも無出力 exit 0 でユーザーのプロンプトを絶対ブロックしない。「何も起きない」が正常な失敗モードなので、原因は順に切り分ける:
+
+1. **backend が `ambient_recall` ツールを知らない旧コード** (最頻) — proxy mode の 7878 backend が `ambient_recall` ツール追加前のコードを保持していると、未知ツールとして弾かれフックは無出力になる。上の「本番 acceptance test で新機能が一切検出されない」と同型。`ps -ef | grep streamable-http` で起動時刻を確認し、`ambient_recall` 追加 commit より古ければ `kill <pid>` → 次の MCP 接続で auto-respawn。
+2. **手動で切り分ける** — フックスクリプトに直接プロンプトを流す:
+   ```bash
+   echo '{"prompt":"<関連しそうな長めのプロンプト>"}' | .venv/bin/python scripts/hooks/ambient_recall.py
+   ```
+   無出力なら下の 3〜5 を確認。
+3. **relevance gate に弾かれている** — 主たる gate は語単位 (Sudachi) BM25 の「強一致」gate。プロンプトの top BM25 が `config.ambient_bm25_min_score` (既定 32、コーパス規模・クエリ長依存) 未満だと注入しない — 高精度・低再現で、「その話題を実質的に議論したことがある」プロンプトでだけ発火する設計。`bm25-sudachi` extra 未導入 / `ambient_gate_use_bm25=False` だと `virtual_score` gate (`config.ambient_min_score`、既定 0.70、弱い分離) に自動フォールバック。しきい値の再校正は [Operations — Tuning](Operations-Tuning.md) の `ambient_*` 節（Guides の「しきい値の校正」も参照）。
+4. **プロンプトが短すぎる** — `GAOTTT_AMBIENT_MIN_CHARS` (既定 12) 文字未満のプロンプトはスキップ。
+5. **フックが無効化されている / 未登録** — `GAOTTT_AMBIENT_RECALL=0` が環境にある、または登録自体が無い。Claude Code は `.claude/settings.json` の `UserPromptSubmit` エントリ（`.claude/` は gitignore 対象なので clone では引き継がれない）、opencode は `~/.config/opencode/plugin/gaottt-ambient-recall.ts` の有無を確認。opencode プラグインは設計上 fail-safe で無言なので、`GAOTTT_AMBIENT_DEBUG=<path>` を設定すると各ステップの診断ログ（フック発火 / spawn の exit・stdout 長 / 注入有無）が出る。
+
+なお passive recall は `last_access` を更新しないため、ambient フックでしか surface されない記憶は decay し続ける（意図的 — Guides ページ「既知の性質」）。relevance gate は decay 非依存（BM25 語彙一致、フォールバックの `virtual_score` も同様）なので ambient 注入自体は古い記憶でも効き続ける。
+
 ## 別プロセスから新規 `remember` が見えない（FAISS stale）
 
 **症状**: 別プロセスの MCP サーバー / opencode エージェント等で `remember` した直後、自プロセスの `recall` でその memory が一切 surface しない。`reflect(aspect="summary")` の `Total memories` は増えていることがある（SQLite は WAL で共有されるが FAISS index はプロセス毎独立）。

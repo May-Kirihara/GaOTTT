@@ -69,10 +69,11 @@ remember(content="Finally fixed the FAISS leak", emotion=0.8, certainty=0.9)
 ```
 recall(query, top_k=5, source_filter=None, wave_depth=None, wave_k=None,
        force_refresh=False, persona_context=None, tag_filter=None,
-       output_mode="full", auto_route=True, mode="detail")
+       output_mode="full", auto_route=True, mode="detail", passive=False)
 ```
 
 - `output_mode` — `"compact"` (content truncated at 300 chars; **prefer this for triage**), `"ids"` (header only — id, scores, tags), `"full"` (complete content, default).
+- `passive=True` — **read-only recall**. Runs the search but does not perturb the gravity field: no mass update, no query-attraction displacement, no co-occurrence edges. The result is identical, only the side effects are suppressed. Use for automatic / background recall (the Claude Code ambient-recall hook calls this) so noise queries never become an uncontrolled TTT signal. Default `False` keeps recall a training step.
 - `source_filter` — restrict to one or more source classes (e.g. `["agent","compaction"]`). Effective at the seed step. For sparse classes on a large DB, pass `wave_k=1000` to widen the seed pool.
 - `persona_context` — list of declared value / intention / commitment ids. Force-injects them into both the seed pool AND the final top-K, bypassing `source_filter`.
 - `tag_filter` — list of tag substrings; force-injects matching nodes into both seed and final top-K, bypassing `source_filter`. Use when query and target memo live in different vocabularies.
@@ -97,6 +98,20 @@ recall(query="any past notes on X", top_k=10, output_mode="ids")     # existence
 - `cache hit` trailer means **no simulation ran** — useful to distinguish "I touched the field" from "I got a free read".
 
 **Auto-routed reflect (Phase O Stage 3, default on):** when your query phrasing matches a structured persona / task aspect — e.g. "現在 active な commitment は?", "持っている value", "今やってる task", "my intentions" — `recall` runs the matching `reflect` aspect in parallel and appends a `## 関連 reflect サマリ (auto-routed)` section. You don't need to switch tools manually. Pattern-based on the query surface form (not source class), so it never gates physics — it only routes which aspect summary rides along. Pass `auto_route=False` to suppress for one call (debugging, or you want pure free-form output).
+
+### ambient_recall
+
+```
+ambient_recall(query, direct_k=2, min_score=None)
+```
+
+Structured **passive** (read-only, non-perturbing) recall — composes one `<gaottt-ambient-recall>` block out of a single recall:
+- **▼ direct hits** — top results by gravitational `final_score`.
+- **▼ gravitational lensing** — a memory textually *far* from the query that the field's displacement has bent onto its path: an association the gravity field *learned*, which a plain embedding search would miss.
+- **▼ ⚠ contradiction** — surfaced `contradicts`-edge pairs.
+- **▼ persona** — an active declared value/intention, for grounding.
+
+Every entry carries provenance metadata (`source · certainty · age`). This is what the **Claude Code `UserPromptSubmit` hook** (and the **opencode `chat.message` plugin**) calls every turn — long-term memory surfaces automatically, without you having to call `recall`. You can also call it directly for a fast structured context pull. Always passive (never perturbs the field). The **relevance gate** is a word-level (Sudachi) BM25 *strong-match* gate — it fires only on prompts that strongly match stored content, and returns the sentinel `(関連する記憶なし)` otherwise. `min_score` is a fallback knob for the legacy virtual_score gate (used only when the BM25 gate index is unavailable). See [Guides — Ambient Recall](docs/wiki/Guides-Ambient-Recall.md).
 
 ### explore
 
@@ -325,7 +340,7 @@ for _ in range(3):
 
 ## Notes
 
-- **25 MCP tools**: 6 memory (remember/recall/explore/reflect/auto_remember/ingest) + 10 maintenance / relations / prefetch + 9 Phase D (commit/start/complete/abandon/depend/declare_value/declare_intention/declare_commitment/inherit_persona).
+- **26 MCP tools**: 7 memory (remember/recall/ambient_recall/explore/reflect/auto_remember/ingest) + 10 maintenance / relations / prefetch + 9 Phase D (commit/start/complete/abandon/depend/declare_value/declare_intention/declare_commitment/inherit_persona).
 - **Duplicate `content` is auto-skipped** via SHA-256 hashing.
 - **Memory persists across sessions.** Every `recall` accumulates gravity — co-recalled memories drift closer over time.
 - **Cache is auto-invalidated** on `forget` / `restore` / `merge` / `compact`. Manual `force_refresh=True` is rarely needed.

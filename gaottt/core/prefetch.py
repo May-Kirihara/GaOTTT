@@ -41,15 +41,28 @@ class PrefetchCache:
             raise ValueError("ttl_seconds must be > 0")
         self._max_size = max_size
         self._ttl = ttl_seconds
+        # H6: wave_depth / wave_k are part of the cache identity. A shallow
+        # prefetch (wave_depth=1) must not serve a deep recall
+        # (wave_depth=5) the smaller gravity reach — and the deep recall's
+        # TTT side effects would also be silently skipped. Keying on them
+        # keeps prefetch useful (matching params still hit) while making a
+        # parameter mismatch a clean miss instead of a wrong-result hit.
         self._entries: OrderedDict[
-            tuple[str, int], tuple[float, list[QueryResultItem]]
+            tuple[str, int, int | None, int | None],
+            tuple[float, list[QueryResultItem]],
         ] = OrderedDict()
         self._hits = 0
         self._misses = 0
         self._evictions = 0
 
-    def get(self, query: str, top_k: int) -> list[QueryResultItem] | None:
-        key = (query, top_k)
+    def get(
+        self,
+        query: str,
+        top_k: int,
+        wave_depth: int | None = None,
+        wave_k: int | None = None,
+    ) -> list[QueryResultItem] | None:
+        key = (query, top_k, wave_depth, wave_k)
         entry = self._entries.get(key)
         if entry is None:
             self._misses += 1
@@ -63,8 +76,15 @@ class PrefetchCache:
         self._hits += 1
         return results
 
-    def put(self, query: str, top_k: int, results: list[QueryResultItem]) -> None:
-        key = (query, top_k)
+    def put(
+        self,
+        query: str,
+        top_k: int,
+        results: list[QueryResultItem],
+        wave_depth: int | None = None,
+        wave_k: int | None = None,
+    ) -> None:
+        key = (query, top_k, wave_depth, wave_k)
         self._entries[key] = (time.time(), results)
         self._entries.move_to_end(key)
         while len(self._entries) > self._max_size:

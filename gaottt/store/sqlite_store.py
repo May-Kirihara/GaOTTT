@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from typing import Any
 
@@ -11,6 +12,8 @@ import numpy as np
 
 from gaottt.core.types import CooccurrenceEdge, DirectedEdge, NodeState
 from gaottt.store.base import StoreBase
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -38,7 +41,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     merged_at        REAL,
     emotion_weight   REAL DEFAULT 0.0,
     certainty        REAL DEFAULT 1.0,
-    last_verified_at REAL
+    last_verified_at REAL,
+    rev              INTEGER DEFAULT 0
 );
 -- Indexes for archive/TTL/merge columns are created post-migration in initialize(),
 -- so older DBs that need ALTER TABLE first can still bootstrap cleanly.
@@ -103,6 +107,7 @@ class SqliteStore(StoreBase):
             ("emotion_weight", "REAL DEFAULT 0.0"),
             ("certainty", "REAL DEFAULT 1.0"),
             ("last_verified_at", "REAL"),
+            ("rev", "INTEGER DEFAULT 0"),
         ]:
             try:
                 await self._conn.execute(f"SELECT {col} FROM nodes LIMIT 1")
@@ -276,26 +281,62 @@ class SqliteStore(StoreBase):
     _NODE_COLS = (
         "id, mass, temperature, last_access, sim_history, return_count, "
         "expires_at, is_archived, merged_into, merge_count, merged_at, "
-        "emotion_weight, certainty, last_verified_at"
+        "emotion_weight, certainty, last_verified_at, rev"
     )
 
     async def save_node_states(self, states: list[NodeState]) -> None:
         assert self._conn is not None
+        # NOTE: must NOT use `INSERT OR REPLACE`. On a PRIMARY KEY conflict
+        # SQLite's REPLACE is a DELETE-then-INSERT, so every column absent
+        # from `_NODE_COLS` (notably `displacement` / `velocity`, which are
+        # persisted separately by save_displacements/save_velocities) is
+        # reset to its schema default (NULL). A node flushed because mass /
+        # last_access changed but whose displacement did not change this
+        # cycle would silently lose its accumulated orbital position on the
+        # next load_from_store — destroying the Phase I/J/K query-attraction
+        # field. Use a column-scoped upsert (SQLite >= 3.24, bundled with
+        # Python 3.11+) so untouched columns are preserved on conflict and
+        # default NULL only on a genuinely-new insert.
+        _set_clause = ", ".join(
+            f"{c}=excluded.{c}"
+            for c in (col.strip() for col in self._NODE_COLS.split(","))
+            if c != "id"
+        )
+        # H2 — last-write-wins guard. The DB is shared across processes,
+        # each with its own cache. A process holding a STALE NodeState that
+        # keeps flushing would otherwise reverse-overwrite values another
+        # process advanced (the documented "逆方向上書き罠"). ``rev`` is a
+        # monotonic per-node counter bumped by cache.set_node; only accept
+        # the write when ours is at least as new as what's stored. A stale
+        # flush becomes a no-op row instead of silent corruption — and is
+        # observable via the changed-row count below.
+        _placeholders = ", ".join("?" for _ in self._NODE_COLS.split(","))
+        before = self._conn.total_changes
         await self._conn.executemany(
-            f"INSERT OR REPLACE INTO nodes ({self._NODE_COLS}) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            f"INSERT INTO nodes ({self._NODE_COLS}) "
+            f"VALUES ({_placeholders}) "
+            f"ON CONFLICT(id) DO UPDATE SET {_set_clause} "
+            "WHERE excluded.rev >= nodes.rev",
             [
                 (
                     s.id, s.mass, s.temperature, s.last_access,
                     msgpack.packb(s.sim_history), s.return_count,
                     s.expires_at, 1 if s.is_archived else 0,
                     s.merged_into, s.merge_count, s.merged_at,
-                    s.emotion_weight, s.certainty, s.last_verified_at,
+                    s.emotion_weight, s.certainty, s.last_verified_at, s.rev,
                 )
                 for s in states
             ],
         )
         await self._conn.commit()
+        skipped = len(states) - (self._conn.total_changes - before)
+        if skipped > 0:
+            logger.warning(
+                "save_node_states: %d/%d node writes skipped — a newer "
+                "revision is already persisted (stale cross-process flush "
+                "rejected, last-write-wins)",
+                skipped, len(states),
+            )
 
     @staticmethod
     def _row_to_node_state(row: tuple) -> NodeState:
@@ -315,6 +356,7 @@ class SqliteStore(StoreBase):
             emotion_weight=row[11] if len(row) > 11 and row[11] is not None else 0.0,
             certainty=row[12] if len(row) > 12 and row[12] is not None else 1.0,
             last_verified_at=row[13] if len(row) > 13 else None,
+            rev=int(row[14]) if len(row) > 14 and row[14] is not None else 0,
         )
 
     async def get_node_states(self, ids: list[str]) -> dict[str, NodeState]:

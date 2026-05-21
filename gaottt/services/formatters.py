@@ -14,6 +14,8 @@ import json
 
 from gaottt.core.types import (
     AbandonResponse,
+    AmbientMemory,
+    AmbientRecallResponse,
     AutoRememberResponse,
     CommitResponse,
     CompactResponse,
@@ -255,6 +257,63 @@ def format_explore(result: ExploreResponse, mode: str = "serendipity") -> str:
         + _format_training_delta(result.training_delta)
         + _format_routing_hint(result.routing_hint)
     )
+
+
+# --- Ambient Recall Enrichment ---
+
+def _ambient_meta(m: AmbientMemory) -> str:
+    """Compact provenance tag — source · certainty · age (· lensing gap)."""
+    parts = [m.source]
+    if m.certainty is not None:
+        parts.append(f"certainty {m.certainty:.2f}")
+    if m.age_days is not None:
+        parts.append(f"{m.age_days:.0f}d")
+    if m.lensing_gap is not None:
+        parts.append(f"gap +{m.lensing_gap:.2f}")
+    return " · ".join(parts)
+
+
+def format_ambient(result: AmbientRecallResponse) -> str:
+    """Ambient Recall Enrichment — the ``<gaottt-ambient-recall>`` block.
+
+    Returns the full block when there is something to inject. When the
+    relevance gate suppressed injection (``count == 0``) it returns a short
+    non-block sentinel — the UserPromptSubmit hook keys on the leading
+    ``<gaottt-ambient-recall>`` tag to decide whether to emit.
+    """
+    if result.count == 0:
+        return "(関連する記憶なし)"
+    lines = [
+        "<gaottt-ambient-recall>",
+        "GaOTTT 長期記憶から自動取得した関連知識です"
+        "（ユーザーの発話ではなく、参考のための前提知識）。",
+    ]
+    if result.direct:
+        lines.append("")
+        lines.append("▼ 直接ヒット")
+        for i, m in enumerate(result.direct, 1):
+            lines.append(f" {i}. [{_ambient_meta(m)}] {m.content}")
+            if m.because:
+                lines.append(f"    ← because {m.because}")
+    if result.lensing is not None:
+        lines.append("")
+        lines.append("▼ 重力レンズ（テキスト的に遠いが、場が結びつけた）")
+        m = result.lensing
+        lines.append(f" · [{_ambient_meta(m)}] {m.content}")
+        if m.because:
+            lines.append(f"    ← because {m.because}")
+    if result.tensions:
+        lines.append("")
+        lines.append("▼ ⚠ 矛盾")
+        for t in result.tensions:
+            lines.append(f" · {t.memory_excerpt}")
+            lines.append(f"   ⇔ contradicts: {t.contradicts_excerpt}")
+    if result.persona is not None:
+        lines.append("")
+        lines.append("▼ いま誰として")
+        lines.append(f" · {result.persona.kind}: {result.persona.content}")
+    lines.append("</gaottt-ambient-recall>")
+    return "\n".join(lines)
 
 
 # --- Relations ---

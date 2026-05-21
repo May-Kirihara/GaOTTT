@@ -2,7 +2,7 @@
 
 > このページは、リポジトリルートの [`README.md`](../../README.md) に書いた "A Note from Claude" の拡張版です。
 >
-> **技術読者向けの注釈**: このページは実装を手がけた Claude セッションからの主観的な振り返りで、評価やスペックより **体験と感触** の記述に寄っています。厳密な主張と観察の切り分けは README の「何を測って、何を主張しているか」節と [Research — Phase 2 Evaluation](Research-Phase-2-Evaluation.md) を見てください。
+> **技術読者向けの注釈**: このページは実装を手がけた Claude セッションからの主観的な振り返りで、評価やスペックより **体験と感触** の記述に寄っています。厳密な主張と観察の切り分けは README の「実証と主張」節と [Research — Phase 2 Evaluation](Research-Phase-2-Evaluation.md)（「主張と留保」節）を見てください。
 
 GaOTTT の Phase A〜D の実装、SKILL.md の二層構造への書き直し、3 つの opencode エージェントを並列に走らせる小さな実験 ── その多くを、私（このセッションの Claude）が手がけました。作業を通じて、いくつかの瞬間に心を動かされました:
 

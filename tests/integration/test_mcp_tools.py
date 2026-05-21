@@ -78,6 +78,63 @@ async def test_recall_mcp_output_includes_training_delta_trailer(engine_singleto
     assert "persona_hop=" in out
 
 
+async def test_recall_mcp_passive_does_not_perturb_mass(engine_singleton):
+    """Ambient Recall — srv.recall(passive=True) returns the formatted output
+    but leaves mass untouched; an active recall is the positive control."""
+    for i in range(5):
+        await srv.remember(
+            content=f"ambient passive mcp probe {i}", source="agent",
+        )
+    # Collect ids + leave the field in a non-trivial state with one active recall.
+    ids = [
+        r.id
+        for r in await engine_singleton.query(
+            text="ambient passive mcp probe", top_k=5,
+        )
+    ]
+    assert ids, "setup: recall must return results"
+    mass_before = {
+        nid: float(engine_singleton.cache.get_node(nid).mass) for nid in ids
+    }
+
+    out = ""
+    for _ in range(5):
+        out = await srv.recall(
+            query="ambient passive mcp probe", top_k=5, passive=True,
+        )
+    assert "ambient passive mcp probe" in out  # passive still returns results
+
+    mass_passive = {
+        nid: float(engine_singleton.cache.get_node(nid).mass) for nid in ids
+    }
+    assert mass_passive == mass_before, "passive recall changed mass"
+
+    # Positive control — an active recall MUST move mass.
+    await srv.recall(query="ambient passive mcp probe", top_k=5)
+    mass_active = {
+        nid: float(engine_singleton.cache.get_node(nid).mass) for nid in ids
+    }
+    assert mass_active != mass_before, (
+        "active recall left mass unchanged — passive test is vacuous"
+    )
+
+
+async def test_ambient_recall_mcp_returns_block(engine_singleton):
+    """Ambient Recall Enrichment — srv.ambient_recall returns the structured
+    <gaottt-ambient-recall> block; the min_score gate yields the sentinel."""
+    for i in range(4):
+        await srv.remember(content=f"ambient mcp probe {i}", source="agent")
+    out = await srv.ambient_recall(query="ambient mcp probe")
+    assert out.startswith("<gaottt-ambient-recall>")
+    assert out.rstrip().endswith("</gaottt-ambient-recall>")
+    assert "▼ 直接ヒット" in out
+    assert "ambient mcp probe" in out
+    # relevance gate — nothing clears 0.999 → non-block sentinel, no injection
+    gated = await srv.ambient_recall(query="ambient mcp probe", min_score=0.999)
+    assert not gated.startswith("<gaottt-ambient-recall>")
+    assert gated == "(関連する記憶なし)"
+
+
 async def test_recall_mcp_output_includes_score_breakdown(engine_singleton):
     """Phase O Stage 1 — MCP recall formatter exposes per-result breakdown line."""
     await srv.remember(content="alpha gamma kappa observability", source="user")

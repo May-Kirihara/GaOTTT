@@ -149,7 +149,7 @@ gaottt http backend  ← 1 process、全 shim で共有
 
 (shim 側には `--idle-timeout 0` は無関係だが、spawn する backend にそのまま forward されるので結果として backend が永久生存になる。)
 
-公開ツール（25 個）:
+公開ツール（26 個）:
 - 基本: `remember` / `recall` / `explore` / `reflect` / `ingest`
 - F1/F4/F5: `auto_remember` / `forget` / `restore`
 - F2.1: `merge` / `compact`

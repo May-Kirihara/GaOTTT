@@ -1,8 +1,18 @@
 # Operations — Tuning Hyperparameters
 
-`gaottt/config.py` の `GERConfig` を編集してサーバー再起動で反映。
+`gaottt/config.py` の `GaOTTTConfig` を編集してサーバー再起動で反映。
 
 すべてのハイパーパラメータの一次ソース: [`gaottt/config.py`](../../gaottt/config.py)
+
+## 設定の優先順位 (H5)
+
+スカラーなハイパーパラメータは以下の優先順 (上が勝つ) で解決される:
+
+1. **環境変数 `GAOTTT_<FIELD>`** — フィールド名を大文字化 (例: `gamma` → `GAOTTT_GAMMA=0.8`、`mass_bh_theta` → `GAOTTT_MASS_BH_THETA=6.0`)。`config.json` を編集せず 1 つの knob だけ一時変更したいとき (例: Phase M Stage 2 の θ チューニング観測) に使う。`bool` は `1/true/yes/on` (大小無視) のみ True、それ以外 (`false`/`0`/空) は False — `bool("false")==True` の罠を回避。型不正な値は WARNING ログを出して無視 (起動は継続)。旧 `GER_RAG_<FIELD>` も deprecation 警告つきで受理。
+2. **`config.json`** — `~/.config/gaottt/config.json` (Linux/macOS) / `%APPDATA%/gaottt/config.json` (Windows)。複数フィールドの恒久設定はこちら。
+3. **dataclass 既定値** — `gaottt/config.py`。
+
+> `data_dir` のような `field(default_factory=...)` / コレクション型は env 個別上書きの対象外 (`data_dir` は専用の `GAOTTT_DATA_DIR` で解決、config ファイルパスは `GAOTTT_CONFIG`)。
 
 ---
 
@@ -119,6 +129,26 @@ Phase M 「自己関与は mass を生まない」(入力側) の対称形とし
 > **本番ロールアウト手順 (Stage 1.5、Phase M Stage 2 後)**: (1) `scripts/mass_distribution.py` (要新設) で production の p50/p90/p99 mass を測定 → (2) `ε / β / γ / τ_idle` の本決め → (3) 他 MCP / REST プロセス停止 → (4) DB backup → (5) `mass_evaporation_enabled=True` で engine 起動 → startup sweep で cold-start debt 一括清算 → (6) 1-2 週 monitor して `hot_topics` 上位陣の入れ替わり / Phase O Stage 5 dormant の母集団復元 / 新規 `agent` memo の top1 取得確率 を観測。仮説 4 件は [Plans — Phase N β §5](Plans-Phase-N-Mass-Evaporation.md#5-副次予測--検証可能な仮説) 参照。
 
 > **チューニング助言**: `ε=0.01, β=1.5, γ=1.0` の初期値 sanity check — `mass=5.0` で 30d idle なら decay = `0.01 · 4^1.5 · 1 = 0.08` → 5.0 → 4.92 (∝ 1.6% loss)。`mass=10.0` で 30d idle なら decay = `0.01 · 9^1.5 = 0.27` → 10.0 → 9.73 (∝ 2.7% loss)。`mass=2.0` で 30d idle なら decay = `0.01 · 1^1.5 = 0.01` → 2.0 → 1.99 (塵レベルはほぼ不変)。Stage 1.5 で本番 mass 分布測定後、p99 が 1-2 週で 10% 程度 evaporate するレートに ε を調整するのが現在の目安。
+
+## Ambient Recall Enrichment
+
+`ambient_recall` ツール（[Claude Code フックが毎ターン呼ぶ](Guides-Ambient-Recall.md)）の構造化 passive recall を制御。詳細は [Plans — Ambient Recall Enrichment](Plans-Ambient-Recall-Enrichment.md)。
+
+| パラメータ | 既定 | 影響 |
+|---|---|---|
+| `ambient_gate_use_bm25` | `True` | relevance gate のモード。`True`=語単位 BM25「強一致」gate（主）、`False`=`virtual_score` gate（旧、分離不能）。gate index 不在時は自動でフォールバック |
+| `ambient_gate_tokenizer` | `"sudachi"` | gate 専用 BM25 index のトークナイザ。語単位（Sudachi）が必須 — char-3gram は日本語の共通形態素を拾いすぎて分離できない。`bm25-sudachi` extra (`uv pip install -e '.[bm25-sudachi]'`) が要る。未導入なら gate index は構築されず virtual_score へフォールバック |
+| `ambient_bm25_min_score` | `32.0` | **語 BM25「強一致」gate** のしきい値 — top-1 BM25 スコアがこれ未満なら応答を空に。32k コーパス校正 (2026-05-21、4 ラウンド): off-topic ≤~29 / 強い on-topic ≥~34 の谷。コーパスに真の off-topic は無く（生活+仕事まるごと）、gate は「強一致 vs 弱一致」を分ける高精度・低再現。**コーパス規模・クエリ長依存**、増えたら再校正 |
+| `ambient_min_score` | `0.70` | **フォールバック** `virtual_score` gate のしきい値（`ambient_gate_use_bm25=False` または gate index 不在時のみ）。候補プールの最大 `virtual_score` 未満で空に。分離は弱い |
+| `ambient_excerpt_chars` | `240` | 各スロットの content 抜粋長 |
+| `ambient_lensing_enabled` | `True` | ② 重力レンズ枠（`virtual_cosine − raw_cosine` gap 最大の記憶）の on/off |
+| `ambient_lensing_min_score` | `0.5` | レンズ枠の noise floor — pick の `virtual_cosine` がこれ未満なら採用しない（単なる外れ値の除外） |
+| `ambient_lensing_min_gap` | `0.05` | レンズ枠の最小 gap — 「場が曲げた」と言える最小の `virtual − raw` 差 |
+| `ambient_reasoning_enabled` | `True` | ④ `derived_from`/`supersedes` 親を `because` として添える |
+| `ambient_tension_enabled` | `True` | ⑤ `contradicts` ペアを矛盾フラグとして surface |
+| `ambient_persona_enabled` | `True` | ⑥ active な declared value/intention を 1 行 grounding |
+
+> スロット単位の `*_enabled` フラグで個別 rollback 可。gate しきい値の校正は本番 DB の content から `BM25Index(tokenizer="sudachi")` を再構築し代表プロンプト（強い on-topic / 弱い on-topic / off-topic）を `search` して top スコアの谷を観察する（H5 env override は `GAOTTT_AMBIENT_BM25_MIN_SCORE`）。gate index は startup で構築（Sudachi は char-3gram より遅く 32k で +30-60s）、`remember` で逐次追加、`compact` で再構築。
 
 ## 重力波伝播
 

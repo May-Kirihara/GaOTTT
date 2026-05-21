@@ -111,11 +111,34 @@ reflect(aspect="hot_topics", limit=10)
 
 → 質量が大きい記憶（よく recall されるもの）
 
+## 8. 受動的記憶注入を有効にする（任意）
+
+エージェントが明示的に `recall` しなくても、プロンプトを毎ターン自動検索して関連記憶を文脈に注入できます（[Ambient Recall](Guides-Ambient-Recall.md)）。フックを 1 つ登録するだけ — read-only な passive recall なので重力場を乱さず、関連性の低いプロンプトには何も注入しません。
+
+**Claude Code** — `.claude/settings.json`（無ければ新規作成）:
+
+```json
+{ "hooks": { "UserPromptSubmit": [ { "hooks": [ {
+  "type": "command",
+  "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/ambient_recall.py\""
+} ] } ] } }
+```
+
+**opencode** — プラグインをプラグインディレクトリにコピー（起動時に自動ロード）:
+
+```bash
+mkdir -p ~/.config/opencode/plugin
+cp scripts/hooks/opencode-ambient-recall.ts ~/.config/opencode/plugin/gaottt-ambient-recall.ts
+```
+
+詳細・relevance gate・観察者効果は [Guides — Ambient Recall](Guides-Ambient-Recall.md)。
+
 ## 次に進む
 
 - **長期記憶として育てる** → [Guides — Use as Memory](Guides-Use-As-Memory.md)
 - **タスク管理に使う** → [Guides — Use as Task Manager](Guides-Use-As-Task-Manager.md)
 - **人格保存基盤として** → [Guides — Use as Persona Base](Guides-Use-As-Persona-Base.md)
+- **記憶を自動で効かせる（フック）** → [Guides — Ambient Recall](Guides-Ambient-Recall.md)
 - **使えるツール一覧** → [MCP Tool Index](MCP-Reference-Index.md)
 
 ## 詰まったら

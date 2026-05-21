@@ -71,6 +71,10 @@ class CacheLayer:
     def set_node(self, state: NodeState, dirty: bool = True) -> None:
         self.node_cache[state.id] = state
         if dirty:
+            # H2 — advance the per-node revision so a stale flush from
+            # another process is rejected by the conditional upsert in
+            # SqliteStore.save_node_states (excluded.rev >= nodes.rev).
+            state.rev += 1
             self.dirty_nodes.add(state.id)
 
     def get_all_nodes(self) -> list[NodeState]:

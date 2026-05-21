@@ -10,6 +10,8 @@ from gaottt.core.engine import GaOTTTEngine
 from gaottt.core.types import (
     AbandonBody,
     AbandonResponse,
+    AmbientRecallRequest,
+    AmbientRecallResponse,
     AutoRememberRequest,
     AutoRememberResponse,
     CommitRequest,
@@ -191,6 +193,20 @@ async def recall_memory(request: RecallRequest):
         tag_filter=request.tag_filter,
         auto_route=request.auto_route,
         mode=request.mode,
+        passive=request.passive,
+    )
+
+
+# --- POST /ambient_recall ---
+
+@app.post("/ambient_recall", response_model=AmbientRecallResponse)
+async def ambient_recall_memory(request: AmbientRecallRequest):
+    engine = _get_engine()
+    return await memory_service.ambient_recall(
+        engine,
+        query=request.query,
+        direct_k=request.direct_k,
+        min_score=request.min_score,
     )
 
 

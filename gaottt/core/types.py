@@ -21,6 +21,13 @@ class NodeState(BaseModel):
     emotion_weight: float = 0.0
     certainty: float = 1.0
     last_verified_at: float | None = None
+    # H2 — monotonic per-node revision, bumped by cache.set_node on every
+    # mutation. Persisted and reloaded so it survives across processes.
+    # save_node_states upserts conditionally on it (excluded.rev >=
+    # nodes.rev), so a process holding a STALE node can no longer silently
+    # overwrite a value another process advanced further (the documented
+    # "逆方向上書き罠"). Default 0 keeps old DBs / old rows valid.
+    rev: int = 0
 
 
 class CooccurrenceEdge(BaseModel):
@@ -189,6 +196,13 @@ class RecallRequest(BaseModel):
     #   "list"            — content truncated to config.list_mode_excerpt_chars
     #                       and newline-stripped, fits one line per result.
     mode: str = "detail"
+    # Ambient Recall — passive (read-only) recall. When True the search runs
+    # but the gravity field is NOT perturbed: no mass update, no query
+    # attraction displacement, no co-occurrence edges. For automatic /
+    # background recall (e.g. the Claude Code UserPromptSubmit hook) so that
+    # ambient queries never become an uncontrolled TTT signal. Default False
+    # preserves the legacy training-on-recall behaviour.
+    passive: bool = False
 
 
 class ExploreRequest(BaseModel):
@@ -335,6 +349,60 @@ class ExploreResponse(BaseModel):
     diversity: float = 0.0
     training_delta: TrainingDelta | None = None  # Phase O Stage 2
     routing_hint: RoutingHint | None = None      # Phase O Stage 3
+
+
+# --- Ambient Recall Enrichment (structured passive-recall injection) ---
+# docs/wiki/Plans-Ambient-Recall-Enrichment.md
+
+class AmbientMemory(BaseModel):
+    """A memory as it appears in a slot of the <gaottt-ambient-recall> block —
+    denormalized, and carrying the provenance metadata the LLM needs to weigh
+    it (source / certainty / age)."""
+    id: str
+    content: str                       # excerpt, newline-collapsed
+    source: str = "unknown"
+    tags: list[str] = Field(default_factory=list)
+    certainty: float | None = None     # F7 certainty (None if node state unavailable)
+    age_days: float | None = None      # (now − last_access) / 86400 — staleness signal
+    virtual_score: float = 0.0         # query · virtual_pos — physics-modulated relevance
+    final_score: float = 0.0
+    lensing_gap: float | None = None   # virtual_cosine − raw_cosine (lensing slot only)
+    because: str | None = None         # Stage 2 — derived_from/supersedes parent excerpt
+
+
+class AmbientTension(BaseModel):
+    """Stage 2 — a ``contradicts``-edge pair surfaced as a caution."""
+    memory_id: str
+    memory_excerpt: str
+    contradicts_id: str
+    contradicts_excerpt: str
+
+
+class AmbientPersona(BaseModel):
+    """Stage 3 — an active declared value/intention surfaced for grounding."""
+    id: str
+    kind: str                          # "value" | "intention"
+    content: str
+
+
+class AmbientRecallRequest(BaseModel):
+    """Ambient Recall Enrichment — structured passive-recall injection.
+    Shared by the MCP tool and the REST endpoint."""
+    query: str = Field(..., min_length=1)
+    direct_k: int = Field(default=2, ge=1, le=10)        # ① direct-hit count
+    # Relevance gate — the response is empty unless the best virtual_score
+    # among candidates clears this. None → config.ambient_min_score.
+    min_score: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class AmbientRecallResponse(BaseModel):
+    """Structured ambient-recall block. ``count == 0`` means the relevance
+    gate suppressed injection (nothing relevant enough surfaced)."""
+    direct: list[AmbientMemory] = Field(default_factory=list)     # ① top final_score hits
+    lensing: AmbientMemory | None = None                          # ② gravitational-lensing pick
+    tensions: list[AmbientTension] = Field(default_factory=list)  # ⑤ contradicts pairs (Stage 2)
+    persona: AmbientPersona | None = None                         # ⑥ persona grounding (Stage 3)
+    count: int = 0                                                # total memories surfaced
 
 
 # --- Relations service ---

@@ -150,6 +150,61 @@ def test_simulated_kill_mid_save_keeps_old_file_intact(tmp_path: Path) -> None:
     # not a correctness invariant, just a hygiene one.
 
 
+def test_load_refuses_on_idmap_shorter_than_index(tmp_path: Path) -> None:
+    """H4: index file + .ids sidecar are two separate os.replace() steps.
+    A crash between them can leave a new (longer) index paired with a
+    stale (shorter) .ids map. load() must refuse such a mismatch and reset
+    to empty (deferring to the startup rebuild) rather than silently
+    truncating search results via the bounds-skip in search().
+    """
+    p = str(tmp_path / "mismatch.faiss")
+    idx = _make_index(10)
+    idx.save(p)
+
+    # Simulate the stale-.ids half of an interrupted save: index has 10
+    # vectors, .ids only records 4.
+    Path(p + ".ids").write_text("".join(f"node_{i}\n" for i in range(4)))
+
+    loaded = FaissIndex(dimension=DIM)
+    loaded.load(p)
+
+    assert loaded.size == 0, (
+        "load() must refuse an id_map/ntotal mismatch and reset to empty, "
+        "not proceed with a silently-wrong index (H4 regression)"
+    )
+    assert loaded._id_map == []
+    # An empty index returns no results rather than wrong-id results.
+    assert loaded.search(np.zeros((1, DIM), dtype=np.float32), 5) == []
+
+
+def test_load_refuses_when_idmap_file_missing_but_index_nonempty(tmp_path: Path) -> None:
+    """The other half: new index persisted, .ids rename never landed.
+    ntotal > 0 with an empty id_map is also a mismatch → refuse + reset."""
+    p = str(tmp_path / "noids.faiss")
+    idx = _make_index(6)
+    idx.save(p)
+    os.remove(p + ".ids")
+
+    loaded = FaissIndex(dimension=DIM)
+    loaded.load(p)
+
+    assert loaded.size == 0, (
+        "index with vectors but no .ids map must be refused (H4 regression)"
+    )
+    assert loaded._id_map == []
+
+
+def test_load_accepts_consistent_index(tmp_path: Path) -> None:
+    """Control: a cleanly-saved index (id_map length == ntotal) still
+    loads normally — the H4 guard must not reject valid files."""
+    p = str(tmp_path / "ok.faiss")
+    _make_index(8).save(p)
+    loaded = FaissIndex(dimension=DIM)
+    loaded.load(p)
+    assert loaded.size == 8
+    assert loaded._id_map == [f"node_{i}" for i in range(8)]
+
+
 def test_ids_file_fsync_does_not_break_save(tmp_path: Path) -> None:
     """The .ids write path uses fsync. Verify the path still works on
     filesystems where fsync is a no-op (most cases) and produces the

@@ -21,10 +21,11 @@
 - [As Persona Base](Guides-Use-As-Persona-Base.md)
 - [Multi-Agent Setup](Guides-Multi-Agent.md)
 - [Per-Project DBs](Guides-Per-Project-DBs.md)
+- [Ambient Recall](Guides-Ambient-Recall.md)
 - [Visualization](Guides-Visualization.md)
 
 ### 🛠 MCP Reference
-- [Tool Index (25)](MCP-Reference-Index.md)
+- [Tool Index (26)](MCP-Reference-Index.md)
 - [Memory Tools](MCP-Reference-Memory.md)
 - [Tasks & Persona](MCP-Reference-Tasks-and-Persona.md)
 - [Maintenance Tools](MCP-Reference-Maintenance.md)
@@ -61,6 +62,8 @@
 - [Phase M — Mass Conservation](Plans-Phase-M-Mass-Conservation.md)
 - [Phase N candidate β — Mass Evaporation](Plans-Phase-N-Mass-Evaporation.md)
 - [Phase O — TTT Observability](Plans-Phase-O-TTT-Observability.md)
+- [Hardening — Concurrency & Persistence](Plans-Hardening-Concurrency-Persistence.md)
+- [Ambient Recall Enrichment](Plans-Ambient-Recall-Enrichment.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
 
 ### 🔬 Research

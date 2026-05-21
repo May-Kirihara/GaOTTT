@@ -21,6 +21,8 @@ endpoint. Stage 3 (deferred): migration ledger / config sanity / CLI.
 from __future__ import annotations
 
 import logging
+import os
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -93,30 +95,98 @@ class DiagnosticReport:
 # Tier A — FAISS integrity
 # ---------------------------------------------------------------------------
 
-def _cleanup_tmp_residuals(directory: Path, report: DiagnosticReport) -> None:
-    """Delete leftover ``*.tmp`` files in ``directory``.
+# An atomic FAISS save never takes anywhere near this long even for a
+# 30k-vector ~100 MB index; an unscoped .tmp older than this is safely a
+# dead orphan from before the pid-scoped naming (H3) existed.
+_STALE_TMP_AGE_SECONDS = 600
 
-    GaOTTT's atomic FAISS save writes ``<index>.tmp`` then renames. If the
-    process was killed mid-write, the .tmp file persists and only wastes
-    disk. Stage 1 just deletes them and logs INFO; Stage 2 may correlate
-    them with mtime / size to detect repeated kills.
+
+def _pid_alive(pid: int) -> bool:
+    """True if a process with ``pid`` currently exists.
+
+    ``os.kill(pid, 0)`` sends no signal but performs the existence /
+    permission check: ProcessLookupError → dead; PermissionError → alive
+    but owned by another user (still a live writer we must not disturb).
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, OverflowError, ValueError):
+        # Malformed / out-of-range pid parsed from a filename, or an
+        # unknown errno — be conservative and treat as alive (don't
+        # delete; a stale file only wastes disk, a wrong delete loses an
+        # in-flight index).
+        return True
+    return True
+
+
+def _tmp_owner_pid(tmp: Path) -> int | None:
+    """Parse the owning pid from a ``<path>.<pid>.tmp`` scratch name.
+
+    Returns ``None`` for legacy unscoped names (``<path>.tmp``) written by
+    code predating H3, or the ``.ids.<pid>.tmp`` variant (handled the same
+    way — the segment before ``.tmp`` is the pid in both).
+    """
+    stem = tmp.name[:-4] if tmp.name.endswith(".tmp") else tmp.name
+    last = stem.rsplit(".", 1)[-1]
+    return int(last) if last.isdigit() else None
+
+
+def _cleanup_tmp_residuals(directory: Path, report: DiagnosticReport) -> None:
+    """Delete *clearly-orphaned* ``*.tmp`` files in ``directory``.
+
+    GaOTTT's atomic FAISS save (H3) writes ``<index>.<pid>.tmp`` then
+    renames. The FAISS dir is shared across processes, so this sweep must
+    NOT delete a scratch file a *live* sibling process is mid-write into —
+    doing so turns that process's ``os.replace`` into FileNotFoundError
+    and loses the index snapshot. Policy:
+
+      * pid-scoped name, owning pid dead  → orphan, delete.
+      * pid-scoped name, owning pid alive → live writer, skip.
+      * legacy unscoped name, older than _STALE_TMP_AGE_SECONDS → delete.
+      * legacy unscoped name, recent → could be a pre-H3 writer, skip.
     """
     if not directory.exists() or not directory.is_dir():
         return
+    now = time.time()
     for tmp in directory.glob("*.tmp"):
         try:
-            tmp_size = tmp.stat().st_size
+            stat = tmp.stat()
+            owner = _tmp_owner_pid(tmp)
+            if owner is not None:
+                if _pid_alive(owner):
+                    report.add(
+                        "tier_a_tmp_residual_skipped_live",
+                        DiagnosticLevel.INFO,
+                        f"kept {tmp.name} — pid {owner} is alive (in-flight save)",
+                    )
+                    continue
+            else:
+                age = now - stat.st_mtime
+                if age < _STALE_TMP_AGE_SECONDS:
+                    report.add(
+                        "tier_a_tmp_residual_skipped_recent",
+                        DiagnosticLevel.INFO,
+                        f"kept {tmp.name} — unscoped tmp only {age:.0f}s old "
+                        f"(possible pre-H3 in-flight save)",
+                    )
+                    continue
+            tmp_size = stat.st_size
             tmp.unlink()
             report.add(
                 "tier_a_tmp_residual_cleaned",
                 DiagnosticLevel.INFO,
-                f"removed residual {tmp.name} ({tmp_size} bytes) — likely from an interrupted atomic save",
+                f"removed orphan {tmp.name} ({tmp_size} bytes) — "
+                f"interrupted atomic save by a dead/old process",
             )
         except OSError as e:
             report.add(
                 "tier_a_tmp_residual_cleanup_failed",
                 DiagnosticLevel.WARN,
-                f"could not delete {tmp}: {e}",
+                f"could not process {tmp}: {e}",
             )
 
 

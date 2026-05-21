@@ -3,7 +3,7 @@ import logging
 import math
 import os
 import sys
-from dataclasses import dataclass, field, fields
+from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -329,6 +329,33 @@ class GaOTTTConfig:
     # typical agent memo. caller-side opt-in (default mode is 'detail').
     list_mode_excerpt_chars: int = 80
 
+    # Ambient Recall Enrichment — structured passive-recall injection.
+    # ``services.memory.ambient_recall`` composes a multi-slot block out of one
+    # passive recall: direct hits + a gravitational-lensing pick + provenance
+    # metadata (+ Stage 2/3 reasoning/tension/persona). See
+    # docs/wiki/Plans-Ambient-Recall-Enrichment.md.
+    # Relevance gate. A dedicated word-level (Sudachi) BM25 index over the
+    # corpus answers "does the prompt strongly match stored content" — the
+    # strong-match gate. 2026-05-21 calibration over 4 rounds: dense-cosine
+    # virtual_score cannot separate (on/off-topic both ~0.6, drowned in
+    # temperature noise); char-3gram BM25 cannot either (common Japanese
+    # morphology accumulates — a long off-topic prompt outscores a terse
+    # on-topic one). Sudachi *word* tokens bound off-topic (a rare word like
+    # "卵焼き" is one absent/near-absent unit, not smeared into common
+    # 3-grams), giving a clean high-precision gate: strong topical matches
+    # clear ~34+, everything else (incl. off-topic) stays ≤~29.
+    ambient_gate_use_bm25: bool = True       # gate mode: word-BM25 (True) | virtual_score (False)
+    ambient_gate_tokenizer: str = "sudachi"  # gate index tokenizer; needs the bm25-sudachi extra
+    ambient_bm25_min_score: float = 32.0     # word-BM25 strong-match threshold (corpus-calibrated)
+    ambient_min_score: float = 0.70          # fallback virtual_score gate threshold (gate index unavailable)
+    ambient_excerpt_chars: int = 240         # per-slot content excerpt length
+    ambient_lensing_enabled: bool = True     # ② gravitational-lensing slot on/off
+    ambient_lensing_min_score: float = 0.5   # lensing pick noise floor (virtual_cosine)
+    ambient_lensing_min_gap: float = 0.05    # lensing pick must clear this virtual−raw gap
+    ambient_reasoning_enabled: bool = True   # ④ derived_from/supersedes "because" chain
+    ambient_tension_enabled: bool = True     # ⑤ contradicts caution pairs
+    ambient_persona_enabled: bool = True     # ⑥ active declared value/intention line
+
     # Phase O Stage 5 — Dormant surface (explore(mode='dormant')).
     # ``explore(mode='dormant')`` returns random self-authored memos that have
     # been quietly forgotten — older than ``dormant_age_threshold_seconds``
@@ -564,12 +591,70 @@ class GaOTTTConfig:
                 self.data_dir, "gaottt.virtual.faiss"
             )
 
+    @staticmethod
+    def _coerce_env(raw: str, target: type):
+        """Coerce an env-var string to a scalar field's type.
+
+        The bool branch is deliberate: ``bool("false")`` is ``True`` in
+        Python, so a naive ``target(raw)`` would make
+        ``GAOTTT_DREAM_ENABLED=false`` evaluate truthy. Only explicit
+        truthy tokens yield True; everything else (incl. "false", "0", "")
+        is False.
+        """
+        if target is bool:
+            return raw.strip().lower() in ("1", "true", "yes", "on")
+        if target is int:
+            return int(raw)
+        if target is float:
+            return float(raw)
+        return raw  # str
+
     @classmethod
     def from_config_file(cls) -> "GaOTTTConfig":
-        """Create GaOTTTConfig with overrides from config.json."""
+        """Create GaOTTTConfig with overrides applied in precedence order.
+
+        H5 — precedence (highest wins): ``GAOTTT_<FIELD>`` env var >
+        ``config.json`` > dataclass default. The env layer lets operators
+        flip a single knob (e.g. the Phase M Stage 2 θ tuning,
+        ``GAOTTT_MASS_BH_THETA=6.0``) without editing the JSON file. Only
+        scalar fields (bool / int / float / str) are env-settable;
+        collection / factory fields (e.g. ``data_dir``, which has its own
+        ``GAOTTT_DATA_DIR`` resolution) are JSON-only. An unparseable
+        override is logged and ignored rather than crashing startup.
+        """
         file_conf = _load_config_file()
-        valid_fields = {f.name for f in fields(cls)}
-        overrides = {k: v for k, v in file_conf.items() if k in valid_fields}
+        field_objs = {f.name: f for f in fields(cls)}
+        overrides = {k: v for k, v in file_conf.items() if k in field_objs}
+
+        for name, f in field_objs.items():
+            # Only plain scalar fields with a concrete default are
+            # env-settable; field(default_factory=...) (data_dir, lists)
+            # is JSON / dedicated-resolver only.
+            if f.default is MISSING:
+                continue
+            target = type(f.default)
+            if target not in (bool, int, float, str):
+                continue
+            env_name = f"GAOTTT_{name.upper()}"
+            raw = os.environ.get(env_name)
+            if raw is None:
+                legacy = os.environ.get(f"GER_RAG_{name.upper()}")
+                if legacy is not None:
+                    logger.warning(
+                        "GER_RAG_%s is deprecated; use %s. "
+                        "Continuing with the legacy variable.",
+                        name.upper(), env_name,
+                    )
+                    raw = legacy
+            if raw is None:
+                continue
+            try:
+                overrides[name] = cls._coerce_env(raw, target)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Ignoring invalid env override %s=%r (expected %s)",
+                    env_name, raw, target.__name__,
+                )
         return cls(**overrides)
 
     def compute_node_top_k(self, mass: float) -> int:

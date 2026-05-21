@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import time
 import uuid
 
@@ -79,6 +80,7 @@ class GaOTTTEngine:
         store: SqliteStore,
         virtual_faiss_index: FaissIndex | None = None,
         bm25_index: BM25Index | None = None,
+        ambient_gate_index: BM25Index | None = None,
     ):
         self.config = config
         self.embedder = embedder
@@ -89,6 +91,10 @@ class GaOTTTEngine:
         # Production should wire this up in build_engine; tests get the
         # legacy behaviour for free.
         self.bm25_index = bm25_index
+        # Ambient Recall Enrichment: dedicated word-level BM25 index for the
+        # relevance gate (see services.memory._bm25_gate). Separate from
+        # ``bm25_index`` so the gate's tokenizer is independent of Phase L.
+        self.ambient_gate_index = ambient_gate_index
         self.cache = cache
         self.store = store
         self.graph = CooccurrenceGraph(config, cache)
@@ -139,8 +145,9 @@ class GaOTTTEngine:
                 await self._rebuild_virtual_faiss_index()
         # Phase L Stage 1: build BM25 index from active document content.
         # D2: in-memory only — no disk persistence in Stage 1, so we always
-        # rebuild from SQLite content at startup.
-        if self.bm25_index is not None:
+        # rebuild from SQLite content at startup. Also builds the ambient
+        # gate index (word-level BM25) when wired.
+        if self.bm25_index is not None or self.ambient_gate_index is not None:
             await self._build_bm25_from_store()
         self.cache.start_write_behind(self.store)
         if self.config.faiss_save_interval_seconds > 0:
@@ -426,7 +433,25 @@ class GaOTTTEngine:
         for i, doc_id in enumerate(ids):
             meta = metadatas[i] or {}
             if "original_id" not in meta:
-                meta["original_id"] = meta.get("file_path") or doc_id
+                # H8: only group by file_path when it is an UNAMBIGUOUS
+                # absolute path. A bare basename / relative path (e.g.
+                # "README.md") is not a global identity — two unrelated
+                # ingests that happen to share it would be treated as the
+                # same document and have their genuine external-referral
+                # mass suppressed as "internal trade" (false self-force,
+                # corrupting Mass Conservation). Falling back to the node's
+                # own id is the safe direction: a node only ever
+                # self-matches itself, so a *missed* grouping merely costs
+                # a little mass conservation for that ingest, whereas a
+                # *false* grouping actively corrupts the gravity field.
+                # Loaders that want chunk-grouping must pass an absolute
+                # file_path (scripts/load_files.py does) or set
+                # original_id explicitly.
+                fp = meta.get("file_path")
+                if isinstance(fp, str) and os.path.isabs(fp):
+                    meta["original_id"] = fp
+                else:
+                    meta["original_id"] = doc_id
             if cohort_id is not None:
                 meta["cohort_id"] = cohort_id
             metadatas[i] = meta
@@ -445,6 +470,8 @@ class GaOTTTEngine:
         # for the next compact/startup rebuild.
         if self.bm25_index is not None:
             self.bm25_index.add(ids, contents)
+        if self.ambient_gate_index is not None:
+            self.ambient_gate_index.add(ids, contents)
 
         now = time.time()
         docs_for_store = []
@@ -615,6 +642,8 @@ class GaOTTTEngine:
         persona_context: list[str] | None = None,
         tag_filter: list[str] | None = None,
         out_training_delta: dict | None = None,
+        gamma_override: float | None = None,
+        passive: bool = False,
     ) -> list[QueryResultItem]:
         """Run a recall query.
 
@@ -637,13 +666,28 @@ class GaOTTTEngine:
         additive seed injection of every node whose ``metadata.tags`` list
         contains any substring. Bypasses ``source_filter``.
 
+        ``gamma_override`` (Hardening Stage 1 / C3) — per-call temperature
+        scale used instead of ``config.gamma`` for this recall only. Lets
+        ``explore`` widen the thermal noise without monkey-patching the
+        shared config across an await (which corrupted concurrent recalls).
+        A non-default gamma must never read or write the shared (text, k)
+        prefetch cache, so it also bypasses the cache.
+
+        ``passive`` (Ambient Recall) — read-only recall. The search runs in
+        full, but the gravity field is not perturbed afterward: no mass
+        update, no query-attraction displacement, no co-occurrence edges.
+        A passive recall still *reads* the prefetch cache (a cache hit is
+        side-effect-free anyway), but it never *writes* it — a passive
+        result must not poison a later active recall into skipping its TTT
+        update. Used by automatic / background recall (Claude Code hook).
+
         Either explicit argument bypasses the prefetch cache.
         """
         k = top_k or self.config.top_k
-        if source_filter or persona_context or tag_filter:
+        if source_filter or persona_context or tag_filter or gamma_override is not None:
             use_cache = False
         if use_cache:
-            cached = self.prefetch_cache.get(text, k)
+            cached = self.prefetch_cache.get(text, k, wave_depth, wave_k)
             if cached is not None:
                 if out_training_delta is not None:
                     # Phase O Stage 2 — cache hit means no simulation ran.
@@ -657,9 +701,14 @@ class GaOTTTEngine:
             persona_context=persona_context,
             tag_filter=tag_filter,
             out_training_delta=out_training_delta,
+            gamma_override=gamma_override,
+            passive=passive,
         )
-        if use_cache:
-            self.prefetch_cache.put(text, k, results)
+        # A passive recall never writes the shared prefetch cache: a cached
+        # passive result would let a subsequent active recall hit the cache
+        # and silently skip its simulation update.
+        if use_cache and not passive:
+            self.prefetch_cache.put(text, k, results, wave_depth, wave_k)
         return results
 
     async def _query_internal(
@@ -673,6 +722,8 @@ class GaOTTTEngine:
         persona_context: list[str] | None = None,
         tag_filter: list[str] | None = None,
         out_training_delta: dict | None = None,
+        gamma_override: float | None = None,
+        passive: bool = False,
     ) -> list[QueryResultItem]:
         k = top_k
         query_vec = self.embedder.encode_query(text)
@@ -970,12 +1021,19 @@ class GaOTTTEngine:
         # step can apply the query-attraction term to reached nodes.
         # Phase M Stage 1: pass per-parent attribution so the mass update can
         # apply the self-force (Mass Conservation) filter.
-        self._update_simulation(
-            all_reached_ids, reached, original_embs, now,
-            query_anchor=query_vec_flat,
-            wave_attribution=wave_attribution,
-        )
-        self._update_cooccurrence(result_ids)
+        # Ambient Recall: a passive recall observes the field without
+        # perturbing it — skip mass update, query-attraction displacement and
+        # co-occurrence so automatic / background queries never become an
+        # uncontrolled TTT signal. The delta block below then reports zeros,
+        # which is the honest answer (nothing moved).
+        if not passive:
+            self._update_simulation(
+                all_reached_ids, reached, original_embs, now,
+                query_anchor=query_vec_flat,
+                wave_attribution=wave_attribution,
+                gamma_override=gamma_override,
+            )
+            self._update_cooccurrence(result_ids)
 
         if delta_active:
             disp_changes: dict[str, float] = {}
@@ -1012,6 +1070,7 @@ class GaOTTTEngine:
         now: float,
         query_anchor: np.ndarray | None = None,
         wave_attribution: dict[str, dict[str, float]] | None = None,
+        gamma_override: float | None = None,
     ) -> None:
         """Update gravity simulation for ALL wave-reached nodes.
 
@@ -1075,7 +1134,8 @@ class GaOTTTEngine:
             # Temperature
             if len(state.sim_history) >= 2:
                 arr = np.array(state.sim_history)
-                state.temperature = self.config.gamma * float(np.var(arr))
+                gamma = gamma_override if gamma_override is not None else self.config.gamma
+                state.temperature = gamma * float(np.var(arr))
             else:
                 state.temperature = 0.0
 
@@ -1246,10 +1306,12 @@ class GaOTTTEngine:
 
         Phase J Stage 3: `persona_context` / `tag_filter` are forwarded so
         the prefetched result matches what an explicit `recall(...)` with
-        the same arguments would return. Cache key is still `(text, top_k)`
-        — callers re-running the same prefetch with different injection
-        args will overwrite the cache entry, which is the correct semantic
-        ("the latest call wins" for predictive pre-firing).
+        the same arguments would return. H6: the cache key is
+        `(text, top_k, wave_depth, wave_k)`, so a prefetch only serves a
+        recall issued with the *same* wave reach — a shallow prefetch can
+        no longer poison a deep recall (or vice versa). `persona_context` /
+        `tag_filter` still bypass the cache entirely on the read side, so
+        they need not be in the key.
         """
         k = top_k or self.config.top_k
 
@@ -1258,7 +1320,7 @@ class GaOTTTEngine:
                 text=text, top_k=k, wave_depth=wave_depth, wave_k=wave_k,
                 persona_context=persona_context, tag_filter=tag_filter,
             )
-            self.prefetch_cache.put(text, k, results)
+            self.prefetch_cache.put(text, k, results, wave_depth, wave_k)
             return results
 
         return self.prefetch_pool.schedule(_run)
@@ -1571,8 +1633,17 @@ class GaOTTTEngine:
         if not all_pairs:
             return
         matrix = np.stack([v for _, v in all_pairs]).astype(np.float32)
-        self.faiss_index.reset()
-        self.faiss_index.add(matrix, [nid for nid, _ in all_pairs])
+        # H1: build a fresh index, then swap the reference in a single
+        # atomic assignment. The previous reset()+add() left a window where
+        # self.faiss_index.ntotal == 0; a concurrent recall landing in that
+        # window got an empty seed pool — a silent degraded result during a
+        # routine compact. A lone attribute store is atomic under the GIL,
+        # so no searcher observes a partial index: in-flight searches that
+        # already captured the old reference finish against the old,
+        # fully-valid index, and subsequent ones see the complete new one.
+        new_index = FaissIndex(dimension=self.config.embedding_dim)
+        new_index.add(matrix, [nid for nid, _ in all_pairs])
+        self.faiss_index = new_index
         self._faiss_dirty = True
         if self.virtual_faiss_index is not None:
             await self._rebuild_virtual_faiss_index()
@@ -1612,8 +1683,11 @@ class GaOTTTEngine:
             self.virtual_faiss_index.reset()
             return
         matrix = np.stack(virtual_vectors).astype(np.float32)
-        self.virtual_faiss_index.reset()
-        self.virtual_faiss_index.add(matrix, virtual_ids)
+        # H1: atomic swap, same rationale as _rebuild_faiss_index — no
+        # concurrent seed step ever sees an empty virtual index mid-compact.
+        new_virtual = FaissIndex(dimension=self.config.embedding_dim)
+        new_virtual.add(matrix, virtual_ids)
+        self.virtual_faiss_index = new_virtual
         logger.info(
             "Virtual FAISS rebuilt: %d active vectors", len(virtual_ids),
         )
@@ -1628,7 +1702,7 @@ class GaOTTTEngine:
         startup. The cost is proportional to total content length; at 24k
         documents it completes in a few seconds.
         """
-        if self.bm25_index is None:
+        if self.bm25_index is None and self.ambient_gate_index is None:
             return
         contents = await self.store.get_all_contents()
         active_ids: list[str] = []
@@ -1639,7 +1713,13 @@ class GaOTTTEngine:
                 active_texts.append(text)
         if not active_ids:
             return
-        self.bm25_index.add(active_ids, active_texts)
+        if self.bm25_index is not None:
+            self.bm25_index.add(active_ids, active_texts)
+        # Ambient Recall Enrichment: the word-level gate index is built from
+        # the same content scan. Sudachi tokenisation is slower than the
+        # char-trigram default, so this adds to startup time on a large corpus.
+        if self.ambient_gate_index is not None:
+            self.ambient_gate_index.add(active_ids, active_texts)
         logger.info(
             "BM25 index built: %d active docs (skipped %d archived/missing)",
             len(active_ids), len(contents) - len(active_ids),
@@ -1652,9 +1732,12 @@ class GaOTTTEngine:
         from forget/merge/expire and re-syncs with content written by other
         processes (the multi-process visibility caveat in CLAUDE.md).
         """
-        if self.bm25_index is None:
+        if self.bm25_index is None and self.ambient_gate_index is None:
             return
-        self.bm25_index.reset()
+        if self.bm25_index is not None:
+            self.bm25_index.reset()
+        if self.ambient_gate_index is not None:
+            self.ambient_gate_index.reset()
         await self._build_bm25_from_store()
 
     # --- Phase M Stage 1: orbital-state reset (legacy BH residue cleanup) ---
@@ -1792,6 +1875,17 @@ class GaOTTTEngine:
         self.cache.reset()
         self.graph.reset()
         nodes_reset, edges_removed = await self.store.reset_dynamic_state()
+
+        # Hardening Stage 1 / C4 — every other destructive op invalidates
+        # the prefetch cache (forget/merge/compact/reset_masses/
+        # warm_displacement); reset() was the sole omission. Without this a
+        # `recall` matching a cached (text, k) key keeps returning the
+        # pre-reset ranked list for up to prefetch_ttl_seconds, so the wipe
+        # silently appears not to have taken effect. Also mark the virtual
+        # FAISS dirty for parity with reset_orbital_state — the displacement
+        # field that fed it is now gone.
+        self.prefetch_cache.invalidate()
+        self.cache.virtual_faiss_dirty = True
 
         logger.info("Reset: %d nodes, %d edges removed", nodes_reset, edges_removed)
         return nodes_count, edges_count
