@@ -101,7 +101,11 @@ mcp = FastMCP(
         "persona; 'inherit_persona' to wear past-self at session start; "
         "reflect aspects: tasks_todo/tasks_doing/tasks_completed/"
         "tasks_abandoned/commitments/values/intentions/relationships/persona), "
-        "and 'ingest' to bulk-load files."
+        "and 'ingest' to bulk-load files. "
+        "Note: embeddings (RURI) are Japanese-specialized and not "
+        "cross-lingual — a recall query mostly surfaces memories in the "
+        "same language as the query, so query in the language of the "
+        "target memories (use tag_filter to bridge a language gap)."
     ),
 )
 
@@ -240,6 +244,16 @@ async def recall(
     `source_filter` restrictions. Use this when you need to surface a
     memo whose embedding is far from the query — e.g., a tag-tied cohort
     in a different language or vocabulary from the query.
+
+    **Embeddings are not cross-lingual.** RURI is a Japanese-specialized
+    model: a query mostly retrieves memories written in the SAME language
+    as the query — an English query surfaces English memories, a Japanese
+    query surfaces Japanese ones; it does not bridge the two. Cosine stays
+    in a narrow high band either way, so a language mismatch fails
+    *silently* (no error, no low score). Write the query in the language
+    of the memories you expect to find; when query and target differ in
+    language, fall back to `tag_filter` / `source_filter` to inject the
+    target explicitly.
 
     Args:
         query: Search query
