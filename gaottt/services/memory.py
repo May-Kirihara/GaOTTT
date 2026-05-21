@@ -185,6 +185,7 @@ def _delta_from_dict(d: dict | None) -> TrainingDelta | None:
         supernova_triggered=d.get("supernova_triggered", False),
         cache_hit=d.get("cache_hit", False),
         topk_only=d.get("topk_only", True),
+        intent_centers=d.get("intent_centers", 1),
     )
 
 
@@ -201,6 +202,7 @@ async def recall(
     auto_route: bool = True,
     mode: str = "detail",
     passive: bool = False,
+    multi_source: bool | None = None,
 ) -> RecallResponse:
     # Phase H Stage 2: source_filter is applied at the wave seed step inside
     # propagate_gravity_wave (engine.query → _query_internal). The post-filter
@@ -221,6 +223,7 @@ async def recall(
         tag_filter=tag_filter,
         out_training_delta=delta_out,
         passive=passive,
+        multi_source=multi_source,
     )
     if source_filter:
         sf = set(source_filter)
@@ -472,6 +475,7 @@ async def ambient_recall(
     pool_k = max(direct_k * 5, 10)
     rr = await recall(
         engine, query, top_k=pool_k, passive=True, auto_route=False,
+        multi_source=cfg.multi_source_ambient_enabled,
     )
     items = rr.items
     if not items:

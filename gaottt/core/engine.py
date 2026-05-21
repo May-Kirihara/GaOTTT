@@ -26,6 +26,7 @@ from gaottt.core.persona_gravity import (
     compute_persona_proximities,
 )
 from gaottt.core.prefetch import PrefetchCache, PrefetchPool
+from gaottt.core.segmentation import segment_query
 from gaottt.core.scorer import (
     compute_certainty_boost,
     compute_decay,
@@ -644,6 +645,7 @@ class GaOTTTEngine:
         out_training_delta: dict | None = None,
         gamma_override: float | None = None,
         passive: bool = False,
+        multi_source: bool | None = None,
     ) -> list[QueryResultItem]:
         """Run a recall query.
 
@@ -703,6 +705,7 @@ class GaOTTTEngine:
             out_training_delta=out_training_delta,
             gamma_override=gamma_override,
             passive=passive,
+            multi_source=multi_source,
         )
         # A passive recall never writes the shared prefetch cache: a cached
         # passive result would let a subsequent active recall hit the cache
@@ -724,9 +727,39 @@ class GaOTTTEngine:
         out_training_delta: dict | None = None,
         gamma_override: float | None = None,
         passive: bool = False,
+        multi_source: bool | None = None,
     ) -> list[QueryResultItem]:
         k = top_k
         query_vec = self.embedder.encode_query(text)
+
+        # Multi-Source Query — when enabled, segment the prompt into clauses
+        # and batch-embed each as a separate point mass. The wave then seeds
+        # from the superposed per-segment pools instead of the pooled
+        # centroid; ``query_vec`` (the whole-prompt embedding) stays the
+        # scoring / TTT anchor. ``multi_source`` overrides the config flag
+        # (the ambient path passes ``multi_source_ambient_enabled``); None
+        # falls back to ``config.multi_source_enabled``. See
+        # docs/wiki/Plans-Query-Mass-Distribution.md.
+        segment_vecs: np.ndarray | None = None
+        n_intent_centers = 1
+        ms_on = (
+            self.config.multi_source_enabled if multi_source is None
+            else multi_source
+        )
+        if ms_on:
+            segments = segment_query(text, self.config)
+            if len(segments) > 1:
+                # ``encode_queries`` is the batched fast path (RuriEmbedder);
+                # fall back to per-segment ``encode_query`` for embedders that
+                # only implement the single-query method (e.g. test stubs).
+                encode_many = getattr(self.embedder, "encode_queries", None)
+                if encode_many is not None:
+                    segment_vecs = encode_many(segments)
+                else:
+                    segment_vecs = np.vstack(
+                        [self.embedder.encode_query(s) for s in segments]
+                    )
+                n_intent_centers = len(segments)
 
         # Phase J Stage 1 / Stage 2: compute persona proximities once per
         # recall. Stage 2 explicit `persona_context` takes precedence over
@@ -772,6 +805,7 @@ class GaOTTTEngine:
             query_text=text,
             bm25_index=self.bm25_index,
             out_attribution=wave_attribution,
+            segment_vectors=segment_vecs,
         )
 
         if not reached:
@@ -1059,6 +1093,7 @@ class GaOTTTEngine:
             out_training_delta["persona_hop_reached"] = persona_hops
             out_training_delta["supernova_triggered"] = False  # recall path
             out_training_delta["topk_only"] = self.config.training_delta_topk_only
+            out_training_delta["intent_centers"] = n_intent_centers
 
         return results
 

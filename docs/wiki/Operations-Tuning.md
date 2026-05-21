@@ -209,6 +209,19 @@ Seed pool は raw FAISS (semantic) ∪ virtual FAISS (semantic+history) ∪ BM25
 
 > **チューニング助言**: 本番 acceptance で「Surface ✅ / Semantic 整合 ⚠️」が分離した query (Eleventy Pipeline 等) を起点に、BM25 寄与を確認。RRF default で大半は十分だが、lexical match が overshoot して semantic 整合が落ちる場合は `"weighted_sum"` + `bm25_score_alpha=0.3` で BM25 影響を弱める。tokenizer は trigram で「重力」「Eleventy」両方扱えるが、固有名詞の同形異義語が頻出する corpus なら Sudachi extra に切り替えて形態素解析する。Stage 1 では disk persistence なし — `compact()` か再起動で SQLite content から rebuild される (24k docs で数秒)。複数 MCP プロセス共存環境は raw FAISS と同じ可視性問題があり、片方プロセスでの `remember` が他方プロセスの BM25 index に届くのは次回 startup or compact 後。
 
+## Multi-Source Query — query as a mass distribution
+
+複合プロンプトを 1 つの pooled centroid に潰さず、節に分割して各節を独立した点質量として扱う。各節が自分の `_union_pool` を引き、per-segment pool を RRF 融合した seed pool から wave を **1 回** 伝播する。pooled embedding は語彙的に重い側に引っ張られる（centroid drag）— その唯一の非物理ステップを seed 段の場の重ね合わせで修正する。詳細: [Plans — Query as Mass Distribution](Plans-Query-Mass-Distribution.md)。
+
+| パラメータ | 既定 | 役割 |
+|---|---|---|
+| multi_source_enabled | `True` | `recall` / `explore` の multi-source seeding on/off。`False` で単一 vector seeding の legacy 経路に bit-for-bit 復帰（rollback は 1 行） |
+| multi_source_ambient_enabled | `True` | 毎ターン発火する `ambient_recall` パス専用の別フラグ（perf 隔離のため独立）。`False` で ambient だけ単一 source に戻す |
+| multi_source_max_segments | `4` | 分割数 N の上限。超過分は最長 N 節を残す。FAISS search は `N × O(corpus)` なので上限で予測可能に保つ |
+| multi_source_min_segment_chars | `12` | これ未満の断片は隣接節に併合（"as an SPA" のような短片が degenerate な点質量にならないように） |
+
+> **チューニング助言**: 両フラグとも **default ON**（2026-05-21）。実 RURI 検証で複合クエリの recall は single-source の ~2×（p50 15→32ms / p95 17→40ms）だが、Tier 6 ゲート（`p95 < 120ms`）・ambient フック予算（~500ms）に対し余裕、と確認済み。単純（非複合）プロンプトは分割されないのでコストはゼロ。`training_delta` の `intent-centers=N` 行で実際の分割数を観測できる。perf を抑えたい / 挙動を切り戻したいときは `multi_source_enabled=False`（recall/explore）または `multi_source_ambient_enabled=False`（ambient のみ）で 1 行ロールバック。分割は正規表現（句読点ベース）なので Sudachi extra 不要。
+
 ## Stellar supernova cohort (Phase K Stage 1)
 
 `index_documents` の batch を 1 超新星イベントとして扱い、batch 内 N 件 (N≥`supernova_min_cohort_size`) に **相互 co-occurrence edge** + **centroid からの outward velocity** を付与。新規 cohort が「互いに重力を持たない散発的塵」状態から「同イベント残骸群」になる。Phase G genesis kick (個別重力) の隣で適用。詳細: [Plans — Phase K](Plans-Phase-K-Stellar-Supernova-Cohort.md)。

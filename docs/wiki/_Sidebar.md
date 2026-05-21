@@ -64,6 +64,7 @@
 - [Phase O — TTT Observability](Plans-Phase-O-TTT-Observability.md)
 - [Hardening — Concurrency & Persistence](Plans-Hardening-Concurrency-Persistence.md)
 - [Ambient Recall Enrichment](Plans-Ambient-Recall-Enrichment.md)
+- [Query as Mass Distribution](Plans-Query-Mass-Distribution.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
 
 ### 🔬 Research
