@@ -72,6 +72,8 @@ recall(query, top_k=5, source_filter=None, wave_depth=None, wave_k=None,
        output_mode="full", auto_route=True, mode="detail", passive=False)
 ```
 
+**RURI embeddings are not cross-lingual.** A query mostly surfaces memories written in the **same language** as the query — an English query finds English memories, a Japanese query finds Japanese ones; it does not bridge the two, and cosine stays in a narrow high band either way so a language mismatch fails *silently*. Write `query` in the language of the memories you expect to find; when query and target differ in language, inject the target explicitly via `tag_filter` / `source_filter`.
+
 - `output_mode` — `"compact"` (content truncated at 300 chars; **prefer this for triage**), `"ids"` (header only — id, scores, tags), `"full"` (complete content, default).
 - `passive=True` — **read-only recall**. Runs the search but does not perturb the gravity field: no mass update, no query-attraction displacement, no co-occurrence edges. The result is identical, only the side effects are suppressed. Use for automatic / background recall (the Claude Code ambient-recall hook calls this) so noise queries never become an uncontrolled TTT signal. Default `False` keeps recall a training step.
 - `source_filter` — restrict to one or more source classes (e.g. `["agent","compaction"]`). Effective at the seed step. For sparse classes on a large DB, pass `wave_k=1000` to widen the seed pool.

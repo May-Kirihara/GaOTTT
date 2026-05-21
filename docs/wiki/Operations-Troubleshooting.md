@@ -162,6 +162,19 @@ sleep 3 && ps -ef | grep "gaottt.server.mcp_server.*streamable-http" | grep -v g
 - `top_k` を小さくして `injected_ids` が `initial_k` を超えないようにする
 - 注入対象を 1 件に絞って `persona_context=[specific_id]` を使う
 
+## 英語クエリで日本語の記憶がヒットしない（埋め込みが cross-lingual でない）
+
+**症状**: 英語で `recall(query="...")` を呼ぶと、日本語で書かれた記憶（ツイート / note / 日本語ファイル）がほとんど surface しない。`cos` スコアは 0.7〜0.9 と高いままなので一見うまく動いているように見えるが、内容は無関係。逆方向（日本語クエリ → 英語記憶）でも同じ。
+
+**原因**: 埋め込みモデル RURI v3 は日本語特化モデルで、**cross-lingual ではない**。英語クエリのベクトルと日本語文書のベクトルが共有意味空間で揃わないため、検索は実質「クエリと同じ言語で書かれた記憶」しか引けない。RURI は EN→EN / JA→JA のモノリンガル検索はこなすが、EN↔JA を橋渡ししない。BM25 ハイブリッド層（char 3-gram）も言語をまたげない（`競艇` と `boat race` は 3-gram をひとつも共有しない）。
+
+**実測（2026-05-21、本番 DB）**: 同一概念を英日ペアで `recall`（`passive=true`）したところ、検索の勝敗は「クエリの言語」ではなく「ターゲット文書の言語」で決まった。日本語の正解ツイートは日本語クエリが #1 で一発ヒット（英語クエリは考古学の参考文献リストを誤爆）、英語で書かれた開発ログは英語クエリが最高スコア（`cos=0.885`）でヒット。`cos` は当たり外れに関わらず 0.74〜0.89 の狭い帯に入るため、スコアからは判別できない。
+
+**対処**:
+- 探したい記憶の言語に合わせてクエリを書く（日本語中心の DB なら日本語で訊く）
+- 言語ギャップを越えたいときは `tag_filter` / `source_filter` でターゲットを明示注入する（語彙・言語が違っても seed pool に強制投入される）
+- 英語コーパスを本格運用する / 英語で横断検索したい場合は multilingual モデル（multilingual-e5-large, BGE-M3 等）への移行が必要。移行は FAISS index 全再構築（`compact(rebuild_faiss=True)`）を伴い、displacement 蓄積もリセットされる破壊的操作。異なる embedder のベクトルを同一 index に混在させると比較不能なので「日本語 RURI のまま」か「多言語移行」かは二者択一。
+
 ## FAISS と SQLite のカウントが合わない
 
 **症状**: `recall` で存在するはずの node が surface しない、または `compact(rebuild_faiss=True)` を実行しても FAISS count が SQLite count より少ないまま。

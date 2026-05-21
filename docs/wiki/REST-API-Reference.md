@@ -151,6 +151,8 @@ ReDoc: http://localhost:8000/redoc
 
 **`passive` (Ambient Recall)**: `true` で **read-only recall** — 検索結果は同一だが末尾の simulation update を丸ごとスキップ（mass 更新・query attraction displacement・co-occurrence edge・`last_access` 更新がすべて起きない）。自動/バックグラウンド recall がノイズで重力場を汚さないための「摂動なしの観察」モード。`passive=true` の応答では `training_delta` の `displacement_changes` / `mass_changes` がすべて 0 になる。既定 `false` は legacy の「recall は訓練ステップ」挙動。詳細は [Ambient Recall](Guides-Ambient-Recall.md)。
 
+**埋め込みは cross-lingual ではない**: 埋め込みモデル RURI v3 は日本語特化で、`/recall` は実質「`query` と同じ言語で書かれた記憶」しか引けない（英語クエリ → 英語の記憶、日本語クエリ → 日本語の記憶。両者を橋渡ししない）。`score` は言語ミスマッチでも高いまま出るため失敗が黙殺される。探したい記憶の言語で `query` を書き、言語が異なる場合は `tag_filter` / `source_filter` でターゲットを明示注入する。詳細は [Operations — Troubleshooting](Operations-Troubleshooting.md)。
+
 **レスポンス 200**:
 ```json
 {

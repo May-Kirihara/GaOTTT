@@ -47,6 +47,8 @@ recall(
 - `source_filter` — 制限フィルタ。seed pool の範囲を絞る（source が一致しないノードは入場できない）
 - `tag_filter` — 拡張注入。embedding 距離に関わらず tag が一致したノードを強制的に seed pool へ追加。`source_filter` も bypass する（呼び出し側の明示的指定が優先）
 
+**埋め込みは cross-lingual ではない:** RURI v3 は日本語特化モデルで、`recall` は実質「クエリと**同じ言語**で書かれた記憶」しか引けない — 英語クエリは英語の記憶を、日本語クエリは日本語の記憶を surface させ、両者を橋渡ししない。RURI は EN→EN / JA→JA のモノリンガル検索はこなすが、EN↔JA を共有意味空間で揃えない。`cos` は当たり外れに関わらず狭い高スコア帯（実測 0.74〜0.89）に入るため、言語ミスマッチは **黙って失敗する**（エラーも低スコアも出ない）。探したい記憶の言語に合わせて `query` を書くこと。クエリとターゲットの言語が異なる場合は `tag_filter` / `source_filter` でターゲットを明示注入する。詳細・実測データ・multilingual モデルへの移行可否は [Operations — Troubleshooting](Operations-Troubleshooting.md) 参照。
+
 **`output_mode` の選択:**
 - `"full"` — 全文返却（詳細確認時）
 - `"compact"` — 300 字切り詰め（通常利用、トークン節約に推奨）
