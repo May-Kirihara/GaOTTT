@@ -53,6 +53,10 @@ class StubEmbedder:
     def encode_query(self, text):
         return self._embed(text).reshape(1, -1).astype(np.float32)
 
+    def encode_queries(self, texts):
+        # Multi-Source Query batch path — one row per segment.
+        return np.array([self._embed(t) for t in texts], dtype=np.float32)
+
     def _embed(self, text: str) -> np.ndarray:
         seed = int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big")
         rng = np.random.default_rng(seed)

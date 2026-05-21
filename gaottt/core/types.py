@@ -304,6 +304,10 @@ class TrainingDelta(BaseModel):
     - ``topk_only`` — ``displacement_changes`` / ``mass_changes`` cover only the
       top-K returned nodes (default ``True`` for context economy). ``False``
       means full reached-node coverage (debug / observability mode).
+    - ``intent_centers`` — Multi-Source Query: how many clause segments the
+      prompt was split into (1 = single-source / disabled). >1 means the
+      wave seeded from that many superposed point masses. See
+      docs/wiki/Plans-Query-Mass-Distribution.md.
     """
     displacement_changes: dict[str, float] = Field(default_factory=dict)
     mass_changes: dict[str, float] = Field(default_factory=dict)
@@ -313,6 +317,7 @@ class TrainingDelta(BaseModel):
     supernova_triggered: bool = False
     cache_hit: bool = False
     topk_only: bool = True
+    intent_centers: int = 1
 
 
 class RoutingHint(BaseModel):

@@ -575,6 +575,41 @@ def _union_pool(
     return semantic_list
 
 
+def _multi_source_pool(
+    segment_vectors: np.ndarray,
+    raw_index: "FaissIndex",
+    virtual_index: "FaissIndex | None",
+    pool_size: int,
+    query_text: str | None = None,
+    bm25_index: "BM25Index | None" = None,
+    rrf_k: int = 60,
+) -> list[tuple[str, float]]:
+    """Multi-Source Query seed pool — superpose N query segments at the pool.
+
+    Each segment vector contributes its own raw+virtual semantic union pool;
+    the N pools are RRF-fused so a document near the *intersection* of
+    several segments (present in multiple per-segment pools) earns a higher
+    fused rank than one matching only a single dominant segment. BM25
+    (lexical) already composes additively over query terms — no centroid
+    drag — so it stays a single whole-text pool joined into the same fusion.
+
+    This is gravitational field superposition expressed at the seed level:
+    gravity superposes fields, it does not average masses. See
+    docs/wiki/Plans-Query-Mass-Distribution.md.
+    """
+    pools: list[list[tuple[str, float]]] = []
+    for i in range(segment_vectors.shape[0]):
+        pools.append(
+            _union_pool(
+                segment_vectors[i], raw_index, virtual_index, pool_size,
+                rrf_k=rrf_k,
+            )
+        )
+    if bm25_index is not None and bm25_index.size > 0 and query_text:
+        pools.append(bm25_index.search(query_text, pool_size))
+    return _rrf_fusion(pools, rrf_k=rrf_k)
+
+
 def _seed_boost(
     nid: str,
     raw: float,
@@ -677,6 +712,7 @@ def propagate_gravity_wave(
     query_text: str | None = None,
     bm25_index: "BM25Index | None" = None,
     out_attribution: dict[str, dict[str, float]] | None = None,
+    segment_vectors: np.ndarray | None = None,
 ) -> dict[str, float]:
     """Propagate gravity wave recursively through embedding space.
 
@@ -727,6 +763,12 @@ def propagate_gravity_wave(
     the cohort never enters the pool. Explicit injection guarantees
     entry; subsequent rerank still applies the usual boosts.
 
+    Multi-Source Query — when ``segment_vectors`` (shape ``(N, dim)``, N>1)
+    is supplied, the seed pool is the RRF-superposition of each segment's
+    union pool (``_multi_source_pool``) instead of one pooled-centroid pool.
+    ``query_vector`` (the centroid) still drives injection and stays the
+    scoring / TTT anchor upstream. See docs/wiki/Plans-Query-Mass-Distribution.md.
+
     Set ``config.wave_seed_mass_alpha=0``, ``config.persona_boost_alpha=0``
     and pass no ``source_filter`` / ``virtual_faiss_index`` /
     ``persona_proximities`` / ``injected_ids`` to recover legacy
@@ -750,10 +792,20 @@ def propagate_gravity_wave(
     # — set hybrid_bm25_enabled=False to fully revert to Phase H Stage 4).
     bm25_effective = bm25_index if config.hybrid_bm25_enabled else None
 
-    if source_filter:
-        sf_set = set(source_filter)
-        pool_size = max(initial_k, config.wave_k_with_filter)
-        pool = _union_pool(
+    # Multi-Source Query: when >1 segment vector is supplied, build the seed
+    # pool by RRF-superposing each segment's union pool instead of pooling
+    # the prompt into one centroid. ``qv`` (the centroid) still drives
+    # injection below and stays the scoring / TTT anchor upstream.
+    use_multi = segment_vectors is not None and segment_vectors.shape[0] > 1
+
+    def _build_pool(pool_size: int) -> list[tuple[str, float]]:
+        if use_multi:
+            return _multi_source_pool(
+                segment_vectors, faiss_index, virtual_faiss_index, pool_size,
+                query_text=query_text, bm25_index=bm25_effective,
+                rrf_k=config.rrf_k,
+            )
+        return _union_pool(
             qv, faiss_index, virtual_faiss_index, pool_size,
             query_text=query_text,
             bm25_index=bm25_effective,
@@ -761,6 +813,11 @@ def propagate_gravity_wave(
             bm25_score_alpha=config.bm25_score_alpha,
             rrf_k=config.rrf_k,
         )
+
+    if source_filter:
+        sf_set = set(source_filter)
+        pool_size = max(initial_k, config.wave_k_with_filter)
+        pool = _build_pool(pool_size)
         if has_injection:
             pool = _inject_into_pool(pool, injected_ids, qv, faiss_index)
         if not pool:
@@ -793,14 +850,7 @@ def propagate_gravity_wave(
             seeds = [(nid, raw) for nid, _, raw in candidates[:initial_k]]
     elif has_seed_boost or has_injection:
         pool_size = max(initial_k, config.wave_seed_pool_size)
-        pool = _union_pool(
-            qv, faiss_index, virtual_faiss_index, pool_size,
-            query_text=query_text,
-            bm25_index=bm25_effective,
-            bm25_score_mode=config.bm25_score_mode,
-            bm25_score_alpha=config.bm25_score_alpha,
-            rrf_k=config.rrf_k,
-        )
+        pool = _build_pool(pool_size)
         if has_injection:
             pool = _inject_into_pool(pool, injected_ids, qv, faiss_index)
         if not pool:
@@ -846,14 +896,7 @@ def propagate_gravity_wave(
         else:
             seeds = [(nid, raw) for nid, _, raw in rescored[:effective_k]]
     else:
-        seeds = _union_pool(
-            qv, faiss_index, virtual_faiss_index, initial_k,
-            query_text=query_text,
-            bm25_index=bm25_effective,
-            bm25_score_mode=config.bm25_score_mode,
-            bm25_score_alpha=config.bm25_score_alpha,
-            rrf_k=config.rrf_k,
-        )
+        seeds = _build_pool(initial_k)
     if not seeds:
         return {}
 

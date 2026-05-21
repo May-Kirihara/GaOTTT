@@ -247,6 +247,30 @@ class GaOTTTConfig:
     rrf_k: int = 60                             # RRF rank-fusion constant (Cormack 2009 standard)
     bm25_tokenizer: str = "trigram"             # "trigram" (default) | "sudachi" (optional extra)
 
+    # Query as Mass Distribution — Multi-Source Query.
+    # A compound prompt pooled into one embedding is a centroid, and the
+    # centroid is dragged toward whichever sub-topic is lexically densest in
+    # the corpus (a meta-instruction naming a heavily-recorded entity can
+    # drown the actual task). When enabled, the prompt is segmented into
+    # clauses, each embedded as a separate point mass, and the wave seeds from
+    # the RRF-superposed per-segment pools — one wave, not N. Gravity
+    # superposes fields; it does not average masses. The pooled ``query_vec``
+    # still anchors scoring and the TTT query-attraction term, so no physics
+    # rule changes (this is why the feature consumes no Phase letter).
+    # ``multi_source_enabled`` gates recall / explore; the separate
+    # ``multi_source_ambient_enabled`` gates the every-turn ambient_recall
+    # path (kept separate for perf isolation — the ambient hook fires on
+    # each prompt). Both default True (2026-05-21): a real-RURI check put a
+    # compound-query recall at ~2× single-source but p95 ~40ms — far under
+    # the Tier 6 gate (120ms) and the ambient hook budget (~500ms). Simple
+    # (non-compound) prompts do not segment, so they pay nothing. Set either
+    # to False for a one-line rollback. See
+    # docs/wiki/Plans-Query-Mass-Distribution.md.
+    multi_source_enabled: bool = True
+    multi_source_ambient_enabled: bool = True
+    multi_source_max_segments: int = 4          # cap N — the longest N segments are kept
+    multi_source_min_segment_chars: int = 12    # fragments below this merge into a neighbor
+
     # Gravity wave propagation
     wave_initial_k: int = 3            # Initial FAISS top-k for seed nodes
     # Phase M follow-up (2026-05-13): depth 2 → 3 to widen the displacement

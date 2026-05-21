@@ -49,11 +49,23 @@ class RuriEmbedder:
         )
         return embeddings.astype(np.float32)
 
-    def encode_query(self, text: str) -> np.ndarray:
-        prefixed = self.QUERY_PREFIX + text
-        embedding = self._model.encode(
-            [prefixed],
+    def encode_queries(self, texts: list[str]) -> np.ndarray:
+        """Batch-embed multiple query segments in one model forward pass.
+
+        Used by Multi-Source Query (docs/wiki/Plans-Query-Mass-Distribution.md):
+        each prompt segment becomes a separate point-mass query vector. One
+        ``encode`` call for all N keeps the multi-source path within the
+        latency budget — N separate calls would be the regression. Returns
+        shape ``(len(texts), dim)``; rows are L2-normalized.
+        """
+        prefixed = [self.QUERY_PREFIX + t for t in texts]
+        embeddings = self._model.encode(
+            prefixed,
+            batch_size=self._batch_size,
             normalize_embeddings=True,
             convert_to_numpy=True,
         )
-        return embedding.astype(np.float32)
+        return embeddings.astype(np.float32)
+
+    def encode_query(self, text: str) -> np.ndarray:
+        return self.encode_queries([text])

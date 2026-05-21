@@ -138,6 +138,11 @@ def _format_training_delta(td) -> str:
         f"persona_hop={td.persona_hop_reached} "
         f"({coverage})"
     )
+    # Multi-Source Query — added as its own line (CLAUDE.md formatter rule:
+    # never modify an existing line). Shown only when the prompt actually
+    # split into multiple intent centers.
+    if getattr(td, "intent_centers", 1) > 1:
+        lines.append(f"intent-centers={td.intent_centers} (multi-source seeding)")
     if mass_top:
         parts = [f"{nid[:8]}.. {d:+.4f}" for nid, d in mass_top]
         lines.append("Δmass top: " + ", ".join(parts))
