@@ -14,7 +14,7 @@
 
 GaOTTT is **long-term external memory for AI agents** — and, structurally, an online optimizer that runs at inference time. Documents become nodes with mass, temperature, and gravitational displacement; co-retrieved documents drift closer together; the knowledge space self-organizes with every query. The more you use it, the more its representations change — closer to **online learning of the retrieval geometry than to plain caching**.
 
-It runs as an **MCP server** (Claude Code, Claude Desktop, other agent frameworks) and as a **REST API**.
+It runs as an **MCP server** (Claude Code, Claude Desktop, OpenCode, OpenClaw, OpenAI Codex CLI, other agent frameworks) and as a **REST API**.
 
 It is designed in five layers — physics → TTT mechanism → biology → relations → persona. → [Five-Layer Philosophy](docs/wiki/Reflections-Five-Layer-Philosophy.md)
 
@@ -52,12 +52,24 @@ git clone https://github.com/May-Kirihara/GaOTTT.git && cd GaOTTT
 uv venv .venv --python 3.12
 uv pip install -e ".[dev]"
 
-# Start the MCP server (for Claude Code / Claude Desktop)
+# Start the MCP server (for Claude Code / Claude Desktop / OpenCode / Codex CLI)
 .venv/bin/python -m gaottt.server.mcp_server
 
 # Or start the REST API server
 .venv/bin/uvicorn gaottt.server.app:app --host 0.0.0.0 --port 8000
 ```
+
+### Register with your MCP client (one-liner per client)
+
+```bash
+# Claude Code
+claude mcp add gaottt -- "$HOME/GaOTTT/.venv/bin/python" -m gaottt.server.mcp_server
+
+# OpenAI Codex CLI
+codex mcp add gaottt -- "$HOME/GaOTTT/.venv/bin/python" -m gaottt.server.mcp_server
+```
+
+For Claude Desktop, OpenCode, OpenClaw, or hand-edited config files, see [Tutorial 03 — Connect Your Client](docs/wiki/Tutorial-03-Connect-Your-Client.md) and [Operations — Server Setup](docs/wiki/Operations-Server-Setup.md).
 
 Data is stored in a fixed per-OS directory (`~/.local/share/gaottt/` on Linux/macOS) regardless of working directory — override with `GAOTTT_DATA_DIR`. Upgrading an existing install across a breaking gravity-physics change? Run `scripts/migrate.py` first.
 

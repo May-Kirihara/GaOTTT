@@ -14,7 +14,7 @@
 
 GaOTTT は **AI エージェントの長期外部記憶** であり、構造上は **推論時に走るオンライン最適化器** でもある。ドキュメントは質量・温度・重力変位を持つノードになり、共起した文書は互いに接近し、知識空間がクエリのたびに自己組織化していく。使い込むほど表現そのものが変わっていく — これは **単なるキャッシングではなく、retrieval geometry のパラメータ学習に近い**。
 
-**MCP サーバー**（Claude Code・Claude Desktop 等のエージェントから利用）と **REST API** として動作する。
+**MCP サーバー**（Claude Code・Claude Desktop・OpenCode・OpenClaw・OpenAI Codex CLI 等のエージェントから利用）と **REST API** として動作する。
 
 設計は五層構造 — 物理 → TTT 機構 → 生物 → 関係 → 人格。 → [Five-Layer Philosophy](docs/wiki/Reflections-Five-Layer-Philosophy.md)
 
@@ -52,12 +52,24 @@ git clone https://github.com/May-Kirihara/GaOTTT.git && cd GaOTTT
 uv venv .venv --python 3.12
 uv pip install -e ".[dev]"
 
-# MCP サーバー起動 (Claude Code / Claude Desktop 用)
+# MCP サーバー起動 (Claude Code / Claude Desktop / OpenCode / Codex CLI 用)
 .venv/bin/python -m gaottt.server.mcp_server
 
 # または REST API サーバー起動
 .venv/bin/uvicorn gaottt.server.app:app --host 0.0.0.0 --port 8000
 ```
+
+### MCP クライアントへの登録（クライアントごとに 1 コマンド）
+
+```bash
+# Claude Code
+claude mcp add gaottt -- "$HOME/GaOTTT/.venv/bin/python" -m gaottt.server.mcp_server
+
+# OpenAI Codex CLI
+codex mcp add gaottt -- "$HOME/GaOTTT/.venv/bin/python" -m gaottt.server.mcp_server
+```
+
+Claude Desktop・OpenCode・OpenClaw、または設定ファイルを手で編集したい場合は [Tutorial 03 — クライアント接続](docs/wiki/Tutorial-03-Connect-Your-Client.md) と [Operations — Server Setup](docs/wiki/Operations-Server-Setup.md) を参照。
 
 データは OS ごとの固定ディレクトリ（Linux/macOS は `~/.local/share/gaottt/`）に保存され、どこから起動しても同じデータを参照する — `GAOTTT_DATA_DIR` で変更可能。重力物理の breaking change を跨いで既存 install を更新する場合は、先に `scripts/migrate.py` を走らせる。
 

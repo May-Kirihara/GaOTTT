@@ -70,6 +70,7 @@ source $HOME/.cargo/env
 | Claude Code | `claude mcp list` で確認。無ければ [Tutorial-03 セクション B](Tutorial-03-Connect-Your-Client.md#b-claude-code) の `claude mcp add` を再実行 |
 | OpenCode | プロジェクトの `opencode.json` または `~/.config/opencode/opencode.json` |
 | OpenClaw | `openclaw mcp list` で確認。`~/.openclaw/config.json` の `mcp.servers.gaottt` |
+| Codex CLI | `codex mcp list` で確認。`~/.codex/config.toml` の `[mcp_servers.gaottt]`。初回起動で `startup_timeout` エラーが出るときは `startup_timeout_sec = 60` を追加（RURI モデルロード時間） |
 
 #### チェック 1: ファイル名・パス
 
