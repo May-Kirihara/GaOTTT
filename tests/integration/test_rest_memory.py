@@ -135,6 +135,36 @@ async def test_ambient_recall_rest_roundtrip(rest_client):
     assert gated.json()["count"] == 0
 
 
+async def test_ambient_recall_exclude_tags_rest_parity(rest_client):
+    """Refinement Stage 2 — POST /ambient_recall accepts ``exclude_tags``
+    (MCP + REST parity rule)."""
+    # tagged + plain agent docs
+    for i in range(3):
+        await rest_client.post(
+            "/remember",
+            json={
+                "content": f"exclude-rest probe {i}",
+                "source": "agent",
+                "tags": ["smoke-test"] if i == 0 else None,
+            },
+        )
+    resp = await rest_client.post(
+        "/ambient_recall",
+        json={
+            "query": "exclude-rest probe",
+            "direct_k": 3,
+            "exclude_tags": ["smoke-test"],
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    # The smoke-tagged item must not appear in any direct slot.
+    for item in data["direct"]:
+        assert "smoke-test" not in (item.get("tags") or []), (
+            "REST exclude_tags must drop matching items from direct hits"
+        )
+
+
 async def test_recall_training_delta_in_rest_response(rest_client):
     """Phase O Stage 2 — REST JSON response carries TrainingDelta."""
     await rest_client.post(

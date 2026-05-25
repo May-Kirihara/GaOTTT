@@ -207,6 +207,9 @@ async def ambient_recall_memory(request: AmbientRecallRequest):
         query=request.query,
         direct_k=request.direct_k,
         min_score=request.min_score,
+        exclude_tags=request.exclude_tags,
+        expose_breakdown=request.expose_breakdown,
+        recently_surfaced=request.recently_surfaced,
     )
 
 

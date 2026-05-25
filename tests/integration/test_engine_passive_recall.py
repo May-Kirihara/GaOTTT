@@ -172,3 +172,60 @@ async def test_passive_recall_does_not_poison_prefetch_cache(tmp_path):
         )
     finally:
         await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_passive_recall_does_not_change_return_count(tmp_path):
+    """Lateral Association Stage 1 sub-step 0 (2026-05-25) — passive recall
+    must not mutate ``return_count`` either.
+
+    Before the gate fix, ``return_count`` was incremented for top-K and
+    decayed for all reached even with ``passive=True``. Because saturation
+    is ``1 / (1 + return_count * saturation_rate)`` and feeds final_score,
+    ambient_recall (passive) was silently rotating the direct slot each
+    turn via saturation drift — the "uncontrolled direct-slot variation"
+    documented in Stage 6a baseline.
+
+    See ``scripts/probe_ambient_nondeterminism.py`` for the literal probe
+    that confirmed this. Paired positive control: an active recall MUST
+    move return_count, otherwise the assertion below is vacuous.
+    """
+    engine = _make_engine(tmp_path)
+    await engine.startup()
+    try:
+        await engine.index_documents([
+            {"content": f"rc-doc-{i}", "metadata": {"source": "agent"}}
+            for i in range(5)
+        ])
+        # One active recall first so the field has non-zero return_count.
+        first = await engine.query(text="rc-probe", top_k=5)
+        ids = [r.id for r in first]
+        assert ids, "setup: first recall must return results"
+
+        rc_before = {
+            nid: engine.cache.get_node(nid).return_count for nid in ids
+        }
+        # 10 passive recalls — return_count must be byte-identical after.
+        for _ in range(10):
+            await engine.query(text="rc-probe", top_k=5, passive=True)
+        rc_after = {
+            nid: engine.cache.get_node(nid).return_count for nid in ids
+        }
+        for nid in ids:
+            assert rc_after[nid] == rc_before[nid], (
+                f"passive recall changed return_count for {nid}: "
+                f"{rc_before[nid]} → {rc_after[nid]}"
+            )
+
+        # Positive control — an active recall MUST move return_count,
+        # otherwise the assertion above could pass vacuously.
+        await engine.query(text="rc-probe", top_k=5)
+        rc_ctrl = {
+            nid: engine.cache.get_node(nid).return_count for nid in ids
+        }
+        moved = any(rc_ctrl[nid] != rc_before[nid] for nid in ids)
+        assert moved, (
+            "active recall did not change return_count — passive test is vacuous"
+        )
+    finally:
+        await engine.shutdown()

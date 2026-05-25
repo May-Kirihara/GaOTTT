@@ -267,7 +267,7 @@ def format_explore(result: ExploreResponse, mode: str = "serendipity") -> str:
 # --- Ambient Recall Enrichment ---
 
 def _ambient_meta(m: AmbientMemory) -> str:
-    """Compact provenance tag — source · certainty · age (· lensing gap)."""
+    """Compact provenance tag — source · certainty · age (· lensing gap+resonance)."""
     parts = [m.source]
     if m.certainty is not None:
         parts.append(f"certainty {m.certainty:.2f}")
@@ -275,7 +275,38 @@ def _ambient_meta(m: AmbientMemory) -> str:
         parts.append(f"{m.age_days:.0f}d")
     if m.lensing_gap is not None:
         parts.append(f"gap +{m.lensing_gap:.2f}")
+    # Lateral Association Stage 5 — resonance signal for lensing picks
+    # ("trust" axis derived from cooccurrence with today's direct hits).
+    # Always populated alongside ``lensing_gap`` so the agent can weigh
+    # "field bent strongly" + "field has learned this association" jointly.
+    if m.lensing_resonance is not None:
+        parts.append(f"resonance {m.lensing_resonance:.2f}")
     return " · ".join(parts)
+
+
+def _ambient_breakdown(b) -> str:
+    """Refinement Stage 3 — terse ``[raw=.. virt=.. bm25=.. mass=.. ...]``
+    suffix appended after each slot row when ``expose_breakdown`` is on.
+    Skips zero / default fields so the line stays compact. ``b`` is a
+    ``ScoreBreakdown`` (any null-falsy value yields the empty string)."""
+    if b is None:
+        return ""
+    parts: list[str] = []
+    if b.raw_cosine:
+        parts.append(f"raw={b.raw_cosine:.3f}")
+    if b.virtual_cosine:
+        parts.append(f"virt={b.virtual_cosine:.3f}")
+    if b.wave_score:
+        parts.append(f"wave={b.wave_score:.3f}")
+    if b.mass_boost:
+        parts.append(f"mass={b.mass_boost:.2f}")
+    if b.persona_proximity:
+        parts.append(f"persona={b.persona_proximity:.2f}")
+    if b.bm25_contributed:
+        parts.append("bm25")
+    if b.forced_inclusion:
+        parts.append("forced")
+    return f"  [{' '.join(parts)}]" if parts else ""
 
 
 def format_ambient(result: AmbientRecallResponse) -> str:
@@ -297,16 +328,33 @@ def format_ambient(result: AmbientRecallResponse) -> str:
         lines.append("")
         lines.append("▼ 直接ヒット")
         for i, m in enumerate(result.direct, 1):
-            lines.append(f" {i}. [{_ambient_meta(m)}] {m.content}")
+            lines.append(
+                f" {i}. [{_ambient_meta(m)}] {m.content}"
+                f"{_ambient_breakdown(m.breakdown)}"
+            )
             if m.because:
                 lines.append(f"    ← because {m.because}")
-    if result.lensing is not None:
+    if result.lensing:
         lines.append("")
-        lines.append("▼ 重力レンズ（テキスト的に遠いが、場が結びつけた）")
-        m = result.lensing
-        lines.append(f" · [{_ambient_meta(m)}] {m.content}")
-        if m.because:
-            lines.append(f"    ← because {m.because}")
+        # Lateral Association Stage 3 — top-K lensing. Heading shows the
+        # count so the reader knows N lateral associations are in play
+        # (the literal "〇〇といえば〜だったよな" mechanism firing N times).
+        # Singular heading (N=1, the Stage 1/2 default) stays unchanged for
+        # zero visible noise at K=1.
+        count = len(result.lensing)
+        if count == 1:
+            lines.append("▼ 重力レンズ（テキスト的に遠いが、場が結びつけた）")
+        else:
+            lines.append(
+                f"▼ 重力レンズ（{count} 件、テキスト的に遠いが、場が結びつけた）"
+            )
+        for m in result.lensing:
+            lines.append(
+                f" · [{_ambient_meta(m)}] {m.content}"
+                f"{_ambient_breakdown(m.breakdown)}"
+            )
+            if m.because:
+                lines.append(f"    ← because {m.because}")
     if result.tensions:
         lines.append("")
         lines.append("▼ ⚠ 矛盾")
@@ -316,7 +364,32 @@ def format_ambient(result: AmbientRecallResponse) -> str:
     if result.persona is not None:
         lines.append("")
         lines.append("▼ いま誰として")
-        lines.append(f" · {result.persona.kind}: {result.persona.content}")
+        lines.append(
+            f" · {result.persona.kind}: {result.persona.content}"
+            f"{_ambient_breakdown(result.persona.breakdown)}"
+        )
+    # Lateral Association Stage 1 — id manifest for the UserPromptSubmit hook.
+    # HTML comment so it stays out of the visible block in markdown rendering
+    # while being trivially parseable from the raw text. The hook reads this
+    # to build the ``recently_surfaced`` map it passes to the next ambient
+    # call (Plans-Ambient-Recall-Lateral-Association.md Stage 1 sub-step 1).
+    # Format: ``<!-- ambient-ids direct=id1,id2 lensing=id3 persona=id4 -->``.
+    # Keys are omitted when their slot is empty so a missing key is "no pick".
+    manifest_parts: list[str] = []
+    if result.direct:
+        manifest_parts.append(
+            "direct=" + ",".join(m.id for m in result.direct)
+        )
+    if result.lensing:
+        # Stage 3 — comma-separated for top-K lensing. The hook already
+        # splits on commas within slot=... chunks, so no parser change.
+        manifest_parts.append(
+            "lensing=" + ",".join(m.id for m in result.lensing)
+        )
+    if result.persona is not None:
+        manifest_parts.append(f"persona={result.persona.id}")
+    if manifest_parts:
+        lines.append(f"<!-- ambient-ids {' '.join(manifest_parts)} -->")
     lines.append("</gaottt-ambient-recall>")
     return "\n".join(lines)
 

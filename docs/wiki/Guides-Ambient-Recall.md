@@ -36,11 +36,25 @@ LLM はユーザー発話 + 関連記憶 の両方を見て応答
 **構造化スロット** — 注入はフラットな top-k ではなく、複数スロットの構造ブロック（[Ambient Recall Enrichment](Plans-Ambient-Recall-Enrichment.md)、MCP ツール [`ambient_recall`](MCP-Reference-Memory.md)）:
 
 - **▼ 直接ヒット** — `final_score` 上位の記憶。
-- **▼ 重力レンズ** — embedding 的には query から遠いのに、重力場の displacement が query 近傍まで引き寄せた記憶。**場が学習した類推**で、素の検索には出せない枠。
+- **▼ 重力レンズ** — embedding 的には query から遠いのに、重力場の displacement が query 近傍まで引き寄せた記憶。**場が学習した類推**で、素の検索には出せない枠。**Lateral Association Stage 3** で top-1 → **top-K** に拡張 (`config.ambient_lensing_max_k` 既定 `2`)：複数の lateral 連想 ("X といえば Y で、Y といえば Z") が同 turn で同時発火し、人間が会話で自然に紡ぐ associative chain を機構として担保する。各 pick は独立に `min_score`/`min_gap` を clear する必要があり、quota 緩和はない (= 「無理に第 2 を出す」のではなく「第 2 も genuinely な bent association ならば surface する」)。**Stage 5** で各 pick に `resonance` (`[0, 1)`、cooccurrence-derived) も付く: `gap` は「曲げの強さ」だけを表すが、resonance は **「場が過去にこの memo を今日の direct hits と何度一緒に引いたか」** — 「曲げが強い + 場が学習した path」を agent が両面で weigh できるようになる (= 突飛な lensing を discount する材料)。
 - **▼ ⚠ 矛盾** — surface 記憶の `contradicts` エッジのペア。
-- **▼ いま誰として** — active な declared value/intention（grounding）。
+- **▼ いま誰として** — active な declared value/intention（grounding）。スロットを埋めるのは「mass 上位を query 関連度で再ランクした top1」: 候補プール (mass 上位 N、既定 N=10) を `score = (mass ** w) × cos(query, persona_vec)` で再ランクし、`cos < ambient_persona_min_relevance` なら slot を空にする ([Plans — Ambient Recall Refinement](Plans-Ambient-Recall-Refinement.md) Stage 1)。`w = ambient_persona_mass_weight` (既定 `1.0`) は heavy persona dominance の対処 knob — production で 1 つの persona の mass が突出している場合に `0.5` / `0.3` / `0.0` と下げて cos 軸の影響を強める ([Operations — Troubleshooting](Operations-Troubleshooting.md) 「query 横断で同じ persona に固定される」節)。
 
 各エントリは provenance メタ（`source · certainty · age`）付き。スロットの組み立て・relevance gate・整形はすべて **サーバ側の `ambient_recall` サービス**が行い、フックは「ブロックが返ってきたら emit、センチネルなら無言」だけの薄いラッパ。
+
+### 「〇〇といえば〜だったよな」軸 — session-aware novelty decay
+
+毎ターン同じ memo が surface すると、3 turn 目には LLM がそれを白色雑音として読み飛ばし始める。Lateral Association Stage 1 ([Plans — Ambient Recall Lateral Association](Plans-Ambient-Recall-Lateral-Association.md)) は **直近 N turn で何回 surface したか** を caller (フック) が tracking して、recently-surfaced な memo の ranking を `decay ** count` で抑える。会話の自然な「あ、そういえば〜」の **新鮮さ** 軸を機構で担保する。
+
+| component | 役割 |
+|---|---|
+| `<!-- ambient-ids ... -->` manifest | サーバの formatter が ambient block 末尾に毎回付ける id list (HTML コメントなので markdown render では不可視、フックからは parse 容易) |
+| フックの `_recently_surfaced()` | transcript の直近 `GAOTTT_AMBIENT_NOVELTY_TURNS` 回 (既定 5) の `<gaottt-ambient-recall>` ブロック (UserPromptSubmit の `hook_success` attachment) から manifest を抽出して `{node_id: count}` を組み立てる |
+| `ambient_recall(recently_surfaced=...)` | 各 slot の ranking を `score *= ambient_novelty_decay ** count` で減衰 (`decay=0.7` 既定で 1 回再 surface → 70%、2 回 → 49%)。direct slot は再 sort、lensing は decay された gap で argmax (露出 gap は raw 値)、persona は `(mass^w) × cos × novelty` で再 winner 決定 |
+
+**ロールバック**: フック側 `GAOTTT_AMBIENT_NOVELTY_TURNS=0` で manifest scan を止める (= `recently_surfaced` 送付なし)、または server config `ambient_novelty_decay=1.0` で式を no-op に。両方 default 値で本番有効、片方を逃すだけで他方は legacy 等価。
+
+**Passive 原則との関係**: novelty decay は **slot pick の ranking だけ** を曲げる。node の mass・displacement・co-occurrence は一切触らない (ambient_recall は `passive=True` のまま)。「経験は言葉にすることで質量を持つ」原則は無変更で、session 内 surface 履歴は per-call の transient な ranking 補正としてだけ存在する。
 
 ## なぜ passive recall なのか — 観察者効果
 
@@ -132,6 +146,11 @@ Claude Code は `.claude/settings.json` の `command` か shell 環境で、open
 | `GAOTTT_AMBIENT_MIN_SCORE` | (未設定) | Python フック | **フォールバック** virtual_score gate のしきい値上書き。主たる gate は BM25（後述、`config.ambient_bm25_min_score`）で、これは BM25 不在時のみ効く |
 | `GAOTTT_AMBIENT_TIMEOUT` | `6.0` | 両方 | recall のハードタイムアウト（秒）。steady-state ~0.5s だが backend 再起動直後の数分は virtual FAISS 等の warmup で ~3-4s。opencode プラグインは子プロセスにこれ + 3 秒の余裕を与える |
 | `GAOTTT_AMBIENT_MIN_CHARS` | `12` | 両方 | この文字数未満のプロンプトはスキップ |
+| `GAOTTT_AMBIENT_EXCLUDE_TAGS` | `smoke-test,test` | Python フック | substring マッチで direct / lensing / persona 候補から除外する tag リスト（CSV）。MCP/REST smoke 用 memory を corpus に残しつつ ambient 注入だけ silent にする（[Plans — Ambient Recall Refinement](Plans-Ambient-Recall-Refinement.md) Stage 2）。空文字列で除外無効化 |
+| `GAOTTT_AMBIENT_EXPOSE_BREAKDOWN` | (未設定) | Python フック | `1`/`true`/`on` で各 slot 行末に ` [raw=.. virt=.. bm25 mass=..]` を追記し、なぜその memory が surface したかを caller に露出する（[Plans — Ambient Recall Refinement](Plans-Ambient-Recall-Refinement.md) Stage 3）。default off — 本番では token budget 優先、debug session / measurement (Stage 5) で opt-in |
+| `GAOTTT_AMBIENT_HISTORY_TURNS` | `2` | Python フック | 当該プロンプトの前に concat する **直前 N 件のユーザープロンプト**（[Plans — Ambient Recall Refinement](Plans-Ambient-Recall-Refinement.md) Stage 4）。Claude Code の `transcript_path` を tolerant に解析。`0` で legacy（当該プロンプトのみ）。短い接続的 prompt（"次のステップに進みましょう" 等）で context が落ちる失敗を補正。transcript が読めない / 解析失敗時は silent に legacy 動作にフォールバック |
+| `GAOTTT_AMBIENT_NOVELTY_TURNS` | `5` | Python フック | transcript の直近 N 個の `<gaottt-ambient-recall>` ブロックから `<!-- ambient-ids ... -->` manifest を parse し、`{node_id: count}` を `recently_surfaced` として server に forward する（[Lateral Association Stage 1](Plans-Ambient-Recall-Lateral-Association.md)）。server 側で各 slot の ranking が `ambient_novelty_decay ** count` で減衰し、直近で出た memo が rotation する。`0` で disable (= 旧挙動・無 decay) |
+| `GAOTTT_AMBIENT_SHOW_COMPOSED_QUERY` | (未設定) | Python フック | **debug-only**。`1`/`true`/`on` で ambient block 末尾 (closing tag 直前) に `<!-- ambient: composed query = "..." -->` を 1 行追加する（[Lateral Association Stage 4](Plans-Ambient-Recall-Lateral-Association.md)）。`GAOTTT_AMBIENT_HISTORY_TURNS` で multi-turn 連結された **実際の query** が agent から見えるので、「ambient 結果が変なのは query が変なのか recall が変なのか」を即座に分離できる。composed query が現プロンプトと同一 (連結が起きてない) のときは line 自体が省略される (debug 価値ゼロ)。token +50-200 字、本番では off |
 | `GAOTTT_REPO` | `/mnt/holyland/Project/GaOTTT` | opencode プラグイン | GaOTTT リポジトリのルート（`PYTHON` / `SCRIPT` の既定値の基点） |
 | `GAOTTT_AMBIENT_PYTHON` | `$GAOTTT_REPO/.venv/bin/python` | opencode プラグイン | Python フックを実行するインタプリタ |
 | `GAOTTT_AMBIENT_SCRIPT` | `$GAOTTT_REPO/scripts/hooks/ambient_recall.py` | opencode プラグイン | 呼び出す Python フックスクリプト |

@@ -376,9 +376,105 @@ class GaOTTTConfig:
     ambient_lensing_enabled: bool = True     # ② gravitational-lensing slot on/off
     ambient_lensing_min_score: float = 0.5   # lensing pick noise floor (virtual_cosine)
     ambient_lensing_min_gap: float = 0.05    # lensing pick must clear this virtual−raw gap
+    # Lateral Association Stage 3 (2026-05-25,
+    # Plans-Ambient-Recall-Lateral-Association.md) — lensing slot is the
+    # mechanism closest to "〇〇といえば〜だったよな" (the field-learned
+    # association). Top-1 only is a "one lateral hit per turn" cap that
+    # contradicts natural human associative chains ("X といえば Y で、Y と
+    # いえば Z だから..."). Allow top-K lensing picks (ranked by decayed gap
+    # desc; same exclude-set against direct as before), giving multiple
+    # lateral channels per turn.
+    #   max_k=1 → Stage 1/2 behaviour exactly (single lensing memo).
+    #   max_k=2 (default, controlled increase) → +1 ambient row, ~+30% block.
+    #   max_k=3 → maximum recommended (token-budget concern); each row is
+    #             still bounded by ``ambient_excerpt_chars`` (240 chars).
+    # Each kept pick must independently clear ``ambient_lensing_min_score``
+    # and ``ambient_lensing_min_gap`` (no quota relaxation — second-best is
+    # only surfaced if it's still genuinely a "bent" association).
+    ambient_lensing_max_k: int = 2
+    # Stage 3 dynamic-K mode (opt-in). When True, K floats in
+    # [1, ambient_lensing_max_k] driven by query abstraction (= the spread
+    # of pure raw_cosine across reached nodes). Reserved for a follow-up
+    # tuning step — Stage 3 ships the static knob first to keep behaviour
+    # predictable while measuring lateral hit rate (Stage 6a corpus).
+    ambient_lensing_dynamic_k: bool = False
+    # Lateral Association Stage 5 (2026-05-25,
+    # Plans-Ambient-Recall-Lateral-Association.md) — lensing resonance signal.
+    # ``gap`` measures the strength of the bend (virtual − raw), but not
+    # whether the bent association is "trustworthy" or "noise". Stage 3's
+    # top-K extension increases the risk of false-positive lateral picks —
+    # so Stage 5 adds a per-pick ``resonance`` score derived from the
+    # cooccurrence graph (mode 5a in the plan): for each lensing pick,
+    # ``resonance = raw / (raw + scale)`` where
+    # ``raw = sum_{d in direct} cache.get_neighbors(lensing)[d]``. Saturating
+    # non-linearity bounds resonance to ``[0, 1)`` regardless of raw count
+    # scale. The semantic: "how often has the field pulled this lensing
+    # memo together with today's direct hits in past *active* recalls" — a
+    # field-learned trust signal, not a per-call topical-match signal.
+    #
+    # Why 5a (cooccurrence) over 5b (mass × cos) or 5c (cos to direct):
+    #   5b conflates "important memo" with "appropriate for this turn"
+    #     (the Heavy Persona Dominance failure mode, re-introduced for
+    #     lensing — see [[project-ambient-persona-mass-dominance]]).
+    #   5c uses raw embedding cosine to direct, but lensing is *defined*
+    #     as "embedding-far from query but bent close" — cos(lensing,
+    #     direct) is not a clean trust signal because both interpretations
+    #     ("near-miss of direct, not really lateral" and "genuinely
+    #     cross-topic via field bend") map to the same number.
+    #   5a directly measures "the field has learned to associate these"
+    #     which is what lensing is *supposed* to surface.
+    #
+    # ``scale=10.0`` → resonance hits 0.5 at raw count 10 (10 prior
+    # co-recalls), 0.9 at raw=90. Saturating, never reaches 1.0.
+    ambient_lensing_resonance_scale: float = 10.0
+    # Optional drop gate. When > 0, lensing picks with resonance below
+    # this threshold are dropped from the slot (no backfill — same
+    # principle as Stage 3 no-quota-relaxation). Default 0.0 = no
+    # filtering, just surface the resonance signal for the agent to weigh.
+    # Production tuning should observe natural resonance distribution
+    # before raising; typical values ~0.1-0.3 to drop pure noise picks.
+    ambient_lensing_resonance_min: float = 0.0
     ambient_reasoning_enabled: bool = True   # ④ derived_from/supersedes "because" chain
     ambient_tension_enabled: bool = True     # ⑤ contradicts caution pairs
     ambient_persona_enabled: bool = True     # ⑥ active declared value/intention line
+    # Refinement Stage 1 (Plans-Ambient-Recall-Refinement.md): query-conditioned
+    # persona pick. The top-N candidates (by mass) are re-ranked by
+    # ``mass × cosine(query, persona_vec)``; the best is surfaced only when its
+    # cosine clears ``ambient_persona_min_relevance``. Below the threshold the
+    # slot is silently omitted — irrelevant persona is worse context than no
+    # persona (Phase A literal failure: MCP-smoke intention in embedder turn).
+    ambient_persona_pool_size: int = 10      # mass-top-N pool size for cosine re-rank
+    ambient_persona_min_relevance: float = 0.5  # cosine floor for surfacing the slot
+    # Refinement follow-up (b) — Heavy Persona Dominance knob. Production
+    # observation 2026-05-25: when one persona has runaway mass (e.g.
+    # ``harakiriworks intention mass=2.82`` vs others at ~1.0), the
+    # ``mass × cos`` formula's mass term dominates and the persona slot
+    # surfaces the same node for every query. Knob to dampen mass:
+    # ``score = (mass ** ambient_persona_mass_weight) × cos``.
+    #   weight = 1.0 (default) — current behavior, full mass attribution
+    #   weight = 0.5            — sqrt(mass) × cos, log-scale-ish dampening
+    #   weight = 0.0            — pure cos ranking (mass ignored), the
+    #                              ``relevance_dominant`` mode as a degenerate case
+    # Tune with ``test_tier3_ambient_quality.py`` before/after baseline to
+    # separate "performance improvement" from "feature preference".
+    ambient_persona_mass_weight: float = 1.0
+
+    # Lateral Association Stage 1 sub-step 1 (2026-05-25,
+    # Plans-Ambient-Recall-Lateral-Association.md) — session-aware novelty
+    # decay. When the caller (the UserPromptSubmit hook) passes
+    # ``recently_surfaced: dict[node_id, count]`` to ``ambient_recall``,
+    # candidates appearing in that map have their ranking score multiplied by
+    # ``ambient_novelty_decay ** count`` *before* the slot pick:
+    #   persona: ``(mass ** w) × cos × novelty``
+    #   direct:  ``final_score × novelty`` (re-sort, then take direct_k)
+    #   lensing: ``gap × novelty``         (gap-largest pick uses decayed gap)
+    # ``decay = 1.0`` (no-op) preserves the pre-Stage-1 behavior. ``decay = 0.7``
+    # (default) drops a same-id re-surface to 70% on the first repeat, 49% on
+    # the second — pressure to rotate without outright suppression. The node's
+    # mass / displacement are not touched (passive principle): only the
+    # session-scope ranking is bent. See
+    # docs/wiki/Plans-Ambient-Recall-Lateral-Association.md Stage 1.
+    ambient_novelty_decay: float = 0.7
 
     # Phase O Stage 5 — Dormant surface (explore(mode='dormant')).
     # ``explore(mode='dormant')`` returns random self-authored memos that have

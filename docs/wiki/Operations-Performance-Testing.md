@@ -22,7 +22,7 @@ CLAUDE.md「実装フロー」の step 7 にあたる。新機能・hot path 変
 |---|---|---|---|---|
 | 1. Smoke | 動作する | サーバー起動 / 26 MCP tools / BM25 build / **Phase O trailers** | startup 失敗、tool 名 typo、observability 文字列の silent 変更 | `test_tier1_startup.py`, `test_tier1_mcp_roundtrip.py`, `test_tier1_bm25_build.py`, `test_tier1_phase_o_trailers.py` |
 | 2. Functional | 仕様通り | source_filter / tag_filter / dedup / Phase D | (既存 `tests/integration/` で網羅) | — |
-| 3. Retrieval Quality | 正しい結果 | surface top-5 厳格 / Semantic cluster / Source-mix / **forced flag visibility** | top1 hub 化、cluster 全滅、sparse-class injection の sigil 喪失 | `test_tier3_retrieval_quality.py`, `test_tier3_phase_o_forced_flag.py` |
+| 3. Retrieval Quality | 正しい結果 | surface top-5 厳格 / Semantic cluster / Source-mix / **forced flag visibility** / **Ambient slot 整合性 (direct / persona / exclude)** | top1 hub 化、cluster 全滅、sparse-class injection の sigil 喪失、ambient persona slot の query 関連性退行、`exclude_tags` の漏れ | `test_tier3_retrieval_quality.py`, `test_tier3_phase_o_forced_flag.py`, `test_tier3_ambient_quality.py` |
 | 4. Dynamics | 時間で壊れない | anti-hub / displacement runaway / 世代安定性 / **driven resonance / diversity 配線** | hub chunk 独占、displacement 暴走、diversity no-op、Phase I Stage 2 query-kick 退行 | `test_tier4_dynamics.py`, `test_tier4_phase_o_resonance.py`, `test_tier4_phase_o_diversity.py` |
 | 5. Ops Integrity | 整合性 | FAISS↔SQLite サイズ一致 / BM25 invariant / WAL 暴走 / **dormant 両分岐** | **2026-05-14 FAISS 空 (vec=15 vs doc=31k)** / **MCP ingest WAL 7.6 GB 暴走** / Stage 5 empty 分岐の silent 化 | `test_tier5_faiss_sqlite_size.py`, `test_tier5_bm25_size.py`, `test_tier5_bulk_ingest_timing.py`, `test_tier5_phase_o_dormant.py` |
 | 6. Performance | latency/throughput | p50<60ms / p95<120ms / p99<250ms / ingest>500 docs/sec | hot path に O(N²) 混入 | `test_tier6_performance.py` |
@@ -36,6 +36,7 @@ CLAUDE.md「実装フロー」の step 7 にあたる。新機能・hot path 変
 | 新 service 関数 | Tier 1 + Tier 2 |
 | FAISS / BM25 / SQLite 更新ロジック | **Tier 5 必須**、Tier 7 |
 | seed pool / wave / RRF 配合変更 | **Tier 3 + Tier 4 + Tier 7 必須**、`scripts/diag_recall.py` で snapshot/diff |
+| ambient_recall slot logic / persona ranking / exclude / breakdown | **Tier 3 ambient quality (`test_tier3_ambient_quality.py`) 必須**、変更前後で golden corpus heatmap diff |
 | ingest / chunker 変更 | Tier 5 (bulk timing) + Tier 7 |
 | config default 変更 | Tier 4 + Tier 6 + Tier 7 |
 | 新依存追加 / startup 経路変更 | Tier 1 + Tier 6 |

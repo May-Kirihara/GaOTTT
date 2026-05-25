@@ -10,6 +10,8 @@ import random
 import time
 from typing import Any
 
+import numpy as np
+
 from gaottt.core.engine import GaOTTTEngine
 from gaottt.core.extractor import extract_candidates
 from gaottt.core.persona_gravity import collect_active_persona_ids
@@ -28,6 +30,7 @@ from gaottt.core.types import (
     RestoreResponse,
     RevalidateResponse,
     RoutingHint,
+    ScoreBreakdown,
     TrainingDelta,
 )
 from gaottt.services import query_routing, reflection as reflection_service
@@ -267,11 +270,16 @@ def _excerpt(content: str, limit: int) -> str:
 def _to_ambient_memory(
     engine: GaOTTTEngine, item: MemoryItem, now: float, *,
     excerpt_chars: int, lensing_gap: float | None = None,
+    expose_breakdown: bool = False,
 ) -> AmbientMemory:
     """``MemoryItem`` → ``AmbientMemory``, enriched with provenance metadata (③).
 
     ``certainty`` / ``age_days`` come from the node's ``NodeState`` — the recall
     that produced ``item`` just touched these nodes, so they are warm in cache.
+
+    Refinement Stage 3: when ``expose_breakdown`` is True the recall's
+    ``score_breakdown`` is attached, letting the caller see why this memory
+    surfaced (raw vs virtual cosine, BM25 contribution, mass boost, ...).
     """
     state = engine.cache.get_node(item.id)
     certainty = float(state.certainty) if state is not None else None
@@ -289,26 +297,99 @@ def _to_ambient_memory(
         virtual_score=item.raw_score,
         final_score=item.final_score,
         lensing_gap=lensing_gap,
+        breakdown=item.score_breakdown if expose_breakdown else None,
     )
+
+
+def _lensing_resonance(
+    lensing_id: str,
+    direct_ids: list[str],
+    engine: GaOTTTEngine,
+    scale: float,
+) -> float:
+    """Lateral Association Stage 5 — cooccurrence-derived trust signal.
+
+    Mode 5a: ``resonance = raw / (raw + scale)`` where
+    ``raw = sum_{d in direct_ids} cache.get_neighbors(lensing_id)[d]``.
+
+    Measures "how often has the field pulled this lensing memo together with
+    today's direct hits in past active recalls" — the cooccurrence graph
+    captures associations built from real user recalls (passive recalls do
+    not write cooccurrence, so the signal is uncontaminated by ambient
+    background noise).
+
+    Saturating non-linearity bounds the output to ``[0, 1)`` regardless of
+    the raw cooccurrence count's scale. ``scale=10`` (default) hits 0.5
+    at raw=10 and 0.9 at raw=90. ``scale=0`` short-circuits to 1.0 for any
+    nonzero raw (max-trust mode, not recommended).
+    """
+    if scale <= 0.0:
+        # Degenerate config — treat as "any cooccurrence is fully trustworthy".
+        neighbors = engine.cache.get_neighbors(lensing_id)
+        return 1.0 if any(neighbors.get(d, 0.0) > 0.0 for d in direct_ids) else 0.0
+    neighbors = engine.cache.get_neighbors(lensing_id)
+    raw = sum(float(neighbors.get(d, 0.0)) for d in direct_ids)
+    if raw <= 0.0:
+        return 0.0
+    return raw / (raw + scale)
+
+
+def _novelty_factor(
+    node_id: str,
+    recently_surfaced: dict[str, int] | None,
+    decay: float,
+) -> float:
+    """Lateral Association Stage 1 — multiplicative session-novelty factor.
+
+    ``decay ** count`` for nodes the caller has seen on recent ambient turns;
+    ``1.0`` (no-op) for everything else, when ``recently_surfaced`` is unset,
+    or when ``decay >= 1.0`` (rollback). The exponent ``count`` is the number
+    of times this id appeared in the past N turns the hook scanned.
+
+    Lives in this module (not on the engine) because it is a slot-pick
+    concern, not a gravity-field property: ranking is bent here without
+    perturbing any persistent state (passive principle).
+    """
+    if not recently_surfaced or decay >= 1.0:
+        return 1.0
+    count = recently_surfaced.get(node_id, 0)
+    if count <= 0:
+        return 1.0
+    return float(decay) ** int(count)
 
 
 def _pick_lensing(
     engine: GaOTTTEngine, items: list[MemoryItem], exclude: set[str],
-) -> tuple[MemoryItem, float] | None:
-    """② Gravitational lensing — the memory the field has bent onto the query's
-    path. Pick the largest ``virtual_cosine − raw_cosine`` gap: a memory
-    textually far from the query (low ``raw_cosine``) that Phase I/J
-    displacement has pulled near it (high ``virtual_cosine``) — an association
-    the field *learned*, not one the embedder sees.
+    recently_surfaced: dict[str, int] | None = None,
+) -> list[tuple[MemoryItem, float]]:
+    """② Gravitational lensing — the memories the field has bent onto the
+    query's path. Memories textually far from the query (low ``raw_cosine``)
+    that Phase I/J displacement has pulled near it (high ``virtual_cosine``)
+    — associations the field *learned*, not ones the embedder sees.
 
     Gated by ``ambient_lensing_min_score`` (the pick must still be virtually
-    relevant, not pure noise) and ``ambient_lensing_min_gap`` (the bend must be
-    meaningful). Returns ``(item, gap)`` or ``None``.
+    relevant, not pure noise) and ``ambient_lensing_min_gap`` (the bend must
+    be meaningful). Returns up to ``ambient_lensing_max_k`` ``(item, raw_gap)``
+    tuples, ranked by decayed gap descending. Empty list = nothing cleared
+    the gates.
+
+    Lateral Association Stage 1 — when ``recently_surfaced`` is set, the
+    ranking is against ``gap × novelty_factor(id)`` so a recently-surfaced
+    lensing memo rotates out unless its bend dwarfs the decay. The reported
+    gap is the *raw* gap (not decayed) so caller-visible numbers retain
+    their physical meaning.
+
+    Lateral Association Stage 3 (2026-05-25) — returns top-K instead of
+    top-1. K = ``config.ambient_lensing_max_k`` (default 2). Each kept pick
+    must independently clear both gates (no quota relaxation — the second
+    best is only surfaced if it's still genuinely a bent association).
     """
     cfg = engine.config
     if not cfg.ambient_lensing_enabled:
-        return None
-    best: tuple[MemoryItem, float] | None = None
+        return []
+    max_k = max(1, int(cfg.ambient_lensing_max_k))
+    # (item, raw_gap, decayed_gap)
+    ranked: list[tuple[MemoryItem, float, float]] = []
     for item in items:
         if item.id in exclude:
             continue
@@ -320,9 +401,12 @@ def _pick_lensing(
         gap = b.virtual_cosine - b.raw_cosine
         if gap < cfg.ambient_lensing_min_gap:
             continue
-        if best is None or gap > best[1]:
-            best = (item, gap)
-    return best
+        novelty = _novelty_factor(
+            item.id, recently_surfaced, cfg.ambient_novelty_decay,
+        )
+        ranked.append((item, gap, gap * novelty))
+    ranked.sort(key=lambda t: t[2], reverse=True)
+    return [(it, raw_gap) for it, raw_gap, _ in ranked[:max_k]]
 
 
 _REASON_EDGE_TYPES = ("derived_from", "supersedes")
@@ -383,33 +467,116 @@ async def _attach_reasoning_and_tension(
 
 
 async def _pick_persona(
-    engine: GaOTTTEngine, excerpt_chars: int,
+    engine: GaOTTTEngine, query: str, excerpt_chars: int,
+    excluded_ids: set[str] | None = None,
+    expose_breakdown: bool = False,
+    recently_surfaced: dict[str, int] | None = None,
 ) -> AmbientPersona | None:
-    """⑥ Stage 3 — surface one active declared value/intention for grounding.
+    """⑥ Stage 3 + Refinement Stage 1 — query-conditioned persona pick.
 
     Reuses Phase J's ``collect_active_persona_ids``; commitments (task-shaped)
-    are excluded — only value/intention ground "who I am working as". One is
-    chosen at random so the surfaced value rotates turn to turn rather than
-    fixating.
+    are excluded — only value/intention ground "who I am working as".
+
+    Refinement Stage 1 (2026-05-25, Plans-Ambient-Recall-Refinement.md):
+    candidate value/intention nodes are re-ranked by
+    ``(mass ** w) × cosine(query, node)`` — Phase J's persona-anchored
+    geometry applied to slot selection — so the surfaced line is relevant
+    to the current turn instead of an arbitrary mass/recency winner. The
+    exponent ``w = config.ambient_persona_mass_weight`` (default ``1.0``,
+    reproducing Stage 1 exactly) lets ops dampen mass dominance when a
+    single heavy persona would otherwise capture the slot for every query
+    (Refinement follow-up (b), Heavy Persona Dominance). Returns ``None``
+    when the best relevance is below
+    ``config.ambient_persona_min_relevance`` (irrelevant persona is a worse
+    context than no persona — literal failure observed during Phase A
+    embedder comparison: an MCP-smoke ``intention`` surfaced in an
+    embedder-discussion turn).
     """
     cfg = engine.config
     if not cfg.ambient_persona_enabled:
         return None
     ids = collect_active_persona_ids(engine.cache, cfg, time.time())
-    candidates = sorted(
+    candidates = [
         nid for nid in ids
         if engine.cache.source_by_id.get(nid) in ("value", "intention")
-    )
+        and (excluded_ids is None or nid not in excluded_ids)
+    ]
     if not candidates:
         return None
-    nid = random.choice(candidates)
-    content = await _excerpt_of(engine, nid, excerpt_chars)
+
+    # Pre-rank by mass to bound the candidate pool — encode + cosine is
+    # cheap, but FAISS get_vectors and the per-candidate dot grow linearly
+    # in pool size. ``ambient_persona_pool_size`` keeps it bounded.
+    sorted_candidates: list[tuple[str, float]] = []
+    for nid in candidates:
+        state = engine.cache.get_node(nid)
+        m = state.mass if state is not None else 1.0
+        sorted_candidates.append((nid, m))
+    sorted_candidates.sort(key=lambda t: t[1], reverse=True)
+    pool = sorted_candidates[: cfg.ambient_persona_pool_size]
+    pool_ids = [nid for nid, _ in pool]
+
+    # One extra query embedding per ambient_recall when persona is on
+    # (~30-50ms on RURI-310m; ~0ms on test stubs). Cosine is a dot product
+    # because both vectors are L2-normalized.
+    query_vec = engine.embedder.encode_query(query).reshape(-1)
+    vecs = engine.faiss_index.get_vectors(pool_ids)
+
+    # Refinement follow-up (b) — mass weight knob. ``weight=1.0`` (default)
+    # reproduces the Stage-1 ``mass × cos`` formula exactly; ``weight=0.0``
+    # ranks purely by cosine (mass ignored, the "relevance_dominant" mode);
+    # intermediate values dampen mass dominance. See
+    # ``ambient_persona_mass_weight`` in config.py for context.
+    # Lateral Association Stage 1 — additional ``× novelty`` factor so a
+    # persona repeated across recent turns rotates out of slot.
+    weight = cfg.ambient_persona_mass_weight
+    best_id: str | None = None
+    best_cos = 0.0
+    best_score = float("-inf")
+    for nid, mass in pool:
+        v = vecs.get(nid)
+        if v is None:
+            continue
+        cos = float(np.dot(query_vec, v))
+        # ``max(mass, 0)`` guards the fractional-power branch from negative
+        # mass (impossible in practice; defensive only). ``weight == 0``
+        # collapses to ``mass ** 0 == 1``, yielding pure-cos ranking.
+        mass_term = float(max(mass, 0.0)) ** weight if weight != 1.0 else float(mass)
+        novelty = _novelty_factor(
+            nid, recently_surfaced, cfg.ambient_novelty_decay,
+        )
+        score = mass_term * cos * novelty
+        if score > best_score:
+            best_score = score
+            best_id = nid
+            best_cos = cos
+
+    if best_id is None:
+        return None
+    if best_cos < cfg.ambient_persona_min_relevance:
+        # Onboarding period: when the persona corpus is too small / too
+        # off-topic, an irrelevant pick is worse than no slot. The hook
+        # simply omits the "▼ いま誰として" line for this turn.
+        return None
+
+    content = await _excerpt_of(engine, best_id, excerpt_chars)
     if not content:
         return None
+    # Refinement Stage 3 — minimal breakdown: only the inputs the persona
+    # pick actually computes (mass + raw cosine to query) are populated.
+    persona_breakdown: ScoreBreakdown | None = None
+    if expose_breakdown:
+        best_state = engine.cache.get_node(best_id)
+        best_mass = best_state.mass if best_state is not None else 1.0
+        persona_breakdown = ScoreBreakdown(
+            raw_cosine=best_cos,
+            mass_boost=float(best_mass),
+        )
     return AmbientPersona(
-        id=nid,
-        kind=engine.cache.source_by_id.get(nid, "value"),
+        id=best_id,
+        kind=engine.cache.source_by_id.get(best_id, "value"),
         content=content,
+        breakdown=persona_breakdown,
     )
 
 
@@ -444,6 +611,9 @@ async def ambient_recall(
     query: str,
     direct_k: int = 2,
     min_score: float | None = None,
+    exclude_tags: list[str] | None = None,
+    expose_breakdown: bool = False,
+    recently_surfaced: dict[str, int] | None = None,
 ) -> AmbientRecallResponse:
     """Ambient Recall Enrichment — structured passive-recall injection.
 
@@ -459,10 +629,23 @@ async def ambient_recall(
 
     ``passive=True`` throughout: ambient recall observes the gravity field
     without perturbing it (see Plans-Ambient-Recall-Enrichment.md).
+
+    Refinement Stage 2 — ``exclude_tags`` substring-filters direct / lensing
+    / persona candidates so test artifacts (``smoke-test`` etc.) stay out of
+    ambient injection without being deleted from the corpus. See
+    Plans-Ambient-Recall-Refinement.md.
     """
     cfg = engine.config
     threshold = cfg.ambient_min_score if min_score is None else min_score
     now = time.time()
+
+    # Refinement Stage 2 — compute the exclusion set once. Substring
+    # semantics mirror Phase J Stage 2's positive ``tag_filter``. Empty /
+    # None ⇒ empty set ⇒ no-op.
+    excluded_ids: set[str] = (
+        engine.cache.find_ids_by_tag_filter(exclude_tags)
+        if exclude_tags else set()
+    )
 
     # Relevance gate — BM25 lexical (primary). Runs BEFORE the recall so an
     # off-topic prompt skips the recall cost entirely. `None` means BM25 is
@@ -478,6 +661,8 @@ async def ambient_recall(
         multi_source=cfg.multi_source_ambient_enabled,
     )
     items = rr.items
+    if excluded_ids:
+        items = [it for it in items if it.id not in excluded_ids]
     if not items:
         return AmbientRecallResponse(count=0)
     if bm25_ok is None:
@@ -486,34 +671,83 @@ async def ambient_recall(
         if max((it.raw_score for it in items), default=0.0) < threshold:
             return AmbientRecallResponse(count=0)
 
+    # Lateral Association Stage 1 — apply session novelty decay to direct
+    # ranking *before* slicing top-K. ``items`` arrives sorted by
+    # ``final_score`` (engine.query convention). When ``recently_surfaced``
+    # is set, multiply each item's final_score by ``novelty_factor`` and
+    # re-sort, so a memo seen on the last few turns rotates out unless its
+    # margin survives the decay. No-op when ``recently_surfaced`` is empty
+    # or ``ambient_novelty_decay >= 1.0`` (rollback path).
+    if (
+        recently_surfaced
+        and cfg.ambient_novelty_decay < 1.0
+    ):
+        decayed: list[tuple[float, MemoryItem]] = []
+        for it in items:
+            nv = _novelty_factor(
+                it.id, recently_surfaced, cfg.ambient_novelty_decay,
+            )
+            decayed.append((it.final_score * nv, it))
+        decayed.sort(key=lambda t: t[0], reverse=True)
+        items = [it for _, it in decayed]
+
     direct_items = items[:direct_k]
     direct_ids = {it.id for it in direct_items}
     direct = [
         _to_ambient_memory(
             engine, it, now, excerpt_chars=cfg.ambient_excerpt_chars,
+            expose_breakdown=expose_breakdown,
         )
         for it in direct_items
     ]
-    lensing: AmbientMemory | None = None
-    picked = _pick_lensing(engine, items, exclude=direct_ids)
-    if picked is not None:
-        l_item, l_gap = picked
-        lensing = _to_ambient_memory(
+    # Stage 3 — top-K lensing. ``picks`` is up to ``ambient_lensing_max_k``
+    # tuples ranked by decayed gap; each kept ``lensing_gap`` is the raw
+    # (pre-decay) gap so the caller sees physically meaningful numbers.
+    picks = _pick_lensing(
+        engine, items, exclude=direct_ids,
+        recently_surfaced=recently_surfaced,
+    )
+    # Stage 5 — per-pick cooccurrence-derived resonance (trust signal).
+    # Computed against today's direct picks. ``ambient_lensing_resonance_min``
+    # > 0 drops low-resonance picks (no backfill — same no-quota-relaxation
+    # principle as Stage 3's gap gate).
+    direct_id_list = [it.id for it in direct_items]
+    res_scale = cfg.ambient_lensing_resonance_scale
+    res_min = cfg.ambient_lensing_resonance_min
+    lensing: list[AmbientMemory] = []
+    for l_item, l_gap in picks:
+        resonance = _lensing_resonance(
+            l_item.id, direct_id_list, engine, scale=res_scale,
+        )
+        if res_min > 0.0 and resonance < res_min:
+            continue
+        ambient_mem = _to_ambient_memory(
             engine, l_item, now,
             excerpt_chars=cfg.ambient_excerpt_chars, lensing_gap=l_gap,
+            expose_breakdown=expose_breakdown,
         )
+        ambient_mem.lensing_resonance = resonance
+        lensing.append(ambient_mem)
 
     # Stage 2 — reasoning chain (④, mutates `because`) + tension flags (⑤).
-    surfaced = direct + ([lensing] if lensing is not None else [])
+    surfaced = direct + lensing
     tensions = await _attach_reasoning_and_tension(
         engine, surfaced, excerpt_chars=cfg.ambient_excerpt_chars,
     )
 
     # Stage 3 — persona grounding (⑥). Not counted toward `count`: it only
     # rides along an injection the relevance gate already approved.
-    persona = await _pick_persona(engine, cfg.ambient_excerpt_chars)
+    # Refinement Stage 1: the query is now used to re-rank persona candidates
+    # by ``mass × cosine(query, node)`` (Phase J's persona-anchored geometry
+    # applied to slot selection — see Plans-Ambient-Recall-Refinement.md).
+    # Refinement Stage 2: ``excluded_ids`` also drops tagged persona nodes.
+    persona = await _pick_persona(
+        engine, query, cfg.ambient_excerpt_chars, excluded_ids=excluded_ids,
+        expose_breakdown=expose_breakdown,
+        recently_surfaced=recently_surfaced,
+    )
 
-    count = len(direct) + (1 if lensing is not None else 0)
+    count = len(direct) + len(lensing)
     return AmbientRecallResponse(
         direct=direct, lensing=lensing, tensions=tensions,
         persona=persona, count=count,

@@ -1,0 +1,12 @@
+{"id": "agent_phase_l", "content": "Phase L Stage 1 — Hybrid Retrieval: BM25 union + RRF fusion で seed pool を 3-way 拡張。char-3gram tokenizer default、Sudachi optional。", "source": "agent", "tags": ["phase-l", "retrieval"]}
+{"id": "agent_phase_j", "content": "Phase J — Persona-Anchored Retrieval。declared value/intention から fulfills/derived_from を N hop traverse、α_persona × proximity を seed boost に加算。", "source": "agent", "tags": ["phase-j", "persona"]}
+{"id": "agent_phase_o", "content": "Phase O Stage 1 — TTT Observability。recall items に ScoreBreakdown を attach し caller に raw / virtual / wave / mass の内訳を露出。", "source": "agent", "tags": ["phase-o", "observability"]}
+{"id": "agent_phase_m", "content": "Phase M — Mass Conservation。is_self_force(a, b) で original_id / cohort_id 一致を 1 行で filter、source 分岐ゼロ。", "source": "agent", "tags": ["phase-m", "physics"]}
+{"id": "agent_gravity", "content": "重力波伝播は seed から再帰的に neighbor 展開、wave_attenuation で深度減衰。", "source": "agent", "tags": ["physics", "gravity"]}
+{"id": "agent_ambient", "content": "ambient_recall は 1 回の passive recall から direct / lensing / persona の 3 slot を組み立てる。Claude Code の UserPromptSubmit hook が毎ターン呼ぶ。", "source": "agent", "tags": ["ambient"]}
+{"id": "val_literal", "content": "誤魔化さず literal な解を選ぶ — 抽象を逃げ道にしない", "source": "value", "tags": ["values"]}
+{"id": "val_observation", "content": "観察行為が観察対象を変える。観測装置の校正を実装の前に行う", "source": "value", "tags": ["values"]}
+{"id": "int_refinement", "content": "ambient recall の選択を refinement で query 関連度に従わせる", "source": "intention", "tags": ["intentions"]}
+{"id": "int_parity", "content": "MCP と REST の API parity を常に同じコミットで保つ", "source": "intention", "tags": ["intentions"]}
+{"id": "agent_smoke", "content": "smoke test placeholder content for parity verification only", "source": "agent", "tags": ["smoke-test"]}
+{"id": "agent_unrelated", "content": "ペスカトーレに使う完熟トマトとケッパーの分量配分について", "source": "agent", "tags": ["cooking"]}

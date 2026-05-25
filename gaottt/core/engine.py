@@ -1016,21 +1016,31 @@ class GaOTTTEngine:
         # Synthetic recalls (Phase G dream loop) skip return_count so that
         # background revisits don't trip presentation saturation — the user
         # never saw these results, so habituation must not punish them.
+        # Lateral Association Stage 1 sub-step 0 (2026-05-25): passive recall
+        # is also gated. ``passive=True`` means the ambient hook is observing
+        # the field without perturbing it; saturation is field state that
+        # drives next-call ranking, so silently mutating it via every ambient
+        # turn breaks the "no perturbation" contract (the same way mass /
+        # displacement / co-occurrence updates are already gated below). See
+        # Plans-Ambient-Recall-Lateral-Association.md Stage 1.
         result_ids = [r.id for r in results]
-        if not _is_synthetic:
+        all_reached_ids = list(reached.keys())
+        if not _is_synthetic and not passive:
             for node_id in result_ids:
                 state = self.cache.get_node(node_id)
                 if state:
                     state.return_count += 1.0
                     self.cache.set_node(state, dirty=True)
 
-        # Habituation recovery: all reached nodes slowly recover freshness
-        all_reached_ids = list(reached.keys())
-        for node_id in all_reached_ids:
-            state = self.cache.get_node(node_id)
-            if state and state.return_count > 0:
-                state.return_count *= (1.0 - self.config.habituation_recovery_rate)
-                self.cache.set_node(state, dirty=True)
+        # Habituation recovery: all reached nodes slowly recover freshness.
+        # Synthetic dream-loop recalls still recover (background heal). Passive
+        # ambient recalls do NOT — recovery is also field perturbation.
+        if not passive:
+            for node_id in all_reached_ids:
+                state = self.cache.get_node(node_id)
+                if state and state.return_count > 0:
+                    state.return_count *= (1.0 - self.config.habituation_recovery_rate)
+                    self.cache.set_node(state, dirty=True)
 
         # Phase O Stage 2 — snapshot displacement / mass for delta computation.
         # ``topk_only=True`` (default) limits coverage to top-K returned nodes

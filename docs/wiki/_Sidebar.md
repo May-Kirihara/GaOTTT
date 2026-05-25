@@ -64,8 +64,11 @@
 - [Phase O — TTT Observability](Plans-Phase-O-TTT-Observability.md)
 - [Hardening — Concurrency & Persistence](Plans-Hardening-Concurrency-Persistence.md)
 - [Ambient Recall Enrichment](Plans-Ambient-Recall-Enrichment.md)
+- [Ambient Recall Refinement (Phase A 由来)](Plans-Ambient-Recall-Refinement.md)
+- [Ambient Recall Lateral Association (〇〇といえば〜)](Plans-Ambient-Recall-Lateral-Association.md)
 - [Query as Mass Distribution](Plans-Query-Mass-Distribution.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
+- [Embedder Comparison (RURI vs RikkaBotan)](Plans-Embedder-Comparison.md)
 
 ### 🔬 Research
 - [Index](Research-Index.md)

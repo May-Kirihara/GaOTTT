@@ -135,6 +135,26 @@ async def test_ambient_recall_mcp_returns_block(engine_singleton):
     assert gated == "(関連する記憶なし)"
 
 
+async def test_ambient_recall_mcp_expose_breakdown_renders(engine_singleton):
+    """Refinement Stage 3 — ``expose_breakdown=True`` adds a terse
+    ``[... mass=.. virt=..]`` suffix per slot row in the MCP block; default
+    off does not."""
+    for i in range(4):
+        await srv.remember(content=f"breakdown mcp probe {i}", source="agent")
+    off = await srv.ambient_recall(query="breakdown mcp probe")
+    assert "[mass=" not in off and "[virt=" not in off and "[raw=" not in off, (
+        "breakdown suffix must NOT appear when expose_breakdown defaults off"
+    )
+    on = await srv.ambient_recall(
+        query="breakdown mcp probe", expose_breakdown=True,
+    )
+    # At least one slot row should carry the suffix (mass>0 always populates
+    # the mass= field for recall-sourced direct items).
+    assert "[mass=" in on or "[virt=" in on or "[raw=" in on, (
+        "breakdown suffix must appear when expose_breakdown=True"
+    )
+
+
 async def test_recall_mcp_output_includes_score_breakdown(engine_singleton):
     """Phase O Stage 1 — MCP recall formatter exposes per-result breakdown line."""
     await srv.remember(content="alpha gamma kappa observability", source="user")
