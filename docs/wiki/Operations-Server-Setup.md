@@ -247,6 +247,100 @@ systemd で常駐 backend を管理する場合:
 }
 ```
 
+## Codex CLI への登録
+
+OpenAI Codex CLI (https://github.com/openai/codex) は `~/.codex/config.toml`（または プロジェクト直下の `.codex/config.toml`）の `[mcp_servers.<name>]` セクションで MCP サーバーを宣言する。CLI から `codex mcp add` でワンライナーで追加するか、TOML を直接編集するか、どちらでも良い。
+
+### 方法 1: `codex mcp add`（推奨）
+
+```bash
+# macOS / Linux
+codex mcp add gaottt -- /path/to/GaOTTT/.venv/bin/python -m gaottt.server.mcp_server
+
+# Windows PowerShell
+codex mcp add gaottt -- "$HOME\GaOTTT\.venv\Scripts\python.exe" -m gaottt.server.mcp_server
+```
+
+確認:
+
+```bash
+codex mcp list
+```
+
+### 方法 2: `~/.codex/config.toml` を直接編集
+
+**推奨**: proxy mode を使うので default の stdio subprocess 設定をそのまま書ける（他クライアントと port 7878 backend を共有、N agents で RAM ~3-4 GB 1 process のまま）:
+
+```toml
+[mcp_servers.gaottt]
+command = "/path/to/GaOTTT/.venv/bin/python"
+args = ["-m", "gaottt.server.mcp_server"]
+cwd = "/path/to/GaOTTT"
+```
+
+オプション項目（必要な場合のみ）:
+
+```toml
+[mcp_servers.gaottt]
+command = "/path/to/GaOTTT/.venv/bin/python"
+args = ["-m", "gaottt.server.mcp_server"]
+cwd = "/path/to/GaOTTT"
+# データディレクトリを project ごとに分けたい場合
+env = { GAOTTT_DATA_DIR = "/path/to/project-A/.gaottt" }
+# 初回起動で RURI モデル (~1.2 GB) のロードに ~30s 掛かるので、
+# Codex default の startup_timeout_sec=10 では足りずタイムアウトすることがある
+startup_timeout_sec = 60
+# 一部ツールだけ露出 / 抑制したい場合
+# enabled_tools = ["recall", "ambient_recall", "reflect"]
+# disabled_tools = ["forget"]
+```
+
+### 旧 stdio mode (明示)
+
+意図的に proxy を bypass したい場合 (debug / CI):
+
+```toml
+[mcp_servers.gaottt]
+command = "/path/to/GaOTTT/.venv/bin/python"
+args = ["-m", "gaottt.server.mcp_server", "--transport", "stdio"]
+cwd = "/path/to/GaOTTT"
+startup_timeout_sec = 60
+```
+
+### 明示的 HTTP backend (systemd) 経由
+
+Codex CLI も remote HTTP MCP transport をサポートしている（書式は version によって変わるので [openai/codex docs](https://github.com/openai/codex) を確認）。systemd で常駐 backend を管理する場合は、上の Claude Code / OpenCode と同じく `http://127.0.0.1:7878/mcp` を指す。
+
+### SKILL.md の取り扱い
+
+`SKILL.md`（ツール呼び出しプロトコルの仕様、英語）は **MCP の `instructions` フィールド経由で接続時に自動配信される**。Claude Code / Claude Desktop / OpenCode / Codex CLI のいずれでも、MCP server 接続が確立した時点でクライアントが instructions を受け取る — **追加配置は基本不要**。
+
+Codex CLI で **常時** プロンプト文脈に乗せたい (instructions の自然な伝播では弱いと感じる) 場合のみ、Codex の AGENTS.md 機構を使う:
+
+| 配置場所 | スコープ | 用途 |
+|---|---|---|
+| `~/.codex/AGENTS.md` | global | 全プロジェクトで GaOTTT を使う場合 |
+| `<repo>/AGENTS.md` | project | 特定プロジェクトで GaOTTT を強く意識させたい |
+| `<repo>/.codex/AGENTS.md` | project (codex 専用) | global を覆い隠したい場合 |
+| `AGENTS.override.md` (任意ディレクトリ) | local override | 既存 `AGENTS.md` を残して上書き |
+
+Codex CLI は global → project root → cwd の順で concatenate する。最小限の追記例 (既存 AGENTS.md を破壊しないので `>>` で追記):
+
+```bash
+cat >> ~/.codex/AGENTS.md <<'EOF'
+
+## GaOTTT (long-term memory)
+
+If the `gaottt` MCP server is connected, use it as cross-session long-term memory.
+Protocol spec (when load is needed): /path/to/GaOTTT/SKILL.md
+EOF
+```
+
+> 補足: 他クライアントでの SKILL.md ハンドリング
+> - **Claude Desktop / OpenCode**: MCP `instructions` 自動配信のみ。手動配置不要。
+> - **Claude Code**: 同上 + 任意で `.claude/skills/gaottt/SKILL.md` を置くと slash command / skill discovery 経由でも参照可能 (本リポジトリは既に同期コピーを置いてある)。
+> - **OpenClaw**: 独自 skill scan を持つので `~/.openclaw/skills/gaottt/SKILL.md` への明示コピーが推奨 ([Tutorial-03 セクション D](Tutorial-03-Connect-Your-Client.md#d-openclaw))。
+
 ## 旧 stdio multi-process setup からの移行手順
 
 これまで複数 agent が個別に full engine を spawn していた環境からの切り替え:
