@@ -315,6 +315,9 @@ async def ambient_recall(
     query: str,
     direct_k: int = 2,
     min_score: float | None = None,
+    exclude_tags: list[str] | None = None,
+    expose_breakdown: bool = False,
+    recently_surfaced: dict[str, int] | None = None,
 ) -> str:
     """Structured passive-recall injection — Ambient Recall Enrichment.
 
@@ -347,10 +350,32 @@ async def ambient_recall(
         min_score: Threshold for the *fallback* virtual_score gate only — used
                    when the BM25 gate index is unavailable. The primary BM25
                    gate is tuned server-side (``config.ambient_bm25_min_score``).
+        exclude_tags: Substrings; a memory whose tags contain ANY of them is
+                   dropped from direct / lensing / persona candidates before
+                   slot composition. Use to keep ``smoke-test`` and similar
+                   test artifacts out of ambient injection without deleting
+                   them from the corpus (production hook usually forwards
+                   ``GAOTTT_AMBIENT_EXCLUDE_TAGS``).
+        expose_breakdown: When True, append ``[raw=.. virt=.. bm25 mass=..]``
+                   per slot row so the caller can see *why* each memory
+                   surfaced (Refinement Stage 3 — Phase O Stage 1 ScoreBreakdown
+                   at ambient granularity). Default off to preserve the
+                   ambient block's token budget.
+        recently_surfaced: Optional ``{node_id: count}`` map of memories
+                   surfaced on recent ambient turns. Each slot's ranking score
+                   is multiplied by ``config.ambient_novelty_decay ** count``
+                   for matching ids, rotating recently-seen memos out of slot
+                   1-2 turns (Lateral Association Stage 1 — the "〇〇といえば〜
+                   だったよな" controlled session-novelty channel). The
+                   UserPromptSubmit hook builds this from past N turns of the
+                   transcript; programmatic callers can pass {} or omit for
+                   no decay (legacy behavior).
     """
     engine = await get_engine()
     result = await memory_service.ambient_recall(
         engine, query=query, direct_k=direct_k, min_score=min_score,
+        exclude_tags=exclude_tags, expose_breakdown=expose_breakdown,
+        recently_surfaced=recently_surfaced,
     )
     return formatters.format_ambient(result)
 

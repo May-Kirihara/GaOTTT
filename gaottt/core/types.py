@@ -372,7 +372,19 @@ class AmbientMemory(BaseModel):
     virtual_score: float = 0.0         # query · virtual_pos — physics-modulated relevance
     final_score: float = 0.0
     lensing_gap: float | None = None   # virtual_cosine − raw_cosine (lensing slot only)
+    # Lateral Association Stage 5 (Plans-Ambient-Recall-Lateral-Association.md):
+    # cooccurrence-derived trust signal for a lensing pick.
+    # ``resonance = raw / (raw + scale)`` where
+    # ``raw = sum_{d in direct} cache.get_neighbors(lensing)[d]``. Bounded to
+    # ``[0, 1)``. None = not computed (= not a lensing pick or Stage 5 disabled).
+    lensing_resonance: float | None = None
     because: str | None = None         # Stage 2 — derived_from/supersedes parent excerpt
+    # Refinement Stage 3 (Plans-Ambient-Recall-Refinement.md) — Phase O
+    # Stage 1's ``ScoreBreakdown`` exposed at ambient slot granularity so the
+    # caller can see *why* a memory was surfaced (raw vs virtual cosine,
+    # BM25 contribution, mass boost, ...). Opt-in via the ``expose_breakdown``
+    # arg on ``ambient_recall`` (default off — token budget preserved).
+    breakdown: ScoreBreakdown | None = None
 
 
 class AmbientTension(BaseModel):
@@ -388,6 +400,10 @@ class AmbientPersona(BaseModel):
     id: str
     kind: str                          # "value" | "intention"
     content: str
+    # Refinement Stage 3 — minimal breakdown for the persona slot. Only the
+    # fields the persona pick actually computes (mass + cos(query, persona))
+    # are populated; the rest stay at defaults.
+    breakdown: ScoreBreakdown | None = None
 
 
 class AmbientRecallRequest(BaseModel):
@@ -398,13 +414,39 @@ class AmbientRecallRequest(BaseModel):
     # Relevance gate — the response is empty unless the best virtual_score
     # among candidates clears this. None → config.ambient_min_score.
     min_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Refinement Stage 2 (Plans-Ambient-Recall-Refinement.md) — substring
+    # tag exclusion applied to direct / lensing / persona slots. Mirrors the
+    # positive ``tag_filter`` substring semantics of Phase J Stage 2: an item
+    # whose tags contain any of these substrings is dropped from candidate
+    # pools before slot composition. Default None / empty list = no filter.
+    # Production hooks pass e.g. ``["smoke-test"]`` to keep MCP/REST smoke
+    # memories out of ambient injection without deleting them.
+    exclude_tags: list[str] | None = None
+    # Refinement Stage 3 — opt-in ``ScoreBreakdown`` per slot. Default off
+    # so the ambient block stays compact (token budget). Hook env
+    # ``GAOTTT_AMBIENT_EXPOSE_BREAKDOWN=1`` toggles for debug sessions.
+    expose_breakdown: bool = False
+    # Lateral Association Stage 1 sub-step 1
+    # (Plans-Ambient-Recall-Lateral-Association.md) — caller-supplied
+    # "node_id → recent surface count" map. When set, candidates in the map
+    # have their slot ranking score multiplied by
+    # ``config.ambient_novelty_decay ** count`` before slot composition,
+    # rotating recently-surfaced memos out of slots 1-2 turns. Provided by
+    # the UserPromptSubmit hook from past N turns of transcript parsing
+    # (``GAOTTT_AMBIENT_NOVELTY_TURNS``). None / empty = no decay (legacy).
+    recently_surfaced: dict[str, int] | None = None
 
 
 class AmbientRecallResponse(BaseModel):
     """Structured ambient-recall block. ``count == 0`` means the relevance
-    gate suppressed injection (nothing relevant enough surfaced)."""
+    gate suppressed injection (nothing relevant enough surfaced).
+
+    Lateral Association Stage 3 (2026-05-25) — ``lensing`` is now a list to
+    host top-K picks (capped by ``config.ambient_lensing_max_k``, default 2).
+    Empty list means no candidate cleared ``min_score`` + ``min_gap``.
+    """
     direct: list[AmbientMemory] = Field(default_factory=list)     # ① top final_score hits
-    lensing: AmbientMemory | None = None                          # ② gravitational-lensing pick
+    lensing: list[AmbientMemory] = Field(default_factory=list)    # ② top-K gravitational-lensing picks (Stage 3)
     tensions: list[AmbientTension] = Field(default_factory=list)  # ⑤ contradicts pairs (Stage 2)
     persona: AmbientPersona | None = None                         # ⑥ persona grounding (Stage 3)
     count: int = 0                                                # total memories surfaced

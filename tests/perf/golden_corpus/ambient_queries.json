@@ -1,0 +1,54 @@
+[
+  {
+    "query": "Phase L Stage 1 の hybrid retrieval について教えて",
+    "axis": "direct",
+    "expected_direct_id": "agent_phase_l",
+    "note": "lexical + semantic — direct hit must surface the Phase L log"
+  },
+  {
+    "query": "Phase O の TTT observability で何が見える?",
+    "axis": "direct",
+    "expected_direct_id": "agent_phase_o",
+    "note": "Phase O 専用 query — ScoreBreakdown 関連の説明が direct"
+  },
+  {
+    "query": "ambient recall の slot 選択を改善したい",
+    "axis": "persona",
+    "expected_persona_id": "int_refinement",
+    "expected_persona_kind": "intention",
+    "note": "Refinement Stage 1 — query-conditioned persona must pick the relevant intention"
+  },
+  {
+    "query": "観察と観測装置の校正について",
+    "axis": "persona",
+    "expected_persona_id": "val_observation",
+    "expected_persona_kind": "value",
+    "note": "JA query matching value content — persona slot picks val_observation"
+  },
+  {
+    "query": "MCP と REST の同期 API を作る方法",
+    "axis": "persona",
+    "expected_persona_id": "int_parity",
+    "expected_persona_kind": "intention",
+    "note": "Persona-anchored — the parity intention surfaces"
+  },
+  {
+    "query": "smoke test placeholder",
+    "axis": "exclude",
+    "exclude_tags": ["smoke-test"],
+    "expected_excluded_id": "agent_smoke",
+    "note": "Refinement Stage 2 — exclude_tags drops smoke-tagged from all slots"
+  },
+  {
+    "query": "重力場が学んだ類推を引き寄せる仕組み",
+    "axis": "lateral",
+    "expected_lensing_candidates": ["agent_gravity", "agent_phase_j", "agent_phase_o"],
+    "note": "Lateral Association Stage 6 — abstract query about lensing itself; after pre-warming with Phase L/J/O recalls, lensing slot should surface one of the redesign-history memos that the field has bent associatively close"
+  },
+  {
+    "query": "Phase 系 retrieval 改修の系譜",
+    "axis": "lateral",
+    "expected_lensing_candidates": ["agent_phase_l", "agent_phase_j", "agent_phase_m", "agent_phase_o"],
+    "note": "Lateral Association Stage 6 — abstract query about the historical chain of retrieval-geometry changes; lensing should bring at least one Phase memo through wave-bent association even though the query doesn't lexically match a specific Phase"
+  }
+]

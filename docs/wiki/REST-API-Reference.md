@@ -229,11 +229,14 @@ ReDoc: http://localhost:8000/redoc
 {
   "query": "ambient recall の仕組み",
   "direct_k": 2,
-  "min_score": null
+  "min_score": null,
+  "exclude_tags": ["smoke-test"],
+  "expose_breakdown": false,
+  "recently_surfaced": {"abc12345": 2, "def67890": 1}
 }
 ```
 
-`direct_k` は直接ヒット件数（既定 2）。relevance gate は **語単位（Sudachi）BM25 の「強一致」gate**（`config.ambient_bm25_min_score`、既定 32.0）— dense cosine も char-3gram BM25 も大規模コーパスで分離できず、語単位 BM25 だけが機能した。`min_score` は **フォールバック** virtual_score gate のしきい値で、`ambient_gate_use_bm25=False` または `bm25-sudachi` extra 未導入時のみ効く（`null` → `config.ambient_min_score` 0.70）。
+`direct_k` は直接ヒット件数（既定 2）。relevance gate は **語単位（Sudachi）BM25 の「強一致」gate**（`config.ambient_bm25_min_score`、既定 32.0）— dense cosine も char-3gram BM25 も大規模コーパスで分離できず、語単位 BM25 だけが機能した。`min_score` は **フォールバック** virtual_score gate のしきい値で、`ambient_gate_use_bm25=False` または `bm25-sudachi` extra 未導入時のみ効く（`null` → `config.ambient_min_score` 0.70）。`exclude_tags`（**Refinement Stage 2**、`null` または `[]` で no-op）は substring マッチで direct / lensing / persona 全スロットの候補から除外する — 本番フックは `GAOTTT_AMBIENT_EXCLUDE_TAGS=smoke-test,test` を default forward し、smoke test 用 memory を corpus に残しつつ ambient 注入だけ silent にする（[Plans — Ambient Recall Refinement](Plans-Ambient-Recall-Refinement.md) Stage 2）。`expose_breakdown`（**Refinement Stage 3**、default `false`）は Phase O Stage 1 の `ScoreBreakdown` を slot 粒度の `breakdown` field として JSON response に attach する — direct / lensing は recall 経由の full breakdown、persona は mass + raw cosine の minimal breakdown。`true` で response の各 slot に `breakdown` object が現れる（off では `null`）。`recently_surfaced`（**Lateral Association Stage 1**、`null` または `{}` で no-op）は `{node_id: count}` map — 各スロットの ranking score に `config.ambient_novelty_decay ** count`（既定 0.7）を乗じて recently-seen な memo を 1-2 turn でローテーションする（[Plans — Ambient Recall Lateral Association](Plans-Ambient-Recall-Lateral-Association.md) Stage 1）。本番フックは過去 N turn の `<!-- ambient-ids ... -->` manifest から自動的に組み立てて forward する。
 
 **レスポンス 200** — `AmbientRecallResponse`:
 ```json
@@ -246,11 +249,14 @@ ReDoc: http://localhost:8000/redoc
       "lensing_gap": null, "because": "派生元の決定の抜粋…"
     }
   ],
-  "lensing": {
-    "id": "...", "content": "...", "source": "tweet",
-    "certainty": 1.0, "age_days": 340.0,
-    "virtual_score": 0.71, "lensing_gap": 0.42, "because": null
-  },
+  "lensing": [
+    {
+      "id": "...", "content": "...", "source": "tweet",
+      "certainty": 1.0, "age_days": 340.0,
+      "virtual_score": 0.71, "lensing_gap": 0.42,
+      "lensing_resonance": 0.62, "because": null
+    }
+  ],
   "tensions": [
     {"memory_id": "...", "memory_excerpt": "...",
      "contradicts_id": "...", "contradicts_excerpt": "..."}
@@ -260,7 +266,9 @@ ReDoc: http://localhost:8000/redoc
 }
 ```
 
-`direct` ① は `final_score` 上位、`lensing` ② は `virtual_cosine − raw_cosine` の gap 最大（場が学習した類推、`lensing_gap` に gap 値）、`tensions` ⑤ は `contradicts` ペア、`persona` ⑥ は active な declared value/intention。各 `direct`/`lensing` の `because` ④ は `derived_from`/`supersedes` 親の抜粋。`count == 0` は relevance gate で抑制された状態（注入なし）。MCP (`ambient_recall`) は同じ内容を `<gaottt-ambient-recall>` 文字列ブロックに整形して返す。常に passive — 重力場を摂動しない。
+`direct` ① は `final_score` 上位、`lensing` ② は `virtual_cosine − raw_cosine` の gap 最大の **top-K リスト**（[**Lateral Association Stage 3**](Plans-Ambient-Recall-Lateral-Association.md)、cap = `config.ambient_lensing_max_k`、既定 2。場が学習した類推、各 entry の `lensing_gap` に raw gap 値、ranking は novelty 適用後の decayed gap で取り直す）、各 lensing entry には [**Stage 5**](Plans-Ambient-Recall-Lateral-Association.md) で **`lensing_resonance`** (`[0, 1)`、`raw / (raw + scale)` の saturating non-linearity、`raw = Σ_{d∈direct} cache.get_neighbors(lensing)[d]` で「場が今日の direct hits と過去に何度 co-recall したか」を測る trust 軸) も populate される。`tensions` ⑤ は `contradicts` ペア、`persona` ⑥ は active な declared value/intention。各 `direct`/`lensing` の `because` ④ は `derived_from`/`supersedes` 親の抜粋。`count == 0` は relevance gate で抑制された状態（注入なし）。MCP (`ambient_recall`) は同じ内容を `<gaottt-ambient-recall>` 文字列ブロックに整形して返す。常に passive — 重力場を摂動しない。
+
+> **★ Breaking change (2026-05-25, Stage 3)**: `lensing` field は `AmbientMemory | null` → `list[AmbientMemory]` に変更されました。旧 client は `data["lensing"]` を `None`/object として読んでいた箇所を `data["lensing"]` が常に list (空の場合 `[]`) であることに合わせて update してください。Stage 3 以前のロジックを保持したい場合は `config.ambient_lensing_max_k=1` で「1 picks 上限」になり、`data["lensing"][0] if data["lensing"] else None` が旧 shape 等価。
 
 ### POST /explore
 

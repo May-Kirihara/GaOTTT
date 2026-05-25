@@ -132,15 +132,20 @@ ambient_recall(
   query: str,
   direct_k: int = 2,           # ① 直接ヒット件数
   min_score: float | None = None,  # relevance gate しきい値。None → config.ambient_min_score (既定 0.70)
+  exclude_tags: list[str] | None = None,  # substring マッチで全スロット候補から除外
+  expose_breakdown: bool = False, # 各 slot 行末に [raw=.. virt=.. bm25 mass=..] を追記
+  recently_surfaced: dict[str, int] | None = None,  # {node_id: count} session-novelty decay
 )
 ```
+
+`exclude_tags`（**Refinement Stage 2**、`None` または `[]` で no-op）は direct / lensing / persona の全スロット候補に対し substring マッチで除外を適用する。本番フックは `GAOTTT_AMBIENT_EXCLUDE_TAGS=smoke-test,test` を default forward し、test 用 memory を corpus に残しつつ ambient 注入だけ silent に保つ（[Plans — Ambient Recall Refinement](Plans-Ambient-Recall-Refinement.md) Stage 2、persona slot 再ランクは Stage 1）。`expose_breakdown`（**Refinement Stage 3**、default off）は Phase O Stage 1 の `ScoreBreakdown` を slot 粒度で露出する — direct / lensing には recall 経由の full breakdown、persona には mass + raw cosine の minimal breakdown が attach され、formatter が ` [raw=.. virt=.. bm25 mass=..]` を行末に追記する。debug session / measurement (Stage 5) で opt-in、本番フックは `GAOTTT_AMBIENT_EXPOSE_BREAKDOWN=1` で同等。`recently_surfaced`（**Lateral Association Stage 1**、`None` または `{}` で no-op）は「過去 N turn で何回 surface したか」の `{node_id: count}` map で、各スロットの ranking score に `config.ambient_novelty_decay ** count`（既定 0.7）を乗じる — 直近で出た memo を 1-2 turn ローテーションすることで「〇〇といえば〜だったよな」の **新鮮さ** 軸を機構化する（[Plans — Ambient Recall Lateral Association](Plans-Ambient-Recall-Lateral-Association.md) Stage 1）。本番フックは `<gaottt-ambient-recall>` ブロック末尾の `<!-- ambient-ids ... -->` manifest を過去 `GAOTTT_AMBIENT_NOVELTY_TURNS` turn (既定 5) 分 parse して自動的に組み立てる。プログラム呼び出しから手動で渡す場合は、自前で surface 履歴を持っている caller のみ意味あり（典型的な agent 自己 invoke では空 / None で OK）。
 
 組み立てるスロット:
 
 | スロット | 中身 |
 |---|---|
 | ▼ 直接ヒット | `final_score` 上位 `direct_k` 件 |
-| ▼ 重力レンズ | `virtual_cosine − raw_cosine` の gap 最大の 1 件 — embedding 的には query から遠いのに、Phase I/J の displacement が場の重力で query 近傍まで引き寄せた記憶。**場が学習した類推**で、素の embedding 検索には出せない枠 |
+| ▼ 重力レンズ | `virtual_cosine − raw_cosine` の gap 上位 **K 件** (Lateral Association Stage 3、`config.ambient_lensing_max_k` 既定 2) — embedding 的には query から遠いのに、Phase I/J の displacement が場の重力で query 近傍まで引き寄せた記憶。**場が学習した類推**で、素の embedding 検索には出せない枠。各 pick は独立に `min_score`/`min_gap` を clear する必要あり (quota 緩和なし)。複数の lateral 連想 ("X といえば Y で、Y といえば Z") が同 turn で同時発火する核。各 pick の行末には `gap +0.42 · resonance 0.62` のように [**Stage 5**](Plans-Ambient-Recall-Lateral-Association.md) で導入した `resonance` (cooccurrence-derived trust 軸、`[0, 1)`、過去 active recall で direct hits と一緒に引かれた頻度) も付く |
 | ▼ ⚠ 矛盾 | surface 記憶の `contradicts` エッジのペア |
 | ▼ いま誰として | active な declared value/intention 1 行（grounding） |
 

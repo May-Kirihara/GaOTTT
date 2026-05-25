@@ -66,6 +66,25 @@ sleep 3 && ps -ef | grep "gaottt.server.mcp_server.*streamable-http" | grep -v g
 
 なお passive recall は `last_access` を更新しないため、ambient フックでしか surface されない記憶は decay し続ける（意図的 — Guides ページ「既知の性質」）。relevance gate は decay 非依存（BM25 語彙一致、フォールバックの `virtual_score` も同様）なので ambient 注入自体は古い記憶でも効き続ける。
 
+## ambient_recall が想定外の memo を surface する (composed query 不透明問題)
+
+**症状**: 短いプロンプト (例: 「続けて」「ありがとう」「次のステップに進みましょう」) を送ったときに ambient block が前 turn と全然違う / 想定外の memo を surface し、なぜそれが出たのかが分からない。
+
+**原因**: Refinement Stage 4 (`GAOTTT_AMBIENT_HISTORY_TURNS=2` 既定) で hook が **直前 N turn の user prompt を concatenate** して server に投げている (例: 「続けて」だけでなく「Phase L hybrid retrieval について\n続けて」が query になる)。BM25 gate と embedding search はこの concatenated query で動くので、結果が「現在の prompt 単体だと予測できない」ものになる。
+
+**対処 — Lateral Association Stage 4 の debug knob**: 環境変数 `GAOTTT_AMBIENT_SHOW_COMPOSED_QUERY=1` を設定すると、ambient block 末尾に 1 行追加される:
+
+```
+<gaottt-ambient-recall>
+... (slots) ...
+<!-- ambient: composed query = "前 turn の prompt\n現 turn の prompt" -->
+</gaottt-ambient-recall>
+```
+
+これで「**ambient 結果が変なのは query 自体が変なのか / recall が変なのか**」を即座に分離できる。composed query が想定通りで recall 結果が変 → server 側 (corpus / displacement / threshold) の問題。composed query 自体が想定外 → `GAOTTT_AMBIENT_HISTORY_TURNS` を 0 (現プロンプトのみ) か 1 (直前 1 turn のみ) に下げる、または対象 turn の prompt 自体を見直す。
+
+**debug-only**: `composed == prompt` (連結が起きてない) のときは line 自体が省略される (debug 価値ゼロ)。token budget は composed query 長さに比例 (典型 50-200 字)、本番 hook では off 推奨。詳細: [Plans — Ambient Recall Lateral Association](Plans-Ambient-Recall-Lateral-Association.md) Stage 4。
+
 ## 別プロセスから新規 `remember` が見えない（FAISS stale）
 
 **症状**: 別プロセスの MCP サーバー / opencode エージェント等で `remember` した直後、自プロセスの `recall` でその memory が一切 surface しない。`reflect(aspect="summary")` の `Total memories` は増えていることがある（SQLite は WAL で共有されるが FAISS index はプロセス毎独立）。
@@ -136,6 +155,31 @@ sleep 3 && ps -ef | grep "gaottt.server.mcp_server.*streamable-http" | grep -v g
 - `revalidate(node_id)` で意識的にコミットメントを生かし続ける
 - `reflect(aspect="commitments")` を週次儀式に
 - TTL を伸ばす（`config.py` の `default_*_ttl_seconds`）
+
+## ambient_recall の「いま誰として」が query 横断で同じ persona に固定される
+
+**症状**: `<gaottt-ambient-recall>` ブロックの「いま誰として」slot が、別の話題で連続して質問しても **毎回同じ persona** (value/intention) を表示する。例えば「embedder の話」「BM25 gate の話」「全く違うプロジェクトの話」のどれを聞いても `intention: harakiriworks-art-website ...` が出続ける。前後 query で文脈が変わったのに人格行だけ動かない。
+
+**原因 (Heavy Persona Dominance、Plans-Ambient-Recall-Refinement.md follow-up (b))**: ranking 式は `score = (mass ** w) × cos(query, persona_vec)`、既定 `ambient_persona_mass_weight = 1.0`。production で **1 つだけ mass が突出した persona** (例: `mass=2.82` vs 他 `mass=1.0` 付近) があると、mass 項が dominant になって cos 軸の差では決着しない (mass 比 10× × cos 比 1.5× → 常に heavy 側が勝つ)。`ambient_persona_min_relevance` を上げても heavy persona は通る (cos 値自体が低くないので)。Refinement Stage 1 の `mass × cos` re-rank ロジックは「正しく」動いており、production の質量分布が想定外に偏っているだけ。
+
+**確認** (`expose_breakdown=true` で診断):
+```python
+mcp__gaottt__ambient_recall(query="...", direct_k=2, expose_breakdown=true)
+```
+複数の異なる query に対して persona slot の breakdown を見る。`mass=2.5` 以上の同じ persona が毎回 picked されているなら Heavy Persona Dominance 確定。
+
+**対処** (順に試す、`config.py` の値変更 → backend 再起動が必要):
+1. **measurement first** — `tests/perf/test_tier3_ambient_quality.py` で **before baseline** を取る (現状の persona pick 分布を記録)
+2. `ambient_persona_mass_weight=0.5` に下げて `sqrt(mass) × cos` (穏やかな抑制) → 再起動 → 同じ test で after baseline 比較。critical exponent の予測式: `w* = log(cos_ratio) / log(mass_ratio)` (例: mass_ratio=2.82, 目当ての cos_ratio=1.3 → `w* ≈ 0.25`)
+3. 効果不足なら `0.3` (log-scale 近似) → `0.0` (cos のみ、`relevance_dominant` 相当) と段階的に下げる
+4. 過剰に下がって cos noise で別の不適切 persona が surface するなら `ambient_persona_min_relevance` を上げてガード
+
+**rollback**: `ambient_persona_mass_weight=1.0` (既定) で Stage 1 と bit-identical (累乗を skip する分岐があり数値も完全一致)。backend 再起動が必要 ([feedback: backend kill on code deploy](#)、`ps -ef | grep streamable-http` で起動時刻 → `kill <pid>` → 次の MCP 接続で auto-respawn)。
+
+**関連**:
+- 詳細設計: [Plans — Ambient Recall Refinement](Plans-Ambient-Recall-Refinement.md) 「follow-up (b)」節
+- knob 詳細: [Operations — Tuning](Operations-Tuning.md) `ambient_persona_mass_weight` 行
+- なぜ Stage 1 の `mass × cos` を「壊れていない」と言えるかの literal な test fixture: `tests/integration/test_engine_ambient_recall.py::test_ambient_persona_mass_weight_*` (3 ケース)
 
 ## inherit_persona の出力が薄い
 
