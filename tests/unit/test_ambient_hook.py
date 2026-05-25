@@ -291,6 +291,114 @@ def test_inject_composed_query_debug_escapes_embedded_newlines():
     assert "\n" not in injected_line  # the line itself is one line
 
 
+# --- Frontend parity (Python payload accepts history + recently_surfaced) ---
+
+
+def _make_stdin_payload(**kwargs) -> str:
+    return json.dumps(kwargs)
+
+
+def _run_hook_main(payload_json: str, monkeypatch, capsys, **mock_block_kwargs):
+    """Drive the hook's ``main()`` end-to-end with a synthetic stdin payload,
+    mocking out the MCP call and stdout write. Returns the call args the
+    ``_ambient_recall`` mock received so the test can assert on the payload."""
+    import io
+
+    call_args: dict = {}
+
+    async def _fake_recall(prompt, recently_surfaced=None):
+        call_args["prompt"] = prompt
+        call_args["recently_surfaced"] = recently_surfaced
+        return mock_block_kwargs.get("returned_block")
+
+    def _fake_emit(text: str) -> None:
+        call_args["emitted"] = text
+
+    monkeypatch.setattr(hook, "_ambient_recall", _fake_recall)
+    monkeypatch.setattr(hook, "_emit", _fake_emit)
+    monkeypatch.setattr(hook.sys, "stdin", io.StringIO(payload_json))
+    rc = hook.main()
+    call_args["rc"] = rc
+    return call_args
+
+
+def test_payload_history_bypasses_transcript_scan(monkeypatch, capsys):
+    """When ``history`` is in the payload, the hook uses it directly and
+    never calls the transcript-scanning helper."""
+    sentinel = "TRANSCRIPT SCAN WAS CALLED"
+
+    def _explode(*args, **kwargs):
+        raise AssertionError(sentinel)
+
+    monkeypatch.setattr(hook, "_recent_user_prompts", _explode)
+    monkeypatch.setattr(hook, "_recently_surfaced", lambda *a, **k: {})
+    payload = _make_stdin_payload(
+        prompt="current prompt long enough",
+        history=["earlier 1", "earlier 2"],
+    )
+    args = _run_hook_main(payload, monkeypatch, capsys, returned_block=None)
+    assert args["rc"] == 0
+    assert args["prompt"] == "earlier 1\nearlier 2\ncurrent prompt long enough"
+
+
+def test_payload_recently_surfaced_bypasses_transcript_scan(monkeypatch, capsys):
+    """When ``recently_surfaced`` is in the payload, the hook forwards it
+    verbatim and never calls the transcript-scanning helper."""
+    def _explode(*args, **kwargs):
+        raise AssertionError("transcript scan called")
+
+    monkeypatch.setattr(hook, "_recently_surfaced", _explode)
+    monkeypatch.setattr(hook, "_recent_user_prompts", lambda *a, **k: [])
+    payload = _make_stdin_payload(
+        prompt="current prompt long enough",
+        recently_surfaced={"id_alpha": 2, "id_beta": 1},
+    )
+    args = _run_hook_main(payload, monkeypatch, capsys, returned_block=None)
+    assert args["recently_surfaced"] == {"id_alpha": 2, "id_beta": 1}
+
+
+def test_payload_transcript_path_fallback_when_history_absent(monkeypatch, capsys):
+    """Claude Code path: only ``transcript_path`` in payload, no
+    ``history``/``recently_surfaced`` → hook scans the transcript."""
+    scan_calls: dict = {}
+
+    def _scan_history(path, n):
+        scan_calls["history"] = (path, n)
+        return ["scanned 1"]
+
+    def _scan_recently(path, n):
+        scan_calls["recently"] = (path, n)
+        return {"scanned_id": 1}
+
+    monkeypatch.setattr(hook, "_recent_user_prompts", _scan_history)
+    monkeypatch.setattr(hook, "_recently_surfaced", _scan_recently)
+    # ensure both scan envs are >0 for the test (defaults are 2 and 5).
+    monkeypatch.setattr(hook, "_HISTORY_TURNS", 2)
+    monkeypatch.setattr(hook, "_NOVELTY_TURNS", 5)
+    payload = _make_stdin_payload(
+        prompt="current prompt long enough",
+        transcript_path="/tmp/fake-transcript.jsonl",
+    )
+    args = _run_hook_main(payload, monkeypatch, capsys, returned_block=None)
+    assert scan_calls["history"] == ("/tmp/fake-transcript.jsonl", 2)
+    assert scan_calls["recently"] == ("/tmp/fake-transcript.jsonl", 5)
+    assert args["recently_surfaced"] == {"scanned_id": 1}
+
+
+def test_payload_invalid_recently_surfaced_falls_back(monkeypatch, capsys):
+    """A malformed ``recently_surfaced`` (e.g. list instead of dict) should
+    silently fall back to transcript scanning rather than crash."""
+    monkeypatch.setattr(hook, "_recent_user_prompts", lambda *a, **k: [])
+    monkeypatch.setattr(hook, "_recently_surfaced", lambda *a, **k: {"fallback": 1})
+    payload = _make_stdin_payload(
+        prompt="current prompt long enough",
+        recently_surfaced=["not", "a", "dict"],  # malformed
+    )
+    args = _run_hook_main(payload, monkeypatch, capsys, returned_block=None)
+    # Falls back to scan output (the {"fallback": 1} our stub returned).
+    assert args["recently_surfaced"] == {"fallback": 1}
+
+
 def test_recently_surfaced_ignores_non_ambient_hook_records(tmp_path):
     f = tmp_path / "t.jsonl"
     records = [

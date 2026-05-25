@@ -23,6 +23,29 @@ Connects to the single shared engine process (the proxy-mode MCP backend on
 port 7878), so it adds no second engine, no second RURI load, and no
 write-behind contention.
 
+stdin payload (JSON):
+  prompt            (str, required) the user's submitted prompt text
+  transcript_path   (str, optional) Claude Code's transcript JSONL path; when
+                    present and ``history`` / ``recently_surfaced`` below are
+                    NOT supplied, the hook scans this for the past N user
+                    prompts and ambient-block ids manifests.
+  history           (list[str], optional) past user prompts oldest→newest,
+                    forwarded by frontends that don't write a transcript
+                    file (opencode). Bypasses transcript scanning when given.
+  recently_surfaced (dict[str, int], optional) {node_id: count of recent
+                    surfaces} forwarded by the same frontends. Bypasses
+                    transcript scanning when given. The server multiplies
+                    each slot's ranking by
+                    ``ambient_novelty_decay ** count`` (Lateral Association
+                    Stage 1).
+
+Frontend parity: Claude Code passes ``{prompt, transcript_path}`` and lets
+the hook do the scanning; opencode passes ``{prompt, history,
+recently_surfaced}`` having extracted them via the OpenCode SDK message
+list. The two paths converge at the same downstream variables, so Stage 1
+novelty + Refinement Stage 4 multi-turn behave identically across both
+frontends with no per-frontend branching in the hook.
+
 Tunables (environment variables):
   GAOTTT_AMBIENT_RECALL     "0"/"false"/"off" disables the hook (default on)
   GAOTTT_AMBIENT_URL        MCP backend URL (default http://127.0.0.1:7878/mcp)
@@ -363,21 +386,30 @@ def main() -> int:
     prompt = str(payload.get("prompt") or "").strip()
     if len(prompt) < _MIN_CHARS:
         return 0
-    # Refinement Stage 4 — multi-turn context window. Read the last N user
-    # prompts from the transcript (if available) and prepend them, so the
-    # query carries the conversation context that short "continue / 続けて"
-    # prompts otherwise strip away. Fail-safe to current-prompt-only.
+    # Frontend parity (2026-05-25, Lateral Association follow-up): the hook
+    # accepts ``history`` and ``recently_surfaced`` directly in the payload.
+    # Claude Code passes ``transcript_path`` and lets the hook scan; opencode
+    # (which has no transcript file, only an SDK message list) builds the
+    # equivalent maps in the plugin and passes them here. Either path lands
+    # on the same downstream variables, so Stage 1 novelty + Refinement
+    # Stage 4 multi-turn behave identically across frontends.
     transcript_path = str(payload.get("transcript_path") or "") or None
-    if _HISTORY_TURNS > 0:
+    history_in = payload.get("history")
+    if isinstance(history_in, list):
+        history = [str(h) for h in history_in if str(h).strip()]
+    elif _HISTORY_TURNS > 0:
         history = _recent_user_prompts(transcript_path, _HISTORY_TURNS)
-        query = _compose_query(prompt, history)
     else:
-        query = prompt
-    # Lateral Association Stage 1 — collect the recently-surfaced node ids
-    # from prior ambient blocks in this session so the server can decay
-    # their slot ranking ("〇〇といえば〜だったよな" — fresh associations
-    # rotate in). Fail-safe to {} (no decay).
-    recently = _recently_surfaced(transcript_path, _NOVELTY_TURNS)
+        history = []
+    query = _compose_query(prompt, history) if history else prompt
+    # Lateral Association Stage 1 — recently_surfaced may arrive directly
+    # in the payload (opencode plugin) or be scanned from transcript
+    # (Claude Code). Fail-safe to {} (no decay) in either case.
+    recently_in = payload.get("recently_surfaced")
+    if isinstance(recently_in, dict):
+        recently = {str(k): int(v) for k, v in recently_in.items() if isinstance(v, (int, float))}
+    else:
+        recently = _recently_surfaced(transcript_path, _NOVELTY_TURNS)
     try:
         block = asyncio.run(
             asyncio.wait_for(
