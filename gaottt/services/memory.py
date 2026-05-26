@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import random
 import time
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -215,9 +215,20 @@ async def recall(
     # bypass source_filter's restrictive semantic — the caller explicitly
     # asked for these tags or persona ids).
     delta_out: dict | None = {} if engine.config.training_delta_enabled else None
+    # Lateral Association Stage 6.1 — when anti-hub is on, ask the engine for
+    # a wider pool so the MMR rerank below has room. ``source_filter`` keeps
+    # its existing ``* 10`` widening (restrictive semantic; the post-filter
+    # below can drop a lot).
+    anti_hub_on = engine.config.direct_hit_anti_hub_lambda > 0.0
+    if source_filter:
+        engine_top_k = top_k * 10
+    elif anti_hub_on:
+        engine_top_k = max(top_k, top_k * 3)
+    else:
+        engine_top_k = top_k
     raw = await engine.query(
         text=query,
-        top_k=top_k * 10 if source_filter else top_k,
+        top_k=engine_top_k,
         wave_depth=wave_depth,
         wave_k=wave_k,
         use_cache=not force_refresh,
@@ -243,13 +254,20 @@ async def recall(
             meta = r.metadata or {}
             if meta.get("source") in sf or r.id in injected_set:
                 filtered.append(r)
-        raw = filtered[:top_k]
+        # When anti_hub is on, keep the wider pool for MMR; otherwise slice
+        # to top_k as before.
+        raw = filtered if anti_hub_on else filtered[:top_k]
     excerpt_chars = (
         engine.config.list_mode_excerpt_chars if mode == "list" else None
     )
     items = [
         _to_memory_item(engine, r, excerpt_chars=excerpt_chars) for r in raw
     ]
+    if anti_hub_on and len(items) > 1:
+        items = _apply_cluster_anti_hub(
+            items, _cluster_key_for(engine.cache),
+            engine.config.direct_hit_anti_hub_lambda, top_k,
+        )
     routing_hint = await _build_routing_hint(engine, query, auto_route)
     return RecallResponse(
         items=items, count=len(items),
@@ -332,6 +350,98 @@ def _lensing_resonance(
     if raw <= 0.0:
         return 0.0
     return raw / (raw + scale)
+
+
+def _cluster_key_for(cache) -> Callable[[str], str | None]:
+    """Stage 7.1 cluster identity = ``cohort_id`` OR ``original_id``.
+
+    Two structural identifiers Phase M already maintains:
+      - ``cohort_id`` (Phase K supernova batch — set when index_documents
+        batch size ≥ supernova_min_cohort_size)
+      - ``original_id`` (Phase M — defaults to ``file_path`` for chunked
+        ingests, otherwise the node's own id for singletons)
+
+    Production observation (2026-05-26, 26k corpus): cohort_id coverage is
+    effectively 0% because most ingests happen one memo at a time via
+    ``remember()`` (batch=1), but ``original_id`` covers 57.8% of active
+    memos in multi-member clusters (largest = 638-chunk book). Falling
+    back from cohort_id → original_id gives anti-hub coverage of the
+    real cluster failure mode (book chunks crowding top-K).
+
+    Singletons (no batch + no file_path) get ``original_id = doc_id`` —
+    a unique value per memo, so they form length-1 clusters and never
+    accumulate penalty against each other (correct: singletons are
+    intrinsically diverse).
+
+    Phase M 単一規則整合: both identifiers are structural (no source / tag
+    branching). The fallback chain is a routing of *which* structural id
+    we use, not a physics rule branch.
+    """
+    def _key(node_id: str) -> str | None:
+        return cache.get_cohort(node_id) or cache.get_original(node_id)
+    return _key
+
+
+def _apply_cluster_anti_hub(
+    items: list[MemoryItem],
+    cluster_key_of: Callable[[str], str | None],
+    lambda_val: float,
+    target_k: int,
+    *,
+    score_map: dict[str, float] | None = None,
+) -> list[MemoryItem]:
+    """Lateral Association Stage 7.1 — direct-hit anti-hub.
+
+    Greedy MMR-style reordering: for each subsequent slot, prefer candidates
+    that don't share a cluster key (``cohort_id`` OR ``original_id``, see
+    ``_cluster_key_for``) with already-picked items. Penalty per repeat:
+    ``lambda_val × count_of_shared_cluster_in_selected``.
+
+    ``cluster_key is None`` (no cohort + no original_id — typically
+    pre-Phase-M memos) gets no penalty — they're treated as intrinsically
+    diverse so they don't pile up against each other.
+
+    ``score_map`` lets the caller pass already-decayed scores keyed by node
+    id (e.g. novelty-decay output) so MMR ranks against the SAME score the
+    upstream slot-pick was about to use. When absent, ``item.final_score``
+    is used directly.
+
+    Does NOT mutate ``items``' ``final_score`` — this is reordering only.
+    The breakdown view downstream still sees the engine's original score so
+    "why this surfaced" stays interpretable.
+
+    No-op when ``lambda_val <= 0`` or fewer than 2 items.
+    """
+    if lambda_val <= 0.0 or len(items) <= 1:
+        return list(items[:target_k])
+
+    def _score_of(it: MemoryItem) -> float:
+        if score_map is not None and it.id in score_map:
+            return score_map[it.id]
+        return it.final_score
+
+    remaining = list(items)
+    selected: list[MemoryItem] = []
+    cluster_counts: dict[str, int] = {}
+    while remaining and len(selected) < target_k:
+        best_idx = 0
+        best_adjusted = float("-inf")
+        for idx, cand in enumerate(remaining):
+            key = cluster_key_of(cand.id)
+            penalty = (
+                lambda_val * cluster_counts.get(key, 0)
+                if key is not None else 0.0
+            )
+            adjusted = _score_of(cand) - penalty
+            if adjusted > best_adjusted:
+                best_adjusted = adjusted
+                best_idx = idx
+        pick = remaining.pop(best_idx)
+        selected.append(pick)
+        key = cluster_key_of(pick.id)
+        if key is not None:
+            cluster_counts[key] = cluster_counts.get(key, 0) + 1
+    return selected
 
 
 def _novelty_factor(
@@ -678,6 +788,7 @@ async def ambient_recall(
     # re-sort, so a memo seen on the last few turns rotates out unless its
     # margin survives the decay. No-op when ``recently_surfaced`` is empty
     # or ``ambient_novelty_decay >= 1.0`` (rollback path).
+    score_map: dict[str, float] | None = None
     if (
         recently_surfaced
         and cfg.ambient_novelty_decay < 1.0
@@ -690,8 +801,20 @@ async def ambient_recall(
             decayed.append((it.final_score * nv, it))
         decayed.sort(key=lambda t: t[0], reverse=True)
         items = [it for _, it in decayed]
+        score_map = {it.id: s for s, it in decayed}
 
-    direct_items = items[:direct_k]
+    # Lateral Association Stage 6.1 — direct-hit anti-hub. Greedy MMR on
+    # ``cohort_id`` runs against the same score the upstream slot-pick
+    # uses (novelty-decayed when Stage 1 fired, raw final_score otherwise).
+    # ``lambda <= 0`` = behavior unchanged (default).
+    if cfg.direct_hit_anti_hub_lambda > 0.0 and len(items) > 1:
+        direct_items = _apply_cluster_anti_hub(
+            items, _cluster_key_for(engine.cache),
+            cfg.direct_hit_anti_hub_lambda, direct_k,
+            score_map=score_map,
+        )
+    else:
+        direct_items = items[:direct_k]
     direct_ids = {it.id for it in direct_items}
     direct = [
         _to_ambient_memory(
@@ -769,13 +892,28 @@ async def _dormant_surface(
     cfg = engine.config
     cutoff = time.time() - cfg.dormant_age_threshold_seconds
     sources = set(cfg.dormant_source_classes)
+
+    active_states = [s for s in engine.cache.get_all_nodes() if not s.is_archived]
+
+    # Lateral Association Stage 6.2 — distribution-relative mass cut. When
+    # ``dormant_mass_percentile`` is set, derive the cut from the active
+    # corpus mass distribution; otherwise keep the legacy absolute floor.
+    if cfg.dormant_mass_percentile is not None and active_states:
+        sorted_masses = sorted(s.mass for s in active_states)
+        p = max(0.0, min(100.0, float(cfg.dormant_mass_percentile)))
+        pos = (p / 100.0) * (len(sorted_masses) - 1)
+        lo = int(pos)
+        hi = min(lo + 1, len(sorted_masses) - 1)
+        frac = pos - lo
+        mass_cut = sorted_masses[lo] * (1 - frac) + sorted_masses[hi] * frac
+    else:
+        mass_cut = cfg.dormant_mass_threshold
+
     candidates: list[tuple[Any, dict[str, Any]]] = []
-    for state in engine.cache.get_all_nodes():
-        if state.is_archived:
-            continue
+    for state in active_states:
         if state.last_access > cutoff:
             continue
-        if state.mass > cfg.dormant_mass_threshold:
+        if state.mass > mass_cut:
             continue
         doc = await engine.store.get_document(state.id)
         if doc is None:

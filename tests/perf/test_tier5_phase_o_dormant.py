@@ -122,6 +122,87 @@ async def test_dormant_empty_branch_returns_zero_and_no_match_header(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_dormant_percentile_threshold_replaces_absolute(tmp_path):
+    """Stage 6.2 — ``dormant_mass_percentile`` makes the mass cut adapt to
+    the active corpus distribution.
+
+    Seeds 10 memos and bumps the mass of 8 of them well above the legacy
+    absolute threshold (2.0). Under the legacy absolute cut, only 2 memos
+    would qualify; under ``dormant_mass_percentile=20.0`` the cut moves to
+    the 20th percentile of the (now-elevated) distribution, surfacing the
+    low-mass tail relative to the corpus rather than an absolute floor.
+
+    This is the failure mode observed in production: a 26k-memo corpus has
+    drifted its mass distribution up, so absolute 2.0 returns 0 candidates
+    even though "low-mass relative to peers" memos exist.
+    """
+    eng = make_engine(
+        tmp_path,
+        dormant_age_threshold_seconds=0.0,
+        dormant_mass_percentile=20.0,
+    )
+    await eng.startup()
+    try:
+        # Seed 10 memos. The cache initial mass is 1.0 for fresh nodes.
+        ids: list[str] = []
+        for i in range(10):
+            res = await mem_svc.remember(
+                engine=eng,
+                content=f"Stage 6.2 memo {i}: distribution-relative dormant test",
+                source="agent",
+            )
+            ids.append(res.id)
+
+        # Elevate 8 of the 10 above the legacy 2.0 floor; leave 2 at mass=1.0.
+        # After this, the 20th percentile sits between the two low-mass and
+        # the rest, so only the low-mass pair should qualify.
+        for nid in ids[2:]:
+            state = eng.cache.get_node(nid)
+            assert state is not None
+            state.mass = 5.0
+            eng.cache.set_node(state, dirty=True)
+
+        result = await mem_svc.explore(
+            engine=eng, query="_ignored", top_k=5, mode="dormant", auto_route=False,
+        )
+        # Under the legacy absolute (=2.0) the count would equal the number
+        # of memos still at <= 2.0 (here 2). Under percentile=20 the cut is
+        # roughly at the 20th-percentile of [1, 1, 5, 5, 5, 5, 5, 5, 5, 5] —
+        # which is 1.0. Same numerical effect HERE, but the *mechanism* is
+        # the percentile derivation; if we then bump the two low ones to
+        # 2.5, the legacy cut returns 0 but percentile=20 still returns the
+        # bottom-2.
+        assert result.count == 2, (
+            f"Stage 6.2 percentile cut did not isolate the bottom-2 ; got "
+            f"count={result.count} (expected 2)"
+        )
+
+        # Now bump the two "low" memos above the legacy absolute. Legacy
+        # would return 0; percentile-mode should still return the relative
+        # bottom of the new distribution.
+        for nid in ids[:2]:
+            state = eng.cache.get_node(nid)
+            assert state is not None
+            state.mass = 2.5
+            eng.cache.set_node(state, dirty=True)
+        result2 = await mem_svc.explore(
+            engine=eng, query="_ignored", top_k=5, mode="dormant", auto_route=False,
+        )
+        assert result2.count >= 1, (
+            "Stage 6.2 percentile cut returned 0 after lifting the corpus "
+            "above the legacy absolute floor — percentile path not active"
+        )
+        # Specifically, the bottom-2 (now at mass=2.5) should be the picks;
+        # legacy code would have returned 0 here.
+        picked_ids = {it.id for it in result2.items}
+        assert picked_ids.issubset(set(ids[:2])), (
+            f"Stage 6.2 picked above-percentile memos: {picked_ids}"
+        )
+    finally:
+        await eng.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_dormant_skips_wave_and_routing(tmp_path):
     """Mode=dormant bypasses wave entirely — no training_delta, no routing_hint.
 
