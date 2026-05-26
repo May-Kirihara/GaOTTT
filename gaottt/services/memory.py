@@ -215,20 +215,15 @@ async def recall(
     # bypass source_filter's restrictive semantic — the caller explicitly
     # asked for these tags or persona ids).
     delta_out: dict | None = {} if engine.config.training_delta_enabled else None
-    # Lateral Association Stage 6.1 — when anti-hub is on, ask the engine for
-    # a wider pool so the MMR rerank below has room. ``source_filter`` keeps
-    # its existing ``* 10`` widening (restrictive semantic; the post-filter
-    # below can drop a lot).
-    anti_hub_on = engine.config.direct_hit_anti_hub_lambda > 0.0
-    if source_filter:
-        engine_top_k = top_k * 10
-    elif anti_hub_on:
-        engine_top_k = max(top_k, top_k * 3)
-    else:
-        engine_top_k = top_k
+    # Stage 7.1 anti-hub does NOT widen ``engine.query`` top_k — keep cache
+    # key stable so prefetch / cache-hit semantics survive (a wider pool
+    # would invalidate any prefetch keyed by the user's ``top_k``). The MMR
+    # rerank below works within whatever the engine returned. Trade-off:
+    # cannot promote a non-hub item from rank K+1 into top-K, but can still
+    # demote duplicate cluster hits within the returned set.
     raw = await engine.query(
         text=query,
-        top_k=engine_top_k,
+        top_k=top_k * 10 if source_filter else top_k,
         wave_depth=wave_depth,
         wave_k=wave_k,
         use_cache=not force_refresh,
@@ -254,16 +249,14 @@ async def recall(
             meta = r.metadata or {}
             if meta.get("source") in sf or r.id in injected_set:
                 filtered.append(r)
-        # When anti_hub is on, keep the wider pool for MMR; otherwise slice
-        # to top_k as before.
-        raw = filtered if anti_hub_on else filtered[:top_k]
+        raw = filtered[:top_k]
     excerpt_chars = (
         engine.config.list_mode_excerpt_chars if mode == "list" else None
     )
     items = [
         _to_memory_item(engine, r, excerpt_chars=excerpt_chars) for r in raw
     ]
-    if anti_hub_on and len(items) > 1:
+    if engine.config.direct_hit_anti_hub_lambda > 0.0 and len(items) > 1:
         items = _apply_cluster_anti_hub(
             items, _cluster_key_for(engine.cache),
             engine.config.direct_hit_anti_hub_lambda, top_k,

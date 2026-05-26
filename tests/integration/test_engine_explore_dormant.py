@@ -68,6 +68,14 @@ async def _make_engine(tmp_path, **overrides):
         flush_interval_seconds=999.0,
         wave_initial_k=3,
         wave_max_depth=1,
+        # These dormant tests predate Stage 7.2 and assert against the
+        # legacy absolute ``dormant_mass_threshold`` semantic (e.g.
+        # ``mass=10.0`` must NOT surface because it exceeds the absolute
+        # 2.0 cut). The default has been promoted to ``10.0`` (percentile
+        # mode) — pin to ``None`` here so the legacy assertions remain
+        # the contract under test. Stage 7.2-specific behaviour is covered
+        # by ``tests/perf/test_tier5_phase_o_dormant.py``.
+        dormant_mass_percentile=None,
     )
     base.update(overrides)
     cfg = GaOTTTConfig(**base)

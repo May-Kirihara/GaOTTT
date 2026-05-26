@@ -489,12 +489,15 @@ class GaOTTTConfig:
     # of active memos in multi-member clusters (largest = 638-chunk book).
     # ``cluster_key is None`` (no cohort + no original_id, pre-Phase-M
     # memos) gets no penalty — intrinsically diverse.
-    # ``0.0`` (default) = behavior unchanged; ``0.4`` is the baseline-derived
-    # starting point. Applied to:
+    # Default ``0.4`` — promoted from OFF to provisional active 2026-05-26
+    # after Stage 7.1 acceptance: internal test corpus avg_unique_cohorts
+    # 2.67→4.00, avg_max_dominance 2.33→2.00, target_hit_rate 3/3;
+    # production GLM acceptance literal verified 米国会社四季報 (638-chunk
+    # book) capped to 1/5 of top-5. ``0.0`` for full rollback. Applied to:
     #   ambient_recall.direct slot  — before the ``items[:direct_k]`` slice
     #   recall top-k composition    — engine returns a larger pool, then MMR
     # See docs/wiki/Plans-Ambient-Recall-Lateral-Association.md (Stage 7).
-    direct_hit_anti_hub_lambda: float = 0.0
+    direct_hit_anti_hub_lambda: float = 0.4
 
     # Phase O Stage 5 — Dormant surface (explore(mode='dormant')).
     # ``explore(mode='dormant')`` returns random self-authored memos that have
@@ -507,16 +510,21 @@ class GaOTTTConfig:
     # principle stays intact (see Plans-Phase-O §Stage 5 "設計判断").
     dormant_age_threshold_seconds: float = 30 * 86400.0  # 30 days
     dormant_mass_threshold: float = 2.0                  # mature gate point — below means "the field didn't claim it"
-    # Lateral Association Stage 6.2 (2026-05-26) — distribution-relative
-    # dormant mass cut. When set (e.g. ``20.0``), the actual cut becomes the
+    # Lateral Association Stage 7.2 (2026-05-26) — distribution-relative
+    # dormant mass cut. When set (e.g. ``10.0``), the actual cut becomes the
     # ``p`` percentile of active-corpus mass instead of the fixed
     # ``dormant_mass_threshold``. Production observation showed the absolute
     # 2.0 cut returns 0 candidates on a 26k-memo corpus because the mass
     # distribution has shifted upward — see
-    # ``project_phase_o_stage_5_production_observation``. ``None`` (default)
-    # preserves legacy absolute-threshold behaviour. Use ``diag_dormant.py``
-    # to pick a percentile that yields ~5-15 candidates on the target DB.
-    dormant_mass_percentile: float | None = None
+    # ``project_phase_o_stage_5_production_observation``. Default ``10.0`` —
+    # promoted from None to provisional active 2026-05-26 after production
+    # acceptance: ``diag_dormant.py`` with age=7d showed p10 yields 23
+    # candidates (vs absolute 2.0 floods at 89.6%). ``None`` for legacy
+    # absolute-threshold rollback. **Note**: percentile alone gives 0 dormant
+    # if ``dormant_age_threshold_seconds`` (default 30d) excludes every
+    # node; lower age via env (e.g. ``GAOTTT_DORMANT_AGE_THRESHOLD_SECONDS=604800``
+    # for 7d) for active-user corpora.
+    dormant_mass_percentile: float | None = 10.0
     dormant_source_classes: tuple[str, ...] = (
         "agent", "value", "intention", "commitment", "note", "reference",
     )

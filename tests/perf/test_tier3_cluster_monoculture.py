@@ -188,8 +188,11 @@ async def test_cluster_monoculture_baseline(tmp_path):
         wave_initial_k=12,
         # We pre-set cohort_id in metadata; no supernova batching needed.
         supernova_enabled=False,
-        # Default anti-hub OFF (this *is* the baseline run).
-        # direct_hit_anti_hub_lambda=0.0,
+        # Explicitly OFF — this *is* the baseline (pre-Stage-7.1) measurement.
+        # config default has been promoted to 0.4 (2026-05-26), so we set
+        # 0.0 here so the test remains a literal baseline regardless of the
+        # default's evolution.
+        direct_hit_anti_hub_lambda=0.0,
     )
     await eng.startup()
     try:
@@ -258,18 +261,26 @@ async def test_cluster_monoculture_baseline(tmp_path):
 
 @pytest.mark.asyncio
 async def test_cluster_monoculture_anti_hub_enabled(tmp_path):
-    """Stage 6.1 acceptance — with ``direct_hit_anti_hub_lambda > 0`` the
-    cohort dominance should drop AND target hit rate should not regress.
+    """Stage 7.1 acceptance — anti-hub on the **ambient_recall** path.
 
-    Same corpus + queries as the baseline. Numerical bounds derived from
-    the baseline run (``avg_unique=2.67, avg_max_dom=2.33`` at lambda=0)
-    plus a margin: we require avg_unique to *increase* and avg_max_dom to
-    *decrease* under lambda=0.4 (the recommended starting point).
+    ``ambient_recall`` builds an internal pool of ``max(direct_k * 5, 10)``
+    items via passive recall, then slices to ``direct_k`` for the direct
+    slot. MMR has room to demote duplicate cluster hits inside that pool —
+    this is where Stage 7.1 delivers user-visible value (every Claude Code
+    turn invokes ambient_recall on the user prompt).
+
+    Architectural note: the raw ``recall`` service does NOT widen
+    ``engine.query``'s ``top_k`` (would break prefetch cache compatibility),
+    so anti-hub on raw recall is limited to reordering items inside the
+    user's ``top_k``. ambient_recall has a naturally wider pool, so MMR
+    operates on it effectively. See ``services/memory.py::recall`` comment.
     """
     eng = make_engine(
         tmp_path,
         wave_initial_k=12,
         supernova_enabled=False,
+        ambient_gate_use_bm25=False,
+        ambient_min_score=0.0,
         direct_hit_anti_hub_lambda=0.4,
     )
     await eng.startup()
@@ -278,58 +289,64 @@ async def test_cluster_monoculture_anti_hub_enabled(tmp_path):
             await eng.index_documents(builder())
 
         per_query: list[dict] = []
-        target_hits = 0
         for q in QUERIES:
-            rr = await memory_service.recall(
-                eng, q["query"], top_k=5, passive=True, auto_route=False,
+            resp = await memory_service.ambient_recall(
+                eng, query=q["query"], direct_k=5,
             )
-            s5 = _summary_for(rr.items, eng, k=5)
-            if q["target_cohort"] in s5["cohorts"]:
-                target_hits += 1
+            cohorts = [eng.cache.get_cohort(m.id) for m in resp.direct]
+            real = [c for c in cohorts if c is not None]
+            max_dom = max(real.count(c) for c in set(real)) if real else 0
             per_query.append({
-                "query": q["query"], "target": q["target_cohort"], "top5": s5,
+                "query": q["query"],
+                "target": q["target_cohort"],
+                "cohorts": cohorts,
+                "unique": len(set(cohorts)),
+                "max_dominance": max_dom,
+                "target_in": q["target_cohort"] in cohorts,
             })
 
-        print("\nCluster monoculture WITH anti-hub (λ=0.4):")
+        print("\nAmbient direct WITH anti-hub (λ=0.4):")
         for row in per_query:
-            t5 = row["top5"]
             cohort_labels = [
                 "hub" if c == HUB_COHORT else
                 "PL" if c == PHASE_L_COHORT else
                 "PM" if c == PHASE_M_COHORT else
                 "LA" if c == LATERAL_COHORT else
-                "-" for c in t5["cohorts"]
+                "-" for c in row["cohorts"]
             ]
             print(
                 f"  [{row['target'].split('-')[0]:>6}] {row['query']!r}\n"
-                f"    top5 cohorts = {cohort_labels}  "
-                f"unique={t5['unique']}  max_dom={t5['max_dominance']}"
+                f"    direct cohorts = {cohort_labels}  "
+                f"unique={row['unique']}  max_dom={row['max_dominance']}  "
+                f"target_in={row['target_in']}"
             )
-        avg_unique5 = sum(r["top5"]["unique"] for r in per_query) / len(per_query)
-        avg_max5 = sum(r["top5"]["max_dominance"] for r in per_query) / len(per_query)
+        avg_unique = sum(r["unique"] for r in per_query) / len(per_query)
+        avg_max = sum(r["max_dominance"] for r in per_query) / len(per_query)
+        target_hits = sum(1 for r in per_query if r["target_in"])
         print(
-            f"  Aggregate top-5: avg_unique_cohorts={avg_unique5:.2f}  "
-            f"avg_max_dominance={avg_max5:.2f}  "
+            f"  Aggregate: avg_unique_cohorts={avg_unique:.2f}  "
+            f"avg_max_dominance={avg_max:.2f}  "
             f"target_hit_rate={target_hits}/{len(QUERIES)}"
         )
 
-        # ---- Stage 6.1 acceptance ----
-        # Baseline at λ=0: avg_unique=2.67, avg_max_dom=2.33.
-        # With λ=0.4 we want measurable improvement, NOT degraded target hit.
-        assert avg_unique5 > 2.67, (
-            f"anti-hub failed to increase diversity: avg_unique={avg_unique5:.2f}"
+        # ---- Stage 7.1 acceptance (ambient path) ----
+        # Baseline (λ=0) on ambient direct slot (same direct_k=5 fixture):
+        #   avg_unique ≈ 2.67, avg_max_dom ≈ 2.33 (see
+        #   ``test_ambient_direct_cluster_diversity_baseline``).
+        assert avg_unique > 2.67, (
+            f"anti-hub failed to increase diversity on ambient direct: "
+            f"avg_unique={avg_unique:.2f}"
         )
-        assert avg_max5 < 2.33, (
-            f"anti-hub failed to reduce monoculture: avg_max_dom={avg_max5:.2f}"
+        assert avg_max < 2.33, (
+            f"anti-hub failed to reduce monoculture on ambient direct: "
+            f"avg_max_dom={avg_max:.2f}"
         )
         assert target_hits == len(QUERIES), (
             f"anti-hub broke target hits: {target_hits}/{len(QUERIES)}"
         )
-        # Strict floor: no single cohort should fill >2 of top-5 under λ=0.4
-        # given a 4-cohort corpus.
-        worst = max(r["top5"]["max_dominance"] for r in per_query)
+        worst = max(r["max_dominance"] for r in per_query)
         assert worst <= 2, (
-            f"single cohort still owns {worst} of top-5 under anti-hub"
+            f"single cohort still owns {worst} of direct under anti-hub"
         )
     finally:
         await eng.shutdown()
@@ -349,7 +366,12 @@ async def test_anti_hub_works_via_original_id_when_no_cohort(tmp_path):
     Seeds a "book"-shaped corpus: 6 chunks sharing one ``original_id``
     (no cohort_id), plus 3 distractor singletons each with their own
     unique original_id (= the doc_id default). Without anti-hub the hub
-    fills top-5; with λ=0.4 it should be capped.
+    fills the direct slot; with λ=0.4 the ambient_recall path (which has
+    a naturally wider pool than raw recall) should cap it.
+
+    Exercises the ambient_recall path because raw recall does not widen
+    ``engine.query``'s top_k (cache compatibility), so MMR has no room to
+    promote non-hub items from rank K+1 into top-K.
     """
     book_original_id = "/abs/path/to/big-book.md"
 
@@ -387,6 +409,8 @@ async def test_anti_hub_works_via_original_id_when_no_cohort(tmp_path):
         tmp_path,
         wave_initial_k=12,
         supernova_enabled=False,
+        ambient_gate_use_bm25=False,
+        ambient_min_score=0.0,
         direct_hit_anti_hub_lambda=0.4,
     )
     await eng.startup()
@@ -406,10 +430,10 @@ async def test_anti_hub_works_via_original_id_when_no_cohort(tmp_path):
         ]
         per_query: list[dict] = []
         for q in queries:
-            rr = await memory_service.recall(
-                eng, q, top_k=5, passive=True, auto_route=False,
+            resp = await memory_service.ambient_recall(
+                eng, query=q, direct_k=5,
             )
-            ids = [it.id for it in rr.items[:5]]
+            ids = [m.id for m in resp.direct]
             originals = [eng.cache.get_original(nid) for nid in ids]
             cohorts = [eng.cache.get_cohort(nid) for nid in ids]
             book_count = sum(1 for o in originals if o == book_original_id)
@@ -420,29 +444,30 @@ async def test_anti_hub_works_via_original_id_when_no_cohort(tmp_path):
                 "book_count": book_count,
             })
 
-        print("\nOriginal_id anti-hub baseline (λ=0.4, cohort_id=None for all):")
+        print("\nOriginal_id anti-hub via ambient_recall (λ=0.4, cohort_id=None for all):")
         for row in per_query:
             print(
                 f"  {row['query']!r}\n"
                 f"    originals(suffix)={row['originals']}\n"
                 f"    cohorts={row['cohorts']}\n"
-                f"    book chunks in top-5 = {row['book_count']}"
+                f"    book chunks in direct = {row['book_count']}"
             )
         max_book = max(r["book_count"] for r in per_query)
         avg_book = sum(r["book_count"] for r in per_query) / len(per_query)
-        print(f"  Aggregate: max book chunks in any top-5 = {max_book}, avg = {avg_book:.2f}")
+        print(f"  Aggregate: max book chunks in any direct = {max_book}, avg = {avg_book:.2f}")
 
         # All cohorts should be None (we never set them).
         for row in per_query:
             assert all(c is None for c in row["cohorts"]), (
                 f"cohort_id leaked into a memo for {row['query']!r}"
             )
-        # Anti-hub via original_id should cap a single book at ≤ 2 of top-5.
+        # Anti-hub via original_id should cap a single book at ≤ 2 of direct.
         # (Pre-Stage-7.1-extension, before original_id was added to the
-        # cluster key, this would be 5/5.)
+        # cluster key, this would be 5/5 since all 6 book chunks beat the
+        # singletons on raw cosine.)
         assert max_book <= 2, (
             f"anti-hub via original_id failed: a single book occupies "
-            f"{max_book} of top-5 (expected ≤ 2)"
+            f"{max_book} of direct (expected ≤ 2)"
         )
     finally:
         await eng.shutdown()
@@ -464,6 +489,9 @@ async def test_ambient_direct_cluster_diversity_baseline(tmp_path):
         supernova_enabled=False,
         ambient_gate_use_bm25=False,
         ambient_min_score=0.0,
+        # Explicitly OFF — this is the pre-Stage-7.1 baseline (default has
+        # been promoted to 0.4, see test_cluster_monoculture_baseline).
+        direct_hit_anti_hub_lambda=0.0,
     )
     await eng.startup()
     try:
