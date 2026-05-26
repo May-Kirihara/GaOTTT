@@ -237,13 +237,21 @@ def update_orbital_state(..., rng: np.random.Generator | None = None):
 - tests: `rng = np.random.default_rng(42)` を fixture から渡して reproducible
 - 既存 `compute_virtual_position` の `np.random.randn` (line 87) も同様に rng-injected に refactor (Phase P-β 副次作業)
 
-### D7. 観測ハンドル ✅ **`scripts/diag_pressure.py` 新設**
+### D7. 観測ハンドル ✅ **`scripts/diag_pressure.py` 実装完了 (2026-05-27)**
 
 Phase N β の `scripts/diag_dormant.py` / `phase_n_dry_run.py` と同じ位置付け:
 
-- `diag_pressure.py snapshot`: 本番 DB を read-only で開き、Λ と Langevin を有効化したときの 1-step 効果を dry-run projection
-- 出力: 各 node の `|displacement| before/after`、最大変位 top-K、cluster centroid 距離変化
-- secondopinion-MCP 経由 GLM での independent observer (Observer C) 用入力にもなる
+- `diag_pressure.py snapshot`: 本番 DB を read-only で開き (write-behind loop 全 disable)、Λ と Langevin の 1-step 効果を dry-run projection
+- 出力 (text mode):
+  - 全体: active nodes / embedding dim / H / T₀ / σ=√(2·T₀) / Langevin expected per-step ||noise||=σ·√dim
+  - Top-K mass hubs (default K=20): mass / |d| / source / neighbor count / ||a_Λ|| / a_Λ/m / content preview
+  - Λ accel 統計: min / p50 / p90 / p95 / p99 / max / mean over hubs
+  - Headlines: largest Λ accel hub、median ||a_Λ|| vs Langevin step norm の比 (どちらが dominant か)
+- `--json` mode: machine-readable で diff 駆動・secondopinion-MCP Observer C 入力に
+- `--out FILE`: stdout でなくファイルに書き出し
+- `--lambda-h` / `--langevin-t0` で config default を override して試算可能
+- **safety contract**: SQLite + FAISS とも read-only。`faiss_save_interval=999s` / `flush_interval=999s` / `virtual_faiss_save_interval=999s` で write-behind loop 全 disable、`genesis_kick` / `dream` も off
+- Tier 4 smoke: 3 test (`tests/perf/test_tier4_diag_pressure.py`) — JSON 出力 / text mode headline / `--out` file 書き出し
 
 ## 5. 副次予測 — 検証可能な仮説
 
