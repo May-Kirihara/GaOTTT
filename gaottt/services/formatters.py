@@ -371,6 +371,19 @@ def format_ambient(result: AmbientRecallResponse) -> str:
             )
             if m.because:
                 lines.append(f"    ← because {m.because}")
+    if result.dormant:
+        lines.append("")
+        # Observation Apparatus Refinement Stage 2 — "whisper" slot for
+        # dormant memos that *also* match the query lexically. The field
+        # had let these sink; the BM25 lexical channel pulled them back up
+        # for one breath. "ささやき" (whisper) keeps the emotional register
+        # different from the assertive 直接ヒット / 重力レンズ headings.
+        lines.append("▼ ささやき（場が手放していたが、語が触れた）")
+        for m in result.dormant:
+            lines.append(
+                f" · [{_ambient_meta(m)}] {m.content}"
+                f"{_ambient_breakdown(m.breakdown)}"
+            )
     if result.tensions:
         lines.append("")
         lines.append("▼ ⚠ 矛盾")
@@ -401,6 +414,13 @@ def format_ambient(result: AmbientRecallResponse) -> str:
         # splits on commas within slot=... chunks, so no parser change.
         manifest_parts.append(
             "lensing=" + ",".join(m.id for m in result.lensing)
+        )
+    if result.dormant:
+        # Stage 2 — dormant slot IDs join the rotation manifest so the hook
+        # adds them to ``recently_surfaced`` and avoids re-whispering the
+        # same memo on consecutive turns.
+        manifest_parts.append(
+            "dormant=" + ",".join(m.id for m in result.dormant)
         )
     if result.persona is not None:
         manifest_parts.append(f"persona={result.persona.id}")
@@ -549,13 +569,55 @@ def format_reflect_hot_topics(r: ReflectHotTopicsResponse) -> str:
     return "\n".join(lines)
 
 
+def _format_connection_row(e) -> str:
+    """A single connection row — shared by flat + grouped layouts so the
+    edge-line substring stays identical and existing assertions hold.
+    """
+    return (
+        f"  weight={e.weight:.1f}: {e.src}↔{e.dst} | "
+        f"[{e.src_preview}...] <-> [{e.dst_preview}...]"
+    )
+
+
 def format_reflect_connections(r: ReflectConnectionsResponse) -> str:
-    lines = [f"Strongest connections ({len(r.items)} shown):"]
+    """Render the connections aspect.
+
+    Observation Apparatus Refinement Stage 4 — when any item carries a
+    ``bucket`` label, group rows under persona / agent_user / ingest
+    headings so file-ingest co-occurrence does not crowd out the
+    cross-domain pairs a reader actually wants to see. The grouping is
+    purely a display lens: edge weights and ordering within each group
+    follow the same (descending-weight) order the flat layout uses, so
+    co-occurrence counts are unchanged.
+    """
+    header = f"Strongest connections ({len(r.items)} shown):"
+    if not r.items or not any(e.bucket for e in r.items):
+        # Legacy flat layout (no bucket data — older callers or grouping off).
+        lines = [header]
+        for e in r.items:
+            lines.append(_format_connection_row(e))
+        return "\n".join(lines)
+    # Stage 4 grouped layout. Display order is the reader's priority:
+    # 1. persona (declared relationships — rarest and most meaningful)
+    # 2. agent_user (dialogue-built associations)
+    # 3. ingest (same-batch chunk artifacts — informational only)
+    bucket_headings = [
+        ("persona", "▼ persona ↔ persona (declared relationships)"),
+        ("agent_user", "▼ agent / user (dialogue-built)"),
+        ("ingest", "▼ file / ingest artifact (same-batch co-occurrence)"),
+    ]
+    grouped: dict[str, list] = {b: [] for b, _ in bucket_headings}
     for e in r.items:
-        lines.append(
-            f"  weight={e.weight:.1f}: {e.src}↔{e.dst} | "
-            f"[{e.src_preview}...] <-> [{e.dst_preview}...]"
-        )
+        grouped.setdefault(e.bucket or "agent_user", []).append(e)
+    lines = [header]
+    for bucket_key, heading in bucket_headings:
+        rows = grouped.get(bucket_key) or []
+        if not rows:
+            continue
+        lines.append("")
+        lines.append(f"{heading} ({len(rows)})")
+        for e in rows:
+            lines.append(_format_connection_row(e))
     return "\n".join(lines)
 
 

@@ -1,6 +1,17 @@
 # Observation Apparatus Refinement
 
-**状態**: 起草 (2026-05-26)。physics Phase ではないので Phase レター非消費 ([[plans-hardening-concurrency-persistence]] / [[plans-ambient-recall-enrichment]] / [[plans-query-mass-distribution]] と同列)。
+**状態**: ✅ **Stage 1-4 実装完了** (2026-05-26)。Stage 5 (caller-side ガイド更新) のみ未着手。physics Phase ではないので Phase レター非消費 ([[plans-hardening-concurrency-persistence]] / [[plans-ambient-recall-enrichment]] / [[plans-query-mass-distribution]] と同列)。
+
+## 実装完了サマリ (2026-05-26)
+
+| Stage | 実装内容 | テスト |
+|---|---|---|
+| Stage 1 reason line | `gaottt/core/explain.py` 新規 + `ScoreBreakdown` 拡張 + `services/memory._enrich_breakdown` + formatter の reason 行 | unit 12 + integration 4 |
+| Stage 2 ambient dormant slot | `AmbientRecallResponse.dormant` 追加 + `_dormant_for_ambient` + 「▼ ささやき」セクション + ambient-ids manifest に `dormant=` | unit 3 + integration 6 |
+| Stage 3 compare-retrieval | `scripts/compare_retrieval.py` 新規 (read-only) + JSON mode + dominance / overlap / source distribution 総評 | Tier 4 smoke 2 |
+| Stage 4 source-aware connections | `ReflectConnectionItem.bucket` 追加 + `_connection_bucket()` 純粋関数 + bucket 別表示 | unit 6 + integration 3 |
+
+全 36 新規テスト pass、ruff clean、力学不変 (mass / acceleration / displacement / edge weight 不変) を bit-exact assertion で保証。
 
 > Phase O (TTT Observability) が「LLM caller を TTT loop の participant に昇格させる」観測層を作ったのに続き、本計画は **同じ観測層の道具立てを 4 点だけ磨き直す** 後続作業。physics rule (mass / Hooke / kick / Λ / Langevin) は **一切触らない**。Phase P (Pressure Terms) と並行に進められる — 介入軸が直交している (P は acceleration / displacement step、本計画は表示と発掘経路)。
 

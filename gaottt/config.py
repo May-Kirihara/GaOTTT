@@ -354,6 +354,30 @@ class GaOTTTConfig:
     # 0.01-0.05 range; raw BM25 in 0-10+ range — this threshold expects raw.
     reason_bm25_strong_threshold: float = 0.5
 
+    # Observation Apparatus Refinement Stage 2 — dormant whisper slot in
+    # ambient_recall. Mixes a counter-importance-sampled dormant memo into
+    # the ambient block when its BM25 score against the query clears
+    # ``ambient_dormant_relevance_floor``. Force computation untouched —
+    # this is a surface-candidate-set extension, not a physics modifier.
+    # Set False to suppress the slot entirely (legacy ambient block).
+    ambient_dormant_slot_enabled: bool = True
+    # Maximum dormant memos to whisper per ambient block. 1 is the calibrated
+    # default — more risks crowding out direct / lensing.
+    ambient_dormant_slot_count: int = 1
+    # BM25 floor a dormant candidate must clear to qualify for the slot.
+    # Below this we leave the slot empty (no random hit — the silence is
+    # better than off-topic noise). Same scale as ``ambient_bm25_min_score``.
+    ambient_dormant_relevance_floor: float = 0.5
+
+    # Observation Apparatus Refinement Stage 4 — source-aware connections
+    # display. When True, ``reflect(aspect="connections")`` groups co-occurrence
+    # edges into persona / agent_user / ingest buckets so file-ingest
+    # artifacts (chunks of one file co-occurring among themselves) stop
+    # crowding out the rare cross-domain associations a reader actually wants
+    # to see. The grouping is **display layer only** — edge weight and
+    # co-occurrence count are unchanged. Set False for legacy flat output.
+    connections_grouped_by_source: bool = True
+
     # Phase O Stage 2 — Training delta trailer (TTT update visibility).
     # When True, recall/explore responses carry a ``training_delta`` field
     # exposing displacement/mass changes induced by this recall + wave reach

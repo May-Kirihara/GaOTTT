@@ -27,6 +27,15 @@ External long-term memory across sessions. Backed by embeddings + a gravity-simu
 - Looping in the same potential well.
 - Cross-domain transfer wanted.
 - User asks "got any interesting ideas?".
+- **Break fixation with `mode="dormant"`**: pulls low-mass, idle-for-≥30d self-authored memos the gravity field has *not* been pulling back. Use when `recall` keeps returning the same handful of high-mass nodes ("Heavy Persona Dominance") and you want to widen the lens. `query` is ignored in this mode.
+
+### Reading retrieval results
+- Each `recall`/`ambient_recall` result now carries a one-line **`reason:`** explanation: `high mass persona proximity (mass=2.82) — possible dominance artifact` / `bm25 strong lexical match (0.71)` / `lensing pick (gap=+0.07)` / `dormant surface (percentile=8)`. When you see *"possible dominance artifact"*, the field is leaning hard on a familiar high-mass node — consider `mode="dormant"` or different phrasing.
+- `ambient_recall` blocks now include a **▼ ささやき** slot when a dormant memo also lexically matches the prompt — these are the "〇〇といえば〜だったよな" picks. Silence is correct when nothing dormant matches lexically (no random hits).
+- `reflect(aspect="connections")` is grouped into **persona / agent / ingest** buckets — co-occurrence between value↔intention edges (rare and meaningful) are no longer crowded out by same-file chunk co-occurrence (the ingest bucket — typically display noise).
+
+### Debugging retrieval geometry
+- `scripts/compare_retrieval.py "<query>"` runs the same query through `recall` / `explore(diversity=0.9)` / `explore(mode="dormant")` / `ambient_recall` side-by-side. Read-only — does not perturb the field. Use this when retrieval feels off, when you want to see what each mode returns differently, or to compare before/after a config change (`--json` for diff-driven regression).
 
 ### `reflect` — inspect memory state
 - **Session end**: `aspect="hot_topics"` to see the day's mass accretion.

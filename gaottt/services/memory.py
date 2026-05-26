@@ -323,6 +323,128 @@ def _excerpt(content: str, limit: int) -> str:
     return flat[:limit] + "…" if len(flat) > limit else flat
 
 
+async def _dormant_for_ambient(
+    engine: GaOTTTEngine,
+    query: str,
+    *,
+    now: float,
+    excerpt_chars: int,
+    excluded_ids: set[str],
+    recently_surfaced: dict[str, int] | None,
+) -> list[AmbientMemory]:
+    """Observation Apparatus Refinement Stage 2 — dormant whisper slot.
+
+    Counter-importance-samples a dormant memo (same age + mass + source-class
+    rule as :func:`_dormant_surface`) and gates it on a strong BM25 lexical
+    match against ``query``. Returns up to
+    ``config.ambient_dormant_slot_count`` items; empty when nothing cleared
+    ``config.ambient_dormant_relevance_floor`` — silence beats off-topic
+    noise.
+
+    Force computation untouched: this only chooses *which* dormant memos
+    to **observe**. Physics rule (mass/Hooke/kick) is not branched on.
+    """
+    cfg = engine.config
+    if not cfg.ambient_dormant_slot_enabled or cfg.ambient_dormant_slot_count <= 0:
+        return []
+    idx = engine.ambient_gate_index
+    if idx is None or idx.size == 0:
+        return []
+
+    cutoff = now - cfg.dormant_age_threshold_seconds
+    sources = set(cfg.dormant_source_classes)
+    active_states = [s for s in engine.cache.get_all_nodes() if not s.is_archived]
+    if not active_states:
+        return []
+
+    # Same percentile-vs-absolute logic as ``_dormant_surface`` so the two
+    # paths agree on what counts as dormant.
+    if cfg.dormant_mass_percentile is not None:
+        sorted_masses = sorted(s.mass for s in active_states)
+        p = max(0.0, min(100.0, float(cfg.dormant_mass_percentile)))
+        pos = (p / 100.0) * (len(sorted_masses) - 1)
+        lo = int(pos)
+        hi = min(lo + 1, len(sorted_masses) - 1)
+        frac = pos - lo
+        mass_cut = sorted_masses[lo] * (1 - frac) + sorted_masses[hi] * frac
+    else:
+        mass_cut = cfg.dormant_mass_threshold
+
+    dormant_state_by_id: dict[str, Any] = {}
+    for state in active_states:
+        if state.id in excluded_ids:
+            continue
+        if recently_surfaced and state.id in recently_surfaced:
+            continue
+        if state.last_access > cutoff:
+            continue
+        if state.mass > mass_cut:
+            continue
+        src = engine.cache.source_by_id.get(state.id, "unknown")
+        if src not in sources:
+            continue
+        dormant_state_by_id[state.id] = state
+    if not dormant_state_by_id:
+        return []
+
+    # BM25 against the full corpus then intersect with the dormant set.
+    # 200 is a generous pool — dormant nodes are by definition rare hits.
+    hits = idx.search(query, top_k=200)
+    relevant: list[tuple[str, float]] = [
+        (doc_id, score)
+        for doc_id, score in hits
+        if doc_id in dormant_state_by_id
+        and score >= cfg.ambient_dormant_relevance_floor
+    ]
+    if not relevant:
+        return []
+    relevant = relevant[: cfg.ambient_dormant_slot_count]
+
+    # Convert to AmbientMemory with reason-line populated (Stage 1 ↔ Stage 2
+    # integration: dormant_percentile + bm25_score feed explain_score).
+    out: list[AmbientMemory] = []
+    for doc_id, bm25_score in relevant:
+        state = dormant_state_by_id[doc_id]
+        doc = await engine.store.get_document(doc_id)
+        if doc is None:
+            continue
+        meta = doc.get("metadata") or {}
+        if cfg.dormant_mass_percentile is not None:
+            percentile: float | None = float(cfg.dormant_mass_percentile)
+        elif active_states:
+            sorted_masses = sorted(s.mass for s in active_states)
+            rank = sum(1 for m in sorted_masses if m <= state.mass)
+            percentile = 100.0 * rank / max(1, len(sorted_masses))
+        else:
+            percentile = None
+        breakdown = ScoreBreakdown(
+            bm25_score=float(bm25_score),
+            bm25_contributed=True,
+            dormant_percentile=percentile,
+            node_mass=float(state.mass),
+        )
+        if cfg.expose_reason:
+            reason = explain_score(
+                breakdown,
+                mass_dominance_threshold=cfg.reason_dominance_mass_threshold,
+                bm25_strong_threshold=cfg.reason_bm25_strong_threshold,
+            )
+            if reason is not None:
+                breakdown = breakdown.model_copy(update={"reason": reason})
+        out.append(AmbientMemory(
+            id=doc_id,
+            content=_excerpt(doc.get("content") or "", excerpt_chars),
+            source=meta.get("source", "unknown"),
+            tags=list(meta.get("tags") or []),
+            certainty=float(state.certainty) if state.certainty is not None else None,
+            age_days=max(0.0, (now - state.last_access) / 86400.0),
+            virtual_score=0.0,
+            final_score=0.0,
+            breakdown=breakdown,
+        ))
+    return out
+
+
 def _to_ambient_memory(
     engine: GaOTTTEngine, item: MemoryItem, now: float, *,
     excerpt_chars: int, lensing_gap: float | None = None,
@@ -908,9 +1030,22 @@ async def ambient_recall(
         recently_surfaced=recently_surfaced,
     )
 
-    count = len(direct) + len(lensing)
+    # Observation Apparatus Refinement Stage 2 — dormant whisper slot.
+    # BM25-gated; runs only when the relevance gate already approved the
+    # injection (no point whispering on off-topic prompts). Also excluded
+    # are direct/lensing IDs to prevent duplicate surface in one block.
+    surfaced_ids = direct_ids | {m.id for m in lensing}
+    dormant = await _dormant_for_ambient(
+        engine, query,
+        now=now,
+        excerpt_chars=cfg.ambient_excerpt_chars,
+        excluded_ids=excluded_ids | surfaced_ids,
+        recently_surfaced=recently_surfaced,
+    )
+
+    count = len(direct) + len(lensing) + len(dormant)
     return AmbientRecallResponse(
-        direct=direct, lensing=lensing, tensions=tensions,
+        direct=direct, lensing=lensing, dormant=dormant, tensions=tensions,
         persona=persona, count=count,
     )
 

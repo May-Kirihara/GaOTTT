@@ -26,7 +26,7 @@
 >
 > **撤回した案**: 「declare value 初期 kick」(declare 直後に artificial supernova kick で初期 mass 底上げ) は撤回。Phase L Stage 1「persona も別格扱いしない、使用頻度こそが重力」原則と衝突、Articulation as Carrier (id=9a954c62) の対称命題を carrier が運ぶ前にすり替えることになるため。
 
-### 🔴 P0-Stage1. Reason line in retrieval results `[進行中]`
+### 🔴 P0-Stage1. Reason line in retrieval results `[完了 2026-05-26]`
 - 目的: `ScoreBreakdown` (Phase O Stage 1) の dominant 項を判定して 60-100 字の 1 行 human-readable explanation を生成。Heavy Persona Dominance の早期警告も含む
 - 作業:
   - [ ] `gaottt/core/types.py::ScoreBreakdown` に `reason: str | None = None` + informational field (`node_mass: float = 0.0`, `bm25_score: float = 0.0`) 追加
@@ -40,7 +40,7 @@
 - D1-D3: [Plan §4 Stage 1](docs/wiki/Plans-Observation-Apparatus-Refinement.md#stage-1--reason-line-in-retrieval-results)
 - default: **ON** (力学不変なので opt-out flag のみで legacy 戻し可)
 
-### 🔴 P0-Stage2. Dormant slot in ambient_recall `[未着手]`
+### 🔴 P0-Stage2. Dormant slot in ambient_recall `[完了 2026-05-26]`
 - 目的: `ambient_recall()` の return shape に `dormant_whisper` slot を追加、BM25 floor で gate (random hit 防止)
 - 作業:
   - [ ] `gaottt/services/memory.py::ambient_recall()` に `dormant_slot: list[Snippet]` フィールド追加 (return shape 拡張)
@@ -52,7 +52,7 @@
 - D1-D3: [Plan §4 Stage 2](docs/wiki/Plans-Observation-Apparatus-Refinement.md#stage-2--dormant-slot-in-ambient_recall)
 - default: **ON** (1 slot まで、ガード強め)
 
-### 🔴 P0-Stage3. `compare-retrieval` script `[未着手]`
+### 🔴 P0-Stage3. `compare-retrieval` script `[完了 2026-05-26]`
 - 目的: 同じ query を `recall` / `explore(diversity=0.9)` / `explore(mode="dormant")` / `ambient_recall` に流して横並びで観測する read-only ツール
 - 作業:
   - [ ] `scripts/compare_retrieval.py` 新規 (read-only、`passive=True` で recall、ephemeral session で explore)
@@ -62,7 +62,7 @@
   - [ ] `docs/wiki/Operations-Performance-Testing.md` に使い方追加
 - D1-D3: [Plan §4 Stage 3](docs/wiki/Plans-Observation-Apparatus-Refinement.md#stage-3--compare-retrieval-script)
 
-### 🔴 P0-Stage4. Source-aware display in `reflect(aspect="connections")` `[未着手]`
+### 🔴 P0-Stage4. Source-aware display in `reflect(aspect="connections")` `[完了 2026-05-26]`
 - 目的: 共起 edge を agent_user / persona / ingest の 3 bucket で表示。**force computation には触らない**、表示 lens のみ
 - 作業:
   - [ ] `gaottt/services/reflection.py::reflect_connections()` 結果整形を 3 bucket に分割

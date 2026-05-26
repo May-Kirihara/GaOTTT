@@ -113,18 +113,51 @@ async def hot_topics(engine: GaOTTTEngine, limit: int = 10) -> ReflectHotTopicsR
     return ReflectHotTopicsResponse(items=items)
 
 
+# Observation Apparatus Refinement Stage 4 — source classification buckets.
+# Force computation never branches on these. Used only to group display rows
+# in ``reflect(aspect="connections")`` so file-ingest artifacts (same-batch
+# chunk co-occurrence) stop crowding out cross-domain associations.
+_INGEST_SOURCES = frozenset({
+    "file", "tweet", "csv", "document", "claude-code", "chat", "ingest",
+})
+_PERSONA_SOURCES = frozenset({"value", "intention", "commitment"})
+
+
+def _connection_bucket(src_source: str | None, dst_source: str | None) -> str:
+    """Classify an edge by the source-pair into one of three display buckets.
+
+    Returns ``"ingest"`` when either endpoint comes from a bulk ingest (file
+    / tweet / csv / ...), ``"persona"`` when both endpoints are declared
+    persona items (value/intention/commitment), and ``"agent_user"``
+    otherwise. ``None`` source labels fall through to ``"agent_user"``
+    (the unknown-class bin), so a missing source is treated as a dialogue
+    edge rather than as an ingest artifact — the safer default.
+    """
+    if (src_source in _INGEST_SOURCES) or (dst_source in _INGEST_SOURCES):
+        return "ingest"
+    if src_source in _PERSONA_SOURCES and dst_source in _PERSONA_SOURCES:
+        return "persona"
+    return "agent_user"
+
+
 async def connections(engine: GaOTTTEngine, limit: int = 10) -> ReflectConnectionsResponse:
     all_edges = engine.cache.get_all_edges()
     edges = sorted(all_edges, key=lambda e: e.weight, reverse=True)[:limit]
     items = []
+    src_by_id = engine.cache.source_by_id
     for e in edges:
         doc_s = await engine.store.get_document(e.src)
         doc_d = await engine.store.get_document(e.dst)
         s_text = (doc_s.get("content", "")[:50] if doc_s else "?").replace("\n", " ")
         d_text = (doc_d.get("content", "")[:50] if doc_d else "?").replace("\n", " ")
+        s_src = src_by_id.get(e.src)
+        d_src = src_by_id.get(e.dst)
         items.append(ReflectConnectionItem(
             src=e.src, dst=e.dst, weight=e.weight,
             src_preview=s_text, dst_preview=d_text,
+            bucket=_connection_bucket(s_src, d_src),
+            src_source=s_src,
+            dst_source=d_src,
         ))
     return ReflectConnectionsResponse(items=items, total=len(all_edges))
 

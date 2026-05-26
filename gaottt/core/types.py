@@ -453,6 +453,13 @@ class AmbientRecallResponse(BaseModel):
     """
     direct: list[AmbientMemory] = Field(default_factory=list)     # ① top final_score hits
     lensing: list[AmbientMemory] = Field(default_factory=list)    # ② top-K gravitational-lensing picks (Stage 3)
+    # Observation Apparatus Refinement Stage 2 — dormant whisper slot.
+    # Counter-importance-sampled dormant memos that *also* satisfy a strong
+    # BM25 lexical match against the query. Surfaces "〇〇といえば〜だったよな"
+    # picks the gravity field has neglected. Empty when no dormant candidate
+    # cleared ``ambient_dormant_relevance_floor``. Not counted toward
+    # ``count`` (it rides along an injection the gate already approved).
+    dormant: list[AmbientMemory] = Field(default_factory=list)    # ③ dormant whispers
     tensions: list[AmbientTension] = Field(default_factory=list)  # ⑤ contradicts pairs (Stage 2)
     persona: AmbientPersona | None = None                         # ⑥ persona grounding (Stage 3)
     count: int = 0                                                # total memories surfaced
@@ -642,6 +649,17 @@ class ReflectConnectionItem(BaseModel):
     weight: float
     src_preview: str = ""
     dst_preview: str = ""
+    # Observation Apparatus Refinement Stage 4 — display-layer bucket.
+    # ``"persona"`` (value/intention/commitment ↔ same), ``"agent_user"``
+    # (agent/user/hypothesis/note/... pairs), or ``"ingest"`` (any pair
+    # involving file/tweet/csv/document — likely a same-batch chunk
+    # artifact). None when source classification is unavailable. This is
+    # informational only — edge weight and count are unchanged.
+    bucket: str | None = None
+    # Convenience: source labels for src and dst, populated alongside
+    # ``bucket`` when classification succeeded.
+    src_source: str | None = None
+    dst_source: str | None = None
 
 
 class ReflectConnectionsResponse(BaseModel):
