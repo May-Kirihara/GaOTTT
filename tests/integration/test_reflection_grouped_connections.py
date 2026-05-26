@@ -72,6 +72,38 @@ async def test_persona_pair_classified_persona(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_flag_off_returns_unbucketed_items(tmp_path):
+    """Fix #5 — connections_grouped_by_source=False is a real rollback knob.
+
+    With the flag False, ``connections()`` returns items with bucket=None,
+    and ``format_reflect_connections`` falls back to the legacy flat layout.
+    """
+    from gaottt.services import formatters
+    engine = _make_engine(tmp_path, connections_grouped_by_source=False)
+    await engine.startup()
+    try:
+        a = await memory_service.remember(
+            engine, content="value statement A", source="value",
+        )
+        b = await memory_service.remember(
+            engine, content="intention statement B", source="intention",
+        )
+        engine.cache.set_edge(a.id, b.id, weight=1.0)
+        resp = await connections_service(engine, limit=5)
+        # Every item has bucket=None when the flag is off.
+        for e in resp.items:
+            assert e.bucket is None
+        rendered = formatters.format_reflect_connections(resp)
+        # Legacy flat header is the only heading — no '▼ persona' etc.
+        assert "Strongest connections" in rendered
+        assert "▼ persona" not in rendered
+        assert "▼ agent" not in rendered
+        assert "▼ file" not in rendered
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_file_pair_classified_ingest(tmp_path):
     """A file↔file edge lands in the ingest bucket."""
     engine = _make_engine(tmp_path)

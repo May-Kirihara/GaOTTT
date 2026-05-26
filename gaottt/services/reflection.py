@@ -118,7 +118,14 @@ async def hot_topics(engine: GaOTTTEngine, limit: int = 10) -> ReflectHotTopicsR
 # in ``reflect(aspect="connections")`` so file-ingest artifacts (same-batch
 # chunk co-occurrence) stop crowding out cross-domain associations.
 _INGEST_SOURCES = frozenset({
-    "file", "tweet", "csv", "document", "claude-code", "chat", "ingest",
+    # Bulk-import classes — multiple chunks per original file/conversation
+    # land here, so their pairwise co-occurrence is a same-batch artifact
+    # rather than a semantic association the reader should weigh.
+    "file", "tweet", "csv", "document", "ingest", "chat",
+    "claude-code",   # purged from production 2026-05-21 but kept for safety
+    "openai",        # ChatGPT export (loader.py L109), 10k+ docs in production
+    "claude-web",    # Claude.ai web export (loader.py L119), 4k+ docs in production
+    "chat-export",   # any future chat-export-style source
 })
 _PERSONA_SOURCES = frozenset({"value", "intention", "commitment"})
 
@@ -145,6 +152,11 @@ async def connections(engine: GaOTTTEngine, limit: int = 10) -> ReflectConnectio
     edges = sorted(all_edges, key=lambda e: e.weight, reverse=True)[:limit]
     items = []
     src_by_id = engine.cache.source_by_id
+    # Observation Apparatus Refinement Stage 4 — bucket population is gated
+    # by the config flag so operators can roll back to the legacy flat layout
+    # without code changes (format_reflect_connections falls through to flat
+    # when every item has bucket=None).
+    grouping_on = getattr(engine.config, "connections_grouped_by_source", True)
     for e in edges:
         doc_s = await engine.store.get_document(e.src)
         doc_d = await engine.store.get_document(e.dst)
@@ -155,7 +167,7 @@ async def connections(engine: GaOTTTEngine, limit: int = 10) -> ReflectConnectio
         items.append(ReflectConnectionItem(
             src=e.src, dst=e.dst, weight=e.weight,
             src_preview=s_text, dst_preview=d_text,
-            bucket=_connection_bucket(s_src, d_src),
+            bucket=_connection_bucket(s_src, d_src) if grouping_on else None,
             src_source=s_src,
             dst_source=d_src,
         ))

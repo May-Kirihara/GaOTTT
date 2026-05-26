@@ -27,6 +27,17 @@ def test_tweet_or_csv_endpoint_also_ingest() -> None:
     assert _connection_bucket("claude-code", "agent") == "ingest"
 
 
+def test_chat_export_endpoints_route_to_ingest() -> None:
+    """Fix #2 — ChatGPT and Claude.ai web export sources (loader.py L109/L119)
+    must land in the ingest bucket so same-conversation chunk co-occurrence
+    does not crowd out cross-domain pairs in the dialogue bucket."""
+    assert _connection_bucket("openai", "openai") == "ingest"
+    assert _connection_bucket("openai", "agent") == "ingest"
+    assert _connection_bucket("claude-web", "claude-web") == "ingest"
+    assert _connection_bucket("claude-web", "agent") == "ingest"
+    assert _connection_bucket("chat-export", "agent") == "ingest"
+
+
 def test_agent_user_is_default_for_dialogue() -> None:
     assert _connection_bucket("agent", "agent") == "agent_user"
     assert _connection_bucket("user", "agent") == "agent_user"

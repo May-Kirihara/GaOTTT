@@ -136,17 +136,16 @@ async def _column_explore_serendipity(
     engine, query: str, top_k: int,
 ) -> ColumnReport:
     rep = ColumnReport(label="explore diversity=0.9")
-    # Disable training_delta to keep the explore read-only (we want the
-    # comparison to NOT shift mass / displacement / cooccurrence).
-    was_td = engine.config.training_delta_enabled
-    engine.config.training_delta_enabled = False
-    try:
-        resp = await memory_service.explore(
-            engine, query=query, diversity=0.9, top_k=top_k,
-            auto_route=False, mode="serendipity",
-        )
-    finally:
-        engine.config.training_delta_enabled = was_td
+    # passive=True: engine.query skips _update_simulation + _update_cooccurrence
+    # (engine.py L1073-1080), so mass / displacement / co-occurrence are not
+    # written. This is the same read-only mode recall(passive=True) uses for
+    # ambient_recall. Previously the script disabled training_delta_enabled
+    # and assumed that meant read-only — but training_delta only gates
+    # *reporting* of deltas, not the underlying mutation.
+    resp = await memory_service.explore(
+        engine, query=query, diversity=0.9, top_k=top_k,
+        auto_route=False, mode="serendipity", passive=True,
+    )
     if not resp.items:
         rep.empty_reason = "no hits"
         return rep

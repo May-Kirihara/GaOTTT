@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import random
 import time
+from bisect import bisect_right
 from typing import Any, Callable
 
 import numpy as np
@@ -331,6 +332,7 @@ async def _dormant_for_ambient(
     excerpt_chars: int,
     excluded_ids: set[str],
     recently_surfaced: dict[str, int] | None,
+    expose_breakdown: bool = False,
 ) -> list[AmbientMemory]:
     """Observation Apparatus Refinement Stage 2 — dormant whisper slot.
 
@@ -343,6 +345,12 @@ async def _dormant_for_ambient(
 
     Force computation untouched: this only chooses *which* dormant memos
     to **observe**. Physics rule (mass/Hooke/kick) is not branched on.
+
+    ``expose_breakdown`` mirrors the direct/lensing/persona slots: when False,
+    the returned ``AmbientMemory.breakdown`` is None, matching the compact
+    output other slots produce. The reason line is computed regardless so
+    callers that DO opt in get a populated explanation, but it never leaks
+    when the caller asked for breakdown-suppressed output.
     """
     cfg = engine.config
     if not cfg.ambient_dormant_slot_enabled or cfg.ambient_dormant_slot_count <= 0:
@@ -357,10 +365,15 @@ async def _dormant_for_ambient(
     if not active_states:
         return []
 
+    # Sort the full mass distribution once — used both for the percentile
+    # cut (when ``dormant_mass_percentile`` is set) AND for the per-node
+    # rank we attach to ``breakdown.dormant_percentile`` below. Hoisting
+    # out of the per-item loop keeps the work O(N log N) once per call.
+    sorted_masses = sorted(s.mass for s in active_states)
+
     # Same percentile-vs-absolute logic as ``_dormant_surface`` so the two
     # paths agree on what counts as dormant.
     if cfg.dormant_mass_percentile is not None:
-        sorted_masses = sorted(s.mass for s in active_states)
         p = max(0.0, min(100.0, float(cfg.dormant_mass_percentile)))
         pos = (p / 100.0) * (len(sorted_masses) - 1)
         lo = int(pos)
@@ -402,6 +415,7 @@ async def _dormant_for_ambient(
 
     # Convert to AmbientMemory with reason-line populated (Stage 1 ↔ Stage 2
     # integration: dormant_percentile + bm25_score feed explain_score).
+    n_masses = len(sorted_masses)
     out: list[AmbientMemory] = []
     for doc_id, bm25_score in relevant:
         state = dormant_state_by_id[doc_id]
@@ -409,14 +423,15 @@ async def _dormant_for_ambient(
         if doc is None:
             continue
         meta = doc.get("metadata") or {}
-        if cfg.dormant_mass_percentile is not None:
-            percentile: float | None = float(cfg.dormant_mass_percentile)
-        elif active_states:
-            sorted_masses = sorted(s.mass for s in active_states)
-            rank = sum(1 for m in sorted_masses if m <= state.mass)
-            percentile = 100.0 * rank / max(1, len(sorted_masses))
-        else:
-            percentile = None
+        # Per-node rank: how many active nodes have mass <= this node's mass.
+        # Unified across percentile and absolute-threshold modes — both
+        # surface the node's true position in the mass distribution rather
+        # than the configured cut. Bisect on the pre-sorted list keeps this
+        # O(log N) per item even when slot_count > 1.
+        rank = bisect_right(sorted_masses, state.mass)
+        percentile: float | None = (
+            100.0 * rank / n_masses if n_masses > 0 else None
+        )
         breakdown = ScoreBreakdown(
             bm25_score=float(bm25_score),
             bm25_contributed=True,
@@ -440,7 +455,7 @@ async def _dormant_for_ambient(
             age_days=max(0.0, (now - state.last_access) / 86400.0),
             virtual_score=0.0,
             final_score=0.0,
-            breakdown=breakdown,
+            breakdown=breakdown if expose_breakdown else None,
         ))
     return out
 
@@ -1034,6 +1049,8 @@ async def ambient_recall(
     # BM25-gated; runs only when the relevance gate already approved the
     # injection (no point whispering on off-topic prompts). Also excluded
     # are direct/lensing IDs to prevent duplicate surface in one block.
+    # ``expose_breakdown`` is forwarded so the dormant slot follows the same
+    # compact-vs-verbose contract as direct/lensing/persona.
     surfaced_ids = direct_ids | {m.id for m in lensing}
     dormant = await _dormant_for_ambient(
         engine, query,
@@ -1041,9 +1058,13 @@ async def ambient_recall(
         excerpt_chars=cfg.ambient_excerpt_chars,
         excluded_ids=excluded_ids | surfaced_ids,
         recently_surfaced=recently_surfaced,
+        expose_breakdown=expose_breakdown,
     )
 
-    count = len(direct) + len(lensing) + len(dormant)
+    # ``dormant`` rides along an injection the relevance gate already
+    # approved (same as persona) — not counted toward ``count``, which the
+    # caller reads as "how many primary memories surfaced".
+    count = len(direct) + len(lensing)
     return AmbientRecallResponse(
         direct=direct, lensing=lensing, dormant=dormant, tensions=tensions,
         persona=persona, count=count,
@@ -1127,11 +1148,22 @@ async def explore(
     tag_filter: list[str] | None = None,
     auto_route: bool = True,
     mode: str = "serendipity",
+    passive: bool = False,
 ) -> ExploreResponse:
+    """Phase O Stage 5 / Observation Apparatus Refinement Stage 3.
+
+    ``passive=True`` (default False) routes through ``engine.query`` with
+    ``passive=True``, mirroring ``recall(passive=True)``: no mass update, no
+    displacement nudge, no co-occurrence write — read-only observation of the
+    gravity field. Used by ``scripts/compare_retrieval.py`` so that running
+    the diagnostic does not perturb the field it is observing.
+    """
     if mode == "dormant":
         # Phase O Stage 5 — counter-importance sampling. Skips wave / routing
         # / training_delta entirely: this is a different operation, not a
         # query (no semantic intent to detect, no gradient step to record).
+        # ``_dormant_surface`` is read-only by construction (no engine.query),
+        # so ``passive`` is implied and ignored here.
         return await _dormant_surface(engine, top_k=top_k, diversity=diversity)
 
     config = engine.config
@@ -1145,7 +1177,10 @@ async def explore(
     explore_depth = config.wave_max_depth + int(diversity * 2)
     explore_k = config.wave_initial_k + int(diversity * 4)
 
-    delta_out: dict | None = {} if engine.config.training_delta_enabled else None
+    # training_delta is meaningless when passive=True (no mutation to report).
+    delta_out: dict | None = (
+        {} if engine.config.training_delta_enabled and not passive else None
+    )
     raw = await engine.query(
         text=query, top_k=top_k,
         wave_depth=explore_depth, wave_k=explore_k,
@@ -1153,6 +1188,7 @@ async def explore(
         tag_filter=tag_filter,
         out_training_delta=delta_out,
         gamma_override=explore_gamma,
+        passive=passive,
     )
 
     items = [_to_memory_item(engine, r) for r in raw]

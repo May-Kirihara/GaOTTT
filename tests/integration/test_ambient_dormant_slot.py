@@ -54,10 +54,13 @@ async def test_dormant_slot_surfaces_on_lexical_match(tmp_path):
             )
         # Let the age cutoff (1ms) pass so the docs become "dormant".
         await asyncio.sleep(0.05)
+        # expose_breakdown=True so the slot exposes its ScoreBreakdown + reason
+        # (compact-by-default contract — see Fix #4).
         resp = await memory_service.ambient_recall(
-            engine, "gravity lensing whisper",
+            engine, "gravity lensing whisper", expose_breakdown=True,
         )
-        assert resp.count >= 1
+        # ``count`` reports primary memories (direct+lensing); dormant rides
+        # along (same as persona) — see Fix #6.
         assert resp.dormant, (
             "expected at least one dormant whisper given lexical match"
         )
@@ -193,12 +196,15 @@ async def test_dormant_slot_appears_in_manifest(tmp_path):
             engine, "gravity lensing whisper",
         )
         rendered = formatters.format_ambient(resp)
-        if resp.dormant:
-            assert "▼ ささやき" in rendered
-            assert "dormant=" in rendered
-            assert resp.dormant[0].id in rendered
-        else:
-            # If the field happened not to whisper, the heading must be absent.
-            assert "▼ ささやき" not in rendered
+        # Preconditions for this test: the dormant pool must be non-empty AND
+        # cleared the BM25 floor. If empty, the test is vacuous (review
+        # finding #12) — fail loudly so a regression to silence is caught
+        # rather than silently passing the else branch.
+        assert resp.dormant, (
+            "preconditions: BM25 floor cleared and dormant set non-empty"
+        )
+        assert "▼ ささやき" in rendered
+        assert "dormant=" in rendered
+        assert resp.dormant[0].id in rendered
     finally:
         await engine.shutdown()

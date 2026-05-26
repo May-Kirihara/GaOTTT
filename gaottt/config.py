@@ -365,8 +365,15 @@ class GaOTTTConfig:
     # default — more risks crowding out direct / lensing.
     ambient_dormant_slot_count: int = 1
     # BM25 floor a dormant candidate must clear to qualify for the slot.
-    # Below this we leave the slot empty (no random hit — the silence is
-    # better than off-topic noise). Same scale as ``ambient_bm25_min_score``.
+    # Below this we leave the slot empty (no random hit — silence beats
+    # off-topic noise). NOTE: this is the floor for the *intersection* of
+    # (BM25 top-200) ∩ (dormant set), evaluated AFTER the upstream
+    # ``ambient_bm25_min_score`` (corpus-calibrated at ~32) has already
+    # approved the injection. So this floor can be looser than the upstream
+    # gate without producing noise — the candidate pool is already narrow.
+    # In production, tune in tandem with ``ambient_bm25_min_score`` (a
+    # 1:50-ish ratio is typical when the upstream gate is 32 — see
+    # docs/wiki/Operations-Tuning.md). Calibration is measurement-first.
     ambient_dormant_relevance_floor: float = 0.5
 
     # Observation Apparatus Refinement Stage 4 — source-aware connections
