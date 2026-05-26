@@ -78,13 +78,24 @@ def compute_virtual_position(
     original_emb: np.ndarray,
     displacement: np.ndarray | None,
     temperature: float = 0.0,
+    rng: "np.random.Generator | None" = None,
 ) -> np.ndarray:
-    """Compute virtual position = normalize(original + displacement + thermal noise)."""
+    """Compute virtual position = normalize(original + displacement + thermal noise).
+
+    ``rng`` is the source of read-time thermal noise. Defaults to ``None`` →
+    unseeded ``np.random`` (production behavior, bit-exact to pre-Phase-P).
+    Test fixtures may pass ``rng=np.random.default_rng(seed)`` for
+    reproducible noise — see Phase P decision D6 in
+    docs/wiki/Plans-Phase-P-Pressure-Terms.md.
+    """
     pos = original_emb.copy()
     if displacement is not None:
         pos = pos + displacement
     if temperature > 0.001:
-        noise = np.random.randn(*pos.shape).astype(np.float32) * temperature
+        if rng is None:
+            noise = np.random.randn(*pos.shape).astype(np.float32) * temperature
+        else:
+            noise = rng.standard_normal(pos.shape).astype(np.float32) * temperature
         pos = pos + noise
     norm = np.linalg.norm(pos)
     if norm > 0:
@@ -300,6 +311,7 @@ def update_orbital_state(
     cache: "CacheLayer | None" = None,
     query_anchor: np.ndarray | None = None,
     query_scores: dict[str, float] | None = None,
+    rng: "np.random.Generator | None" = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     """Full orbital mechanics step for all nodes.
 
@@ -308,6 +320,13 @@ def update_orbital_state(
              are provided)
     Stage 2: Update velocities (+ friction)
     Stage 3: Update displacements (+ clamp)
+    Stage 4 (Phase P-β): Optional Langevin thermal kick on the position step
+             when ``config.langevin_temperature_enabled`` and ``T₀ > 0``.
+
+    ``rng`` is the source of Langevin noise. Defaults to ``None`` → unseeded
+    ``np.random`` (production), bit-exact to legacy when Langevin is off.
+    Test fixtures may pass ``rng=np.random.default_rng(seed)`` for reproducible
+    noise — see Phase P decision D6.
 
     Returns: (updated_displacements, updated_velocities)
     """
@@ -348,6 +367,15 @@ def update_orbital_state(
     new_displacements: dict[str, np.ndarray] = {}
     new_velocities: dict[str, np.ndarray] = {}
 
+    # Phase P-β: precompute Langevin σ once per call (dt=1.0 absorbed into T₀).
+    # σ > 0 only when both the feature flag is on AND T₀ is non-trivial.
+    langevin_sigma = 0.0
+    if (
+        config.langevin_temperature_enabled
+        and config.langevin_temperature_t0 > 0.0
+    ):
+        langevin_sigma = math.sqrt(2.0 * config.langevin_temperature_t0)
+
     for nid in active_ids:
         old_vel = velocities.get(nid, np.zeros(dim, dtype=np.float32))
         old_disp = displacements.get(nid, np.zeros(dim, dtype=np.float32))
@@ -358,6 +386,20 @@ def update_orbital_state(
 
         # Stage 3: position update (displacement += velocity * dt)
         new_disp = old_disp + new_vel  # dt = 1.0
+
+        # Stage 4 (Phase P-β): Langevin thermal kick.
+        # ``new_disp += √(2·T₀) · ξ`` — SGLD-shaped Brownian step. Placed
+        # AFTER the deterministic velocity update but BEFORE clamp so the
+        # thermal kick contributes to the bounded displacement (same blast
+        # radius as a normal step). When the feature is off (default) this
+        # branch is skipped → bit-exact equivalence to legacy.
+        if langevin_sigma > 0.0:
+            if rng is None:
+                noise = np.random.randn(dim).astype(np.float32) * langevin_sigma
+            else:
+                noise = rng.standard_normal(dim).astype(np.float32) * langevin_sigma
+            new_disp = new_disp + noise
+
         new_disp = clamp_vector(new_disp, config.max_displacement_norm)
 
         new_velocities[nid] = new_vel
