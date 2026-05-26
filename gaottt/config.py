@@ -476,6 +476,26 @@ class GaOTTTConfig:
     # docs/wiki/Plans-Ambient-Recall-Lateral-Association.md Stage 1.
     ambient_novelty_decay: float = 0.7
 
+    # Lateral Association Stage 7.1 (2026-05-26) — direct-hit anti-hub.
+    # Greedy MMR-style penalty on top-k composition: for each subsequent slot,
+    # candidate ``final_score`` is reduced by
+    # ``direct_hit_anti_hub_lambda × count_of_shared_cluster_in_already_selected``.
+    # Cluster identity = ``cohort_id`` OR ``original_id`` (see
+    # ``services.memory._cluster_key_for``). Both are Phase M structural
+    # identifiers (no source / tag branching). Fallback to ``original_id``
+    # added after production dogfooding (2026-05-26) found ``cohort_id``
+    # coverage = 0% in 26k corpus (one-at-a-time ``remember()`` calls give
+    # batch=1, supernova doesn't fire), while ``original_id`` covers 57.8%
+    # of active memos in multi-member clusters (largest = 638-chunk book).
+    # ``cluster_key is None`` (no cohort + no original_id, pre-Phase-M
+    # memos) gets no penalty — intrinsically diverse.
+    # ``0.0`` (default) = behavior unchanged; ``0.4`` is the baseline-derived
+    # starting point. Applied to:
+    #   ambient_recall.direct slot  — before the ``items[:direct_k]`` slice
+    #   recall top-k composition    — engine returns a larger pool, then MMR
+    # See docs/wiki/Plans-Ambient-Recall-Lateral-Association.md (Stage 7).
+    direct_hit_anti_hub_lambda: float = 0.0
+
     # Phase O Stage 5 — Dormant surface (explore(mode='dormant')).
     # ``explore(mode='dormant')`` returns random self-authored memos that have
     # been quietly forgotten — older than ``dormant_age_threshold_seconds``
@@ -487,6 +507,16 @@ class GaOTTTConfig:
     # principle stays intact (see Plans-Phase-O §Stage 5 "設計判断").
     dormant_age_threshold_seconds: float = 30 * 86400.0  # 30 days
     dormant_mass_threshold: float = 2.0                  # mature gate point — below means "the field didn't claim it"
+    # Lateral Association Stage 6.2 (2026-05-26) — distribution-relative
+    # dormant mass cut. When set (e.g. ``20.0``), the actual cut becomes the
+    # ``p`` percentile of active-corpus mass instead of the fixed
+    # ``dormant_mass_threshold``. Production observation showed the absolute
+    # 2.0 cut returns 0 candidates on a 26k-memo corpus because the mass
+    # distribution has shifted upward — see
+    # ``project_phase_o_stage_5_production_observation``. ``None`` (default)
+    # preserves legacy absolute-threshold behaviour. Use ``diag_dormant.py``
+    # to pick a percentile that yields ~5-15 candidates on the target DB.
+    dormant_mass_percentile: float | None = None
     dormant_source_classes: tuple[str, ...] = (
         "agent", "value", "intention", "commitment", "note", "reference",
     )
