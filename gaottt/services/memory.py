@@ -33,7 +33,48 @@ from gaottt.core.types import (
     ScoreBreakdown,
     TrainingDelta,
 )
+from gaottt.core.explain import explain_score
 from gaottt.services import query_routing, reflection as reflection_service
+
+
+def _enrich_breakdown(
+    engine: GaOTTTEngine,
+    node_id: str,
+    breakdown: ScoreBreakdown | None,
+    *,
+    bm25_score: float = 0.0,
+    lensing_gap: float = 0.0,
+    dormant_percentile: float | None = None,
+) -> ScoreBreakdown | None:
+    """Observation Apparatus Refinement Stage 1 — attach reason line.
+
+    Reads the node's current mass from cache and runs :func:`explain_score`
+    against the breakdown plus contextual hints (bm25/lensing/dormant).
+    Returns a new ``ScoreBreakdown`` with ``reason`` and the informational
+    inputs filled. Force computation is untouched (pure read).
+    """
+    if breakdown is None:
+        return None
+    if not getattr(engine.config, "expose_reason", True):
+        return breakdown
+    node_mass = 0.0
+    state = engine.cache.get_node(node_id)
+    if state is not None:
+        node_mass = float(state.mass)
+    enriched = breakdown.model_copy(update={
+        "node_mass": node_mass,
+        "bm25_score": bm25_score,
+        "lensing_gap": lensing_gap,
+        "dormant_percentile": dormant_percentile,
+    })
+    reason = explain_score(
+        enriched,
+        mass_dominance_threshold=engine.config.reason_dominance_mass_threshold,
+        bm25_strong_threshold=engine.config.reason_bm25_strong_threshold,
+    )
+    if reason is None:
+        return enriched
+    return enriched.model_copy(update={"reason": reason})
 
 
 async def save_memory(
@@ -133,7 +174,11 @@ def _to_memory_item(
         source=source,
         tags=list(tags),
         displacement_norm=engine.get_displacement_norm(r.id),
-        score_breakdown=getattr(r, "score_breakdown", None),  # Phase O Stage 1
+        score_breakdown=_enrich_breakdown(
+            engine,
+            r.id,
+            getattr(r, "score_breakdown", None),  # Phase O Stage 1
+        ),
     )
 
 

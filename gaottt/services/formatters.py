@@ -90,6 +90,11 @@ def _format_breakdown(b) -> str:
 
     Always appended to recall output when score_breakdown is present, so a
     TTT-aware caller can see why a result scored what it scored.
+
+    Observation Apparatus Refinement Stage 1 — if ``b.reason`` is populated
+    (a human-readable summary from ``explain_score``), append it as a second
+    indented line so existing breakdown-substring assertions keep working
+    while callers get the 1-line explanation.
     """
     if b is None:
         return ""
@@ -99,13 +104,17 @@ def _format_breakdown(b) -> str:
     if b.forced_inclusion:
         flags.append("forced")
     flag_str = f" [{', '.join(flags)}]" if flags else ""
-    return (
+    line = (
         f"  breakdown: cos={b.raw_cosine:.3f} vcos={b.virtual_cosine:.3f}·"
         f"decay={b.decay_factor:.3f} +wave={b.wave_score:.3f} "
         f"+mass={b.mass_boost:.3f} +emo={b.emotion_term:.3f} "
         f"+cert={b.certainty_term:.3f} ×sat={b.saturation:.3f} "
         f"persona_prox={b.persona_proximity:.3f}{flag_str}"
     )
+    reason = getattr(b, "reason", None)
+    if reason:
+        line = f"{line}\n  reason: {reason}"
+    return line
 
 
 def _format_training_delta(td) -> str:
@@ -306,7 +315,14 @@ def _ambient_breakdown(b) -> str:
         parts.append("bm25")
     if b.forced_inclusion:
         parts.append("forced")
-    return f"  [{' '.join(parts)}]" if parts else ""
+    suffix = f"  [{' '.join(parts)}]" if parts else ""
+    # Observation Apparatus Refinement Stage 1 — append the reason line as a
+    # second indented sub-line so the ambient block reader sees *why* this
+    # slot fired without parsing the numeric breakdown.
+    reason = getattr(b, "reason", None)
+    if reason:
+        suffix = f"{suffix}\n      reason: {reason}"
+    return suffix
 
 
 def format_ambient(result: AmbientRecallResponse) -> str:

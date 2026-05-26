@@ -214,8 +214,7 @@ __marimo__/
 data/
 
 eval_output
-input/documents.csv
-input/projects
+input/*
 .mcp.json
 .specify
 .claude

@@ -336,6 +336,24 @@ class GaOTTTConfig:
     # workaround. set False for legacy clients or to shave a few bytes.
     expose_score_breakdown: bool = True
 
+    # Observation Apparatus Refinement Stage 1 — reason line.
+    # When True, ScoreBreakdown.reason carries a 1-line human-readable
+    # explanation of which factors dominated this node's score
+    # (e.g. "high mass persona proximity — possible dominance artifact",
+    # "bm25 strong lexical match", "lensing pick", "dormant surface").
+    # Force computation / mass update / acceleration are NOT touched —
+    # this is pure observation layer (Phase M single-rule preserved).
+    # Set False to disable the string generation (saves a few µs per result).
+    expose_reason: bool = True
+    # Mass threshold above which a node's mass is flagged as "dominance candidate"
+    # in the reason line. Calibrated against production observation
+    # (harakiriworks intention mass=2.82 was the canonical dominance case).
+    reason_dominance_mass_threshold: float = 2.0
+    # BM25 score threshold above which the reason line labels the surface
+    # as "strong lexical match". RRF-normalized scores typically sit in
+    # 0.01-0.05 range; raw BM25 in 0-10+ range — this threshold expects raw.
+    reason_bm25_strong_threshold: float = 0.5
+
     # Phase O Stage 2 — Training delta trailer (TTT update visibility).
     # When True, recall/explore responses carry a ``training_delta`` field
     # exposing displacement/mass changes induced by this recall + wave reach

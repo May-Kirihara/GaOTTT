@@ -117,6 +117,12 @@ class ScoreBreakdown(BaseModel):
     persona_proximity: float = 0.0   # informational: persona-graph proximity (already in wave_score)
     bm25_contributed: bool = False   # informational: did BM25 affect seed ranking
     forced_inclusion: bool = False   # informational: was node in injected_ids (tag/persona_context)
+    # Observation Apparatus Refinement Stage 1 — informational inputs for explain_score()
+    node_mass: float = 0.0           # informational: the node's current mass (for dominance detection)
+    bm25_score: float = 0.0          # informational: raw BM25 score if BM25 was used, else 0
+    lensing_gap: float = 0.0         # informational: ambient lensing-pick gap signal (0 if not lensing slot)
+    dormant_percentile: float | None = None  # informational: percentile rank if dormant surface, None otherwise
+    reason: str | None = None        # Stage 1: 1-line human-readable explanation of why this scored
 
     @property
     def expected_sum(self) -> float:
