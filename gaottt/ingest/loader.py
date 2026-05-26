@@ -1,7 +1,8 @@
 """File ingestion: load documents from files and directories.
 
-Supports Markdown (.md), plain text (.txt), CSV (.csv), and Claude Code
-transcript JSONL (.jsonl).
+Supports Markdown (.md), plain text (.txt), CSV (.csv), Claude Code
+transcript JSONL (.jsonl), and chat-export JSON (.json — auto-detects
+OpenAI ChatGPT export vs Claude.ai web export by shape).
 """
 
 from __future__ import annotations
@@ -59,9 +60,72 @@ def _ingest_file(
     elif suffix == ".csv":
         return _ingest_csv(path, source, chunk_size)
     elif suffix == ".jsonl":
-        return _ingest_claude_jsonl(path, source, chunk_size, include_tool_results)
+        eff = source if source != "file" else "claude-code"
+        return _ingest_claude_jsonl(path, eff, chunk_size, include_tool_results)
+    elif suffix == ".json":
+        return _ingest_chat_json(path, source, chunk_size, include_tool_results)
     else:  # .txt and others
         return _ingest_plaintext(path, source, chunk_size)
+
+
+def _ingest_chat_json(
+    path: Path,
+    source: str,
+    chunk_size: int,
+    include_tool_results: bool,
+) -> list[dict]:
+    """Dispatch ``.json`` to the right chat-export parser by shape.
+
+    ``mapping`` key   → OpenAI ChatGPT export (tree-structured)
+    ``chat_messages`` → Claude.ai web export (linear)
+    anything else     → return [] (silently skip — caller didn't want plaintext)
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    # Probe a representative element. Exports are usually list[Conversation]
+    # but a single exported conversation can also appear as a top-level dict.
+    if isinstance(data, list):
+        if not data:
+            return []
+        probe = data[0] if isinstance(data[0], dict) else None
+        convs = [c for c in data if isinstance(c, dict)]
+    elif isinstance(data, dict):
+        probe = data
+        convs = [data]
+    else:
+        return []
+
+    if not probe:
+        return []
+
+    if "mapping" in probe and "current_node" in probe:
+        # Caller-supplied source overrides default for parity with Claude Code
+        # ingest. Treat "file" (the function default) as "use the format-native
+        # source label" so explicit `source="myname"` still wins.
+        eff_source = source if source != "file" else "openai"
+        documents: list[dict] = []
+        for conv in convs:
+            if "mapping" in conv and "current_node" in conv:
+                documents.extend(_ingest_openai_conversation(
+                    conv, path, eff_source, chunk_size, include_tool_results,
+                ))
+        return documents
+
+    if "chat_messages" in probe:
+        eff_source = source if source != "file" else "claude-web"
+        documents = []
+        for conv in convs:
+            if "chat_messages" in conv:
+                documents.extend(_ingest_claude_web_conversation(
+                    conv, path, eff_source, chunk_size, include_tool_results,
+                ))
+        return documents
+
+    return []
 
 
 # -----------------------------------------------------------------------
@@ -526,6 +590,428 @@ def _ingest_claude_jsonl(
 
     # Trailing exchange (last user/assistant block).
     if cur_user_obj is not None or cur_asst_parts:
+        flush()
+
+    return documents
+
+
+# -----------------------------------------------------------------------
+# OpenAI ChatGPT export (.json)
+# -----------------------------------------------------------------------
+
+# Content types we consider "human-facing turn content". Everything else
+# (user_editable_context, thoughts, reasoning_recap, tether_*, sonic_webpage,
+# execution_output, system_error, stderr, ...) is treated as system / tool
+# scaffolding and dropped.
+_OPENAI_KEEP_CONTENT_TYPES = {"text", "code", "multimodal_text"}
+
+
+def _openai_walk_active_path(mapping: dict, leaf: str | None) -> list[dict]:
+    """Walk from ``leaf`` back to root via ``parent``, then reverse.
+
+    Returns the active-conversation linear sequence of node dicts.
+    Branches not on this path (e.g. regen'd alternatives) are ignored.
+    """
+    if not leaf:
+        return []
+    chain: list[dict] = []
+    seen: set[str] = set()
+    cur: str | None = leaf
+    while cur and cur not in seen:
+        seen.add(cur)
+        node = mapping.get(cur)
+        if not isinstance(node, dict):
+            break
+        chain.append(node)
+        cur = node.get("parent")
+    return list(reversed(chain))
+
+
+def _openai_extract_text(msg: dict, include_tool_results: bool) -> str:
+    """Flatten an OpenAI message's content into plain text.
+
+    Returns "" for system / tool messages, hidden messages, dropped content
+    types (thoughts/reasoning_recap/tether_*/user_editable_context/etc.),
+    and tool results when ``include_tool_results`` is False.
+    """
+    if not isinstance(msg, dict):
+        return ""
+
+    author = msg.get("author") or {}
+    role = author.get("role")
+
+    md = msg.get("metadata") or {}
+    if md.get("is_visually_hidden_from_conversation"):
+        return ""
+
+    # tool / system: drop entirely (tool_result drop is the OpenAI analog
+    # of Claude Code transcript's tool_result-only user rows).
+    if role in ("system", "tool"):
+        if role == "tool" and include_tool_results:
+            # Best-effort: include a one-line preview for the tool output.
+            pass  # falls through to the content extraction below
+        else:
+            return ""
+
+    content = msg.get("content") or {}
+    if not isinstance(content, dict):
+        return ""
+    ctype = content.get("content_type")
+    if ctype not in _OPENAI_KEEP_CONTENT_TYPES:
+        return ""
+
+    parts = content.get("parts") or []
+    pieces: list[str] = []
+    for part in parts:
+        if isinstance(part, str):
+            t = part.strip()
+            if t:
+                pieces.append(t)
+        elif isinstance(part, dict):
+            # Multimodal: extract any embedded text key, ignore image_url etc.
+            for key in ("text", "transcript"):
+                v = part.get(key)
+                if isinstance(v, str) and v.strip():
+                    pieces.append(v.strip())
+                    break
+    text = "\n\n".join(pieces).strip()
+
+    if role == "tool" and text and include_tool_results:
+        tool_name = author.get("name") or "?"
+        # Keep tool output but tag it so it doesn't look like an assistant
+        # turn. First 400 chars only — raw tool stdout is the typical noise
+        # source we want to bound.
+        preview = text if len(text) <= 400 else text[:397] + "..."
+        return f"[tool_result:{tool_name}]\n{preview}"
+
+    return text
+
+
+def _ingest_openai_conversation(
+    conv: dict,
+    path: Path,
+    source: str,
+    chunk_size: int,
+    include_tool_results: bool,
+) -> list[dict]:
+    """Convert one OpenAI conversation into turn-pair documents.
+
+    Active-path only (current_node → root → reverse). User + every assistant
+    that follows until the next user prompt = one document. tool_use isn't
+    a content-type in OpenAI's schema (tools appear as ``role:"tool"``
+    messages), so the summarisation done for Claude Code's tool_use blocks
+    isn't needed here — tool messages are simply dropped unless
+    ``include_tool_results`` is set.
+    """
+    mapping = conv.get("mapping") or {}
+    chain = _openai_walk_active_path(mapping, conv.get("current_node"))
+    if not chain:
+        return []
+
+    conv_id = conv.get("conversation_id") or conv.get("id") or path.stem
+    title = (conv.get("title") or "").strip()
+    model_slug = conv.get("default_model_slug")
+    create_time = conv.get("create_time")
+
+    base_meta_template = {
+        "source": source,
+        "conversation_id": conv_id,
+        "file_path": str(path),
+        "file_name": path.name,
+    }
+    if title:
+        base_meta_template["title"] = title
+    if model_slug:
+        base_meta_template["model"] = model_slug
+    if isinstance(create_time, (int, float)):
+        base_meta_template["created_at"] = create_time
+
+    documents: list[dict] = []
+    turn_index = 0
+    cur_user: str | None = None
+    cur_asst_parts: list[str] = []
+
+    def flush() -> None:
+        nonlocal turn_index, cur_user, cur_asst_parts
+        user_text = (cur_user or "").strip()
+        asst_text = "\n\n".join(p for p in cur_asst_parts if p).strip()
+        if not user_text and not asst_text:
+            cur_user = None
+            cur_asst_parts = []
+            return
+        parts: list[str] = []
+        if user_text:
+            parts.append(f"## User\n{user_text}")
+        if asst_text:
+            parts.append(f"## Assistant\n{asst_text}")
+        body = "\n\n".join(parts)
+
+        # Spec: drop turns where user+assistant combined < 100 chars.
+        if len(user_text) + len(asst_text) < 100:
+            cur_user = None
+            cur_asst_parts = []
+            return
+
+        meta_base = {
+            **base_meta_template,
+            "original_id": conv_id,
+            "turn_index": turn_index,
+        }
+        chunks = _chunk_text(body, chunk_size)
+        for i, chunk in enumerate(chunks):
+            m = {**meta_base}
+            if len(chunks) > 1:
+                m["chunk_index"] = i
+                m["total_chunks"] = len(chunks)
+            documents.append({"content": chunk, "metadata": m})
+        turn_index += 1
+        cur_user = None
+        cur_asst_parts = []
+
+    for node in chain:
+        msg = node.get("message")
+        if not isinstance(msg, dict):
+            continue
+        author = msg.get("author") or {}
+        role = author.get("role")
+
+        if role == "user":
+            text = _openai_extract_text(msg, include_tool_results)
+            if not text:
+                continue
+            # Real new prompt → flush previous exchange first.
+            if cur_user is not None or cur_asst_parts:
+                flush()
+            cur_user = text
+        elif role == "assistant":
+            text = _openai_extract_text(msg, include_tool_results)
+            if text:
+                cur_asst_parts.append(text)
+        elif role == "tool":
+            text = _openai_extract_text(msg, include_tool_results)
+            if text:  # only non-empty when include_tool_results
+                cur_asst_parts.append(text)
+        # system: dropped
+
+    if cur_user is not None or cur_asst_parts:
+        flush()
+
+    return documents
+
+
+# -----------------------------------------------------------------------
+# Claude.ai web export (.json — conversations.json)
+# -----------------------------------------------------------------------
+
+def _claude_web_extract_assistant_text(
+    content: list,
+    include_tool_results: bool,
+) -> str:
+    """Flatten assistant ``content`` blocks. Mirrors load_chat.py semantics:
+    ``thinking`` is dropped, ``tool_use`` becomes a one-line summary,
+    ``tool_result`` is opt-in.
+    """
+    if not isinstance(content, list):
+        return ""
+    out: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            t = (block.get("text") or "").strip()
+            if t:
+                out.append(t)
+        elif btype == "tool_use":
+            name = block.get("name") or "?"
+            inp = block.get("input") or {}
+            hint = ""
+            if isinstance(inp, dict):
+                for key in ("command", "description", "query", "file_path",
+                            "path", "url", "prompt", "subject"):
+                    v = inp.get(key)
+                    if isinstance(v, str) and v.strip():
+                        hint = v.strip().splitlines()[0]
+                        if len(hint) > 120:
+                            hint = hint[:117] + "..."
+                        break
+            out.append(f"[tool:{name}]" + (f" {hint}" if hint else ""))
+        elif btype == "tool_result" and include_tool_results:
+            inner = block.get("content")
+            if isinstance(inner, str):
+                t = inner.strip()
+            elif isinstance(inner, list):
+                t = "\n".join(
+                    (b.get("text") or "").strip()
+                    for b in inner
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ).strip()
+            else:
+                t = ""
+            if t:
+                preview = t if len(t) <= 400 else t[:397] + "..."
+                out.append(f"[tool_result]\n{preview}")
+        # thinking is intentionally dropped
+    return "\n\n".join(out).strip()
+
+
+def _claude_web_msg_text(msg: dict, include_tool_results: bool) -> str:
+    """Pick the best text representation of a Claude.ai chat_messages entry.
+
+    The export ships both a flat ``text`` and structured ``content`` blocks.
+    For user messages, ``text`` is the clean version (no tool noise to filter).
+    For assistant messages we prefer ``content`` so we can drop ``thinking``
+    and summarise ``tool_use``; fall back to ``text`` if structured content
+    is empty.
+    """
+    sender = msg.get("sender")
+    if sender == "human":
+        t = (msg.get("text") or "").strip()
+        if t:
+            return t
+        # Fallback: assemble from content blocks (rare for human turns).
+        return _claude_web_extract_assistant_text(
+            msg.get("content") or [], include_tool_results=False,
+        )
+    # assistant
+    structured = _claude_web_extract_assistant_text(
+        msg.get("content") or [], include_tool_results,
+    )
+    if structured:
+        return structured
+    return (msg.get("text") or "").strip()
+
+
+def _ingest_claude_web_conversation(
+    conv: dict,
+    path: Path,
+    source: str,
+    chunk_size: int,
+    include_tool_results: bool,
+) -> list[dict]:
+    """Convert one Claude.ai conversation into turn-pair documents."""
+    msgs = conv.get("chat_messages") or []
+    if not msgs:
+        return []
+
+    conv_id = conv.get("uuid") or path.stem
+    title = (conv.get("name") or "").strip()
+    created_at = conv.get("created_at")
+
+    base_meta_template = {
+        "source": source,
+        "conversation_id": conv_id,
+        "file_path": str(path),
+        "file_name": path.name,
+    }
+    if title:
+        base_meta_template["title"] = title
+    if created_at:
+        base_meta_template["created_at"] = created_at
+
+    documents: list[dict] = []
+    turn_index = 0
+    cur_user: str | None = None
+    cur_asst_parts: list[str] = []
+    cur_attachments: list[str] = []
+
+    def flush() -> None:
+        nonlocal turn_index, cur_user, cur_asst_parts, cur_attachments
+        user_text = (cur_user or "").strip()
+        asst_text = "\n\n".join(p for p in cur_asst_parts if p).strip()
+        if not user_text and not asst_text:
+            cur_user = None
+            cur_asst_parts = []
+            cur_attachments = []
+            return
+        parts: list[str] = []
+        if user_text:
+            parts.append(f"## User\n{user_text}")
+        if asst_text:
+            parts.append(f"## Assistant\n{asst_text}")
+        body = "\n\n".join(parts)
+
+        if len(user_text) + len(asst_text) < 100:
+            cur_user = None
+            cur_asst_parts = []
+            cur_attachments = []
+            return
+
+        meta_base = {
+            **base_meta_template,
+            "original_id": conv_id,
+            "turn_index": turn_index,
+        }
+        if cur_attachments:
+            meta_base["attachments"] = ",".join(cur_attachments)
+
+        chunks = _chunk_text(body, chunk_size)
+        for i, chunk in enumerate(chunks):
+            m = {**meta_base}
+            if len(chunks) > 1:
+                m["chunk_index"] = i
+                m["total_chunks"] = len(chunks)
+            documents.append({"content": chunk, "metadata": m})
+        turn_index += 1
+        cur_user = None
+        cur_asst_parts = []
+        cur_attachments = []
+
+    def _is_tool_result_only_human(m: dict) -> bool:
+        """A human msg whose content blocks are all tool_result. Claude.ai
+        sometimes packages tool outputs this way — they're continuations of
+        the prior assistant exchange, not a new user prompt."""
+        if (m.get("text") or "").strip():
+            return False
+        c = m.get("content") or []
+        if not c:
+            return False
+        return all(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in c
+        )
+
+    for msg in msgs:
+        if not isinstance(msg, dict):
+            continue
+        sender = msg.get("sender")
+        if sender not in ("human", "assistant"):
+            continue
+
+        if sender == "human" and _is_tool_result_only_human(msg):
+            # Append to current assistant exchange (or skip when opted out).
+            if include_tool_results:
+                tr_text = _claude_web_extract_assistant_text(
+                    msg.get("content") or [], include_tool_results=True,
+                )
+                if tr_text:
+                    cur_asst_parts.append(tr_text)
+            continue
+
+        text = _claude_web_msg_text(msg, include_tool_results)
+
+        if sender == "human":
+            if not text:
+                continue
+            if cur_user is not None or cur_asst_parts:
+                flush()
+            cur_user = text
+            # Attachment names only — extracted_content is omitted because it
+            # can be huge and isn't part of the user's prose.
+            for att in msg.get("attachments") or []:
+                if isinstance(att, dict):
+                    name = att.get("file_name") or att.get("name")
+                    if isinstance(name, str) and name:
+                        cur_attachments.append(name)
+            for f in msg.get("files") or []:
+                if isinstance(f, dict):
+                    name = f.get("file_name") or f.get("name")
+                    if isinstance(name, str) and name:
+                        cur_attachments.append(name)
+        else:
+            if text:
+                cur_asst_parts.append(text)
+
+    if cur_user is not None or cur_asst_parts:
         flush()
 
     return documents
