@@ -1,6 +1,21 @@
 # Phase P — Pressure Terms (Cosmological Λ + Langevin Temperature)
 
-**状態**: ✅ **Stage 1 (Langevin Temperature, P-β) 実装完了** (2026-05-27、default OFF)。Stage 1.5 (本番 env opt-in) は Phase N β Stage 1.5 観測後。Stage 2 (Cosmological Λ, P-α) は Stage 1 と独立 PR で未着手。Phase N の「Plans 化された最初の案が Phase 確定」規約に従い、本ページが Phase P を確定する。
+**状態**: ✅ **Stage 1 (Langevin Temperature, P-β) + Stage 2 (Cosmological Λ, P-α) 両方実装完了** (2026-05-27、default OFF)。Stage 1.5 / 2.5 (本番 env opt-in) は Phase N β Stage 1.5 観測後。Phase N の「Plans 化された最初の案が Phase 確定」規約に従い、本ページが Phase P を確定する。
+
+## Stage 2 (Cosmological Λ, P-α) 実装完了サマリ (2026-05-27)
+
+| 項目 | 実装 |
+|---|---|
+| Config | `cosmological_lambda_enabled: bool = False` / `cosmological_lambda_h: float = 0.001` |
+| `compute_acceleration` | 5 番目の項を追加: `a_Λ(i) += +H · (pos_i - pos_j)` を neighbor loop で。既存 4 項目 (gravity / Hooke / mass-BH / query attraction) は完全不変、Λ は純粋に additive |
+| 自己力 filter | 共有 — `compute_acceleration` に渡される `neighbors` を生成する呼び出し側 (`propagate_gravity_wave` 等) が適用した filter を Λ もそのまま受け継ぐ (Plan §3.1) |
+| テスト | unit 11 (off で zero、literal form、direction、distance-proportional、neighbor sum、H=0 no-op、additivity、scale-linear in H) + integration 4 (smoke off / 拡張観測 / rollback / α と β 共存) |
+| 検証 | 全 674 test pass、ruff clean、Stage 1+2 同時 enable で engine.query 正常動作 |
+
+**力学的保証**:
+- `cosmological_lambda_enabled=False` で legacy 完全 bit-exact (unit assertion 済)
+- `cosmological_lambda_h=0.0` でも no-op (flag on/off 両方で rollback 可能)
+- Λ と Langevin は独立に enable/disable できる (Plan §1 「数学的に直交」を unit test で確認)
 
 ## Stage 1 (Langevin Temperature, P-β) 実装完了サマリ (2026-05-27)
 
