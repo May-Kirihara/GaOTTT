@@ -281,17 +281,26 @@ def update_velocity(
     Two friction sources:
     - Constant: v *= (1 - friction)
     - Age-based: older nodes get additional friction
+
+    M6 — both friction multipliers are clamped to ``[0, 1]``. A friction
+    setting > 1 would otherwise produce ``(1 - friction) < 0``, **inverting
+    the velocity every step** (a runaway oscillator). Negative friction
+    would amplify velocity instead of dissipating it. Both are protected
+    here; out-of-range config values are also rejected by
+    ``GaOTTTConfig.validate_friction()`` at startup.
     """
     # Stage 2a: Apply acceleration (dt = 1.0 per query step)
     v = velocity + acceleration
 
     # Stage 2b: Constant friction
-    v = v * (1.0 - config.orbital_friction)
+    constant_keep = max(0.0, min(1.0, 1.0 - config.orbital_friction))
+    v = v * constant_keep
 
     # Stage 2c: Age-based friction (unaccessed nodes slow down more)
     age = now - last_access
     age_friction = config.orbital_friction_age_factor * (1.0 - math.exp(-config.displacement_age_delta * age))
-    v = v * (1.0 - age_friction)
+    age_keep = max(0.0, min(1.0, 1.0 - age_friction))
+    v = v * age_keep
 
     # Stage 2d: Clamp velocity
     v = clamp_vector(v, config.orbital_max_velocity)

@@ -827,6 +827,21 @@ class GaOTTTConfig:
                 self.data_dir, "gaottt.virtual.faiss"
             )
 
+        # M6 — friction multipliers must live in [0, 1] so the runtime
+        # ``(1 - friction)`` factor in ``update_velocity`` stays in [0, 1]
+        # and cannot invert / amplify velocity. ``update_velocity`` itself
+        # also clamps defensively (M6), but warning at startup gives the
+        # operator a fast signal that their config is suspect.
+        for name in ("orbital_friction", "orbital_friction_age_factor"):
+            val = getattr(self, name)
+            if not (0.0 <= val <= 1.0):
+                logger.warning(
+                    "GaOTTTConfig.%s=%r is outside [0, 1]; runtime will "
+                    "clamp the velocity-keep factor to that range "
+                    "(see gravity.update_velocity M6 guard).",
+                    name, val,
+                )
+
     @staticmethod
     def _coerce_env(raw: str, target: type):
         """Coerce an env-var string to a scalar field's type.
