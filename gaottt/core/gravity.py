@@ -186,7 +186,7 @@ def compute_acceleration(
 ) -> np.ndarray:
     """Compute total gravitational acceleration on node i.
 
-    Four components:
+    Four-plus-one components:
     1. Neighbor gravity: a = Σ_j [ G * m_j / (r² + ε) * direction(i→j) ]
     2. Anchor restoring force: a = -k_eff(m) * displacement (Hooke's law)
        Phase I Stage 4 — Mass-dependent Hooke: k_eff(m) = k * (1 + β * (1 -
@@ -212,6 +212,12 @@ def compute_acceleration(
        and the caller passes mass_i + query_anchor + query_score.
        θ = config.mass_anchor_threshold; θ=0 forces gate=1.0 (Stage 2
        legacy behaviour).
+    5. Cosmological Λ (Phase P-α, default OFF): a_Λ += +H · (pos_i - pos_j)
+       for every neighbor. Distance-proportional repulsion (Hubble flow);
+       balances gravity's monotonic attraction at long range so the field
+       cannot collapse into a single supermassive sink. Filter-shared with
+       gravity — operates on whatever neighbor scope the caller supplies.
+       Active iff config.cosmological_lambda_enabled and H > 0.
     """
     acc = np.zeros_like(pos_i)
 
@@ -265,6 +271,19 @@ def compute_acceleration(
             gate = 1.0
         kick = (config.query_kick_strength * float(query_score) * gate / float(mass_i)) * diff_q
         acc = acc + kick
+
+    # 5. Cosmological Λ (Phase P-α). Distance-proportional repulsion shared
+    # with the gravity neighbor scope. Same loop as (1) reads ``neighbors``,
+    # so any self-force filter (Phase M) the caller applied to that list is
+    # automatically inherited here — Λ does not re-filter (Plan §3.1).
+    # Skips cleanly when the feature is off (default) so this is a true
+    # additive term, not a refactor of the gravity loop.
+    if config.cosmological_lambda_enabled and config.cosmological_lambda_h > 0.0:
+        h = config.cosmological_lambda_h
+        for pos_j, _ in neighbors:
+            # +H · (pos_i - pos_j) — push AWAY from neighbor, magnitude
+            # proportional to separation. ε is unnecessary here (no division).
+            acc = acc + h * (pos_i - pos_j)
 
     return acc.astype(np.float32)
 
