@@ -62,6 +62,8 @@
 - [Phase M — Mass Conservation](Plans-Phase-M-Mass-Conservation.md)
 - [Phase N candidate β — Mass Evaporation](Plans-Phase-N-Mass-Evaporation.md)
 - [Phase O — TTT Observability](Plans-Phase-O-TTT-Observability.md)
+- [Phase P — Pressure Terms (Λ + Langevin)](Plans-Phase-P-Pressure-Terms.md)
+- [Observation Apparatus Refinement](Plans-Observation-Apparatus-Refinement.md)
 - [Hardening — Concurrency & Persistence](Plans-Hardening-Concurrency-Persistence.md)
 - [Ambient Recall Enrichment](Plans-Ambient-Recall-Enrichment.md)
 - [Ambient Recall Refinement (Phase A 由来)](Plans-Ambient-Recall-Refinement.md)

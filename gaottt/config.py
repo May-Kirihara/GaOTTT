@@ -336,6 +336,55 @@ class GaOTTTConfig:
     # workaround. set False for legacy clients or to shave a few bytes.
     expose_score_breakdown: bool = True
 
+    # Observation Apparatus Refinement Stage 1 — reason line.
+    # When True, ScoreBreakdown.reason carries a 1-line human-readable
+    # explanation of which factors dominated this node's score
+    # (e.g. "high mass persona proximity — possible dominance artifact",
+    # "bm25 strong lexical match", "lensing pick", "dormant surface").
+    # Force computation / mass update / acceleration are NOT touched —
+    # this is pure observation layer (Phase M single-rule preserved).
+    # Set False to disable the string generation (saves a few µs per result).
+    expose_reason: bool = True
+    # Mass threshold above which a node's mass is flagged as "dominance candidate"
+    # in the reason line. Calibrated against production observation
+    # (harakiriworks intention mass=2.82 was the canonical dominance case).
+    reason_dominance_mass_threshold: float = 2.0
+    # BM25 score threshold above which the reason line labels the surface
+    # as "strong lexical match". RRF-normalized scores typically sit in
+    # 0.01-0.05 range; raw BM25 in 0-10+ range — this threshold expects raw.
+    reason_bm25_strong_threshold: float = 0.5
+
+    # Observation Apparatus Refinement Stage 2 — dormant whisper slot in
+    # ambient_recall. Mixes a counter-importance-sampled dormant memo into
+    # the ambient block when its BM25 score against the query clears
+    # ``ambient_dormant_relevance_floor``. Force computation untouched —
+    # this is a surface-candidate-set extension, not a physics modifier.
+    # Set False to suppress the slot entirely (legacy ambient block).
+    ambient_dormant_slot_enabled: bool = True
+    # Maximum dormant memos to whisper per ambient block. 1 is the calibrated
+    # default — more risks crowding out direct / lensing.
+    ambient_dormant_slot_count: int = 1
+    # BM25 floor a dormant candidate must clear to qualify for the slot.
+    # Below this we leave the slot empty (no random hit — silence beats
+    # off-topic noise). NOTE: this is the floor for the *intersection* of
+    # (BM25 top-200) ∩ (dormant set), evaluated AFTER the upstream
+    # ``ambient_bm25_min_score`` (corpus-calibrated at ~32) has already
+    # approved the injection. So this floor can be looser than the upstream
+    # gate without producing noise — the candidate pool is already narrow.
+    # In production, tune in tandem with ``ambient_bm25_min_score`` (a
+    # 1:50-ish ratio is typical when the upstream gate is 32 — see
+    # docs/wiki/Operations-Tuning.md). Calibration is measurement-first.
+    ambient_dormant_relevance_floor: float = 0.5
+
+    # Observation Apparatus Refinement Stage 4 — source-aware connections
+    # display. When True, ``reflect(aspect="connections")`` groups co-occurrence
+    # edges into persona / agent_user / ingest buckets so file-ingest
+    # artifacts (chunks of one file co-occurring among themselves) stop
+    # crowding out the rare cross-domain associations a reader actually wants
+    # to see. The grouping is **display layer only** — edge weight and
+    # co-occurrence count are unchanged. Set False for legacy flat output.
+    connections_grouped_by_source: bool = True
+
     # Phase O Stage 2 — Training delta trailer (TTT update visibility).
     # When True, recall/explore responses carry a ``training_delta`` field
     # exposing displacement/mass changes induced by this recall + wave reach
@@ -489,12 +538,15 @@ class GaOTTTConfig:
     # of active memos in multi-member clusters (largest = 638-chunk book).
     # ``cluster_key is None`` (no cohort + no original_id, pre-Phase-M
     # memos) gets no penalty — intrinsically diverse.
-    # ``0.0`` (default) = behavior unchanged; ``0.4`` is the baseline-derived
-    # starting point. Applied to:
+    # Default ``0.4`` — promoted from OFF to provisional active 2026-05-26
+    # after Stage 7.1 acceptance: internal test corpus avg_unique_cohorts
+    # 2.67→4.00, avg_max_dominance 2.33→2.00, target_hit_rate 3/3;
+    # production GLM acceptance literal verified 米国会社四季報 (638-chunk
+    # book) capped to 1/5 of top-5. ``0.0`` for full rollback. Applied to:
     #   ambient_recall.direct slot  — before the ``items[:direct_k]`` slice
     #   recall top-k composition    — engine returns a larger pool, then MMR
     # See docs/wiki/Plans-Ambient-Recall-Lateral-Association.md (Stage 7).
-    direct_hit_anti_hub_lambda: float = 0.0
+    direct_hit_anti_hub_lambda: float = 0.4
 
     # Phase O Stage 5 — Dormant surface (explore(mode='dormant')).
     # ``explore(mode='dormant')`` returns random self-authored memos that have
@@ -507,16 +559,21 @@ class GaOTTTConfig:
     # principle stays intact (see Plans-Phase-O §Stage 5 "設計判断").
     dormant_age_threshold_seconds: float = 30 * 86400.0  # 30 days
     dormant_mass_threshold: float = 2.0                  # mature gate point — below means "the field didn't claim it"
-    # Lateral Association Stage 6.2 (2026-05-26) — distribution-relative
-    # dormant mass cut. When set (e.g. ``20.0``), the actual cut becomes the
+    # Lateral Association Stage 7.2 (2026-05-26) — distribution-relative
+    # dormant mass cut. When set (e.g. ``10.0``), the actual cut becomes the
     # ``p`` percentile of active-corpus mass instead of the fixed
     # ``dormant_mass_threshold``. Production observation showed the absolute
     # 2.0 cut returns 0 candidates on a 26k-memo corpus because the mass
     # distribution has shifted upward — see
-    # ``project_phase_o_stage_5_production_observation``. ``None`` (default)
-    # preserves legacy absolute-threshold behaviour. Use ``diag_dormant.py``
-    # to pick a percentile that yields ~5-15 candidates on the target DB.
-    dormant_mass_percentile: float | None = None
+    # ``project_phase_o_stage_5_production_observation``. Default ``10.0`` —
+    # promoted from None to provisional active 2026-05-26 after production
+    # acceptance: ``diag_dormant.py`` with age=7d showed p10 yields 23
+    # candidates (vs absolute 2.0 floods at 89.6%). ``None`` for legacy
+    # absolute-threshold rollback. **Note**: percentile alone gives 0 dormant
+    # if ``dormant_age_threshold_seconds`` (default 30d) excludes every
+    # node; lower age via env (e.g. ``GAOTTT_DORMANT_AGE_THRESHOLD_SECONDS=604800``
+    # for 7d) for active-user corpora.
+    dormant_mass_percentile: float | None = 10.0
     dormant_source_classes: tuple[str, ...] = (
         "agent", "value", "intention", "commitment", "note", "reference",
     )
