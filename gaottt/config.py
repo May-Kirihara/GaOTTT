@@ -187,6 +187,35 @@ class GaOTTTConfig:
     # bit-for-bit rollback to Stage 1-3 behaviour.
     mass_anchor_extra_strength: float = 0.0
 
+    # ---- Phase P-β: Langevin Temperature (thermal pressure) -----------------
+    # Stochastic thermal kick added to the position-update step:
+    #     new_disp += √(2 · T · dt) · ξ,    ξ ~ N(0, I),   dt = 1.0
+    # This is the SGLD (Welling-Teh 2011) noise term in TTT reading:
+    # gradient SGD + Gaussian kick of magnitude √(2η). Physically, it is a
+    # Brownian/thermal-bath term that lets a particle escape sharp deep
+    # wells with non-zero probability while broad shallow wells remain
+    # stable. In retrieval terms: a singleton high-mass attractor (the
+    # Stage 7.1 limitation — ffe48a30 / 24a0bf39 etc.) is *probabilistically*
+    # escaped, while healthy diverse clusters (broad shallow wells) keep
+    # their structure. Default OFF — opt-in env / config after Phase M
+    # Stage 2 mass reset has settled and Phase N β evaporation is running.
+    #
+    # Distinct from the legacy per-node ``state.temperature`` field which
+    # adds *read-time* noise inside ``compute_virtual_position`` (= measurement
+    # disturbance, observation-side). Langevin is *write-time* noise on the
+    # position update step (= dynamics-side, Brownian kick). The two are
+    # orthogonal noise channels and coexist without interaction.
+    #
+    # Plans: docs/wiki/Plans-Phase-P-Pressure-Terms.md
+    langevin_temperature_enabled: bool = False
+    # Global temperature constant T₀. With dt=1, ``σ = √(2·T₀) ≈ 0.045`` for
+    # T₀=0.001 → per-step L2 random walk ~0.045, which is ~5 % of the Hooke
+    # equilibrium ``(G·m/k)^(1/3) ≈ 0.8`` — small enough to not dominate
+    # gravity but large enough to lift a stuck singleton over a finite well.
+    # Calibrate via ``scripts/diag_pressure.py`` snapshot + 1-2 week
+    # production observation before raising.
+    langevin_temperature_t0: float = 0.001
+
     # Phase J Stage 1 — Persona-anchored retrieval (graph traversal seed boost).
     # Boosts seed-pool ranking for nodes within N hops of an actively-declared
     # value / intention / commitment, via fulfills / derived_from edges.

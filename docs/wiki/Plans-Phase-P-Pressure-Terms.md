@@ -1,6 +1,20 @@
 # Phase P — Pressure Terms (Cosmological Λ + Langevin Temperature)
 
-**状態**: 起草 (2026-05-26)。Phase N の「Plans 化された最初の案が Phase 確定」規約に従い、本ページが Phase P を確定する。
+**状態**: ✅ **Stage 1 (Langevin Temperature, P-β) 実装完了** (2026-05-27、default OFF)。Stage 1.5 (本番 env opt-in) は Phase N β Stage 1.5 観測後。Stage 2 (Cosmological Λ, P-α) は Stage 1 と独立 PR で未着手。Phase N の「Plans 化された最初の案が Phase 確定」規約に従い、本ページが Phase P を確定する。
+
+## Stage 1 (Langevin Temperature, P-β) 実装完了サマリ (2026-05-27)
+
+| 項目 | 実装 |
+|---|---|
+| Config | `langevin_temperature_enabled: bool = False` / `langevin_temperature_t0: float = 0.001` |
+| Acceleration loop | 変更なし (Stage 1 は velocity → position 段のみ触る) |
+| Position update | `update_orbital_state` の `new_disp = old_disp + new_vel` の **後**、`clamp_vector` の前に `new_disp += √(2·T₀)·ξ` 加算 |
+| RNG | D6 通り: `rng: np.random.Generator | None = None` 引数追加、None なら production unseeded、tests は `np.random.default_rng(seed)` 渡しで reproducible |
+| 副次作業 | `compute_virtual_position` も同じ rng-injected pattern に refactor (既存 callers は無変更で動作) |
+| テスト | unit 9 (bit-exact legacy / σ scale / determinism / clamp / velocity 不変) + integration 3 (engine path / displacement variance 増加 / T₀=0 rollback) |
+| 検証 | 全 659 test pass、ruff clean、既存 logic に regression なし |
+
+**力学的保証**: `langevin_temperature_enabled=False` または `langevin_temperature_t0=0.0` で legacy 完全 bit-exact (unit test で assertion 済)。Stage 1 単独で merge しても本番 default 挙動は完全に変わらない。
 
 > Phase L (hybrid retrieval) — Phase M (mass conservation) — Phase N β (mass evaporation) — **Phase P (pressure terms)** の 4 連は、それぞれ retrieval の異なる層を扱う:
 >
