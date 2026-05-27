@@ -78,13 +78,24 @@ def compute_virtual_position(
     original_emb: np.ndarray,
     displacement: np.ndarray | None,
     temperature: float = 0.0,
+    rng: "np.random.Generator | None" = None,
 ) -> np.ndarray:
-    """Compute virtual position = normalize(original + displacement + thermal noise)."""
+    """Compute virtual position = normalize(original + displacement + thermal noise).
+
+    ``rng`` is the source of read-time thermal noise. Defaults to ``None`` →
+    unseeded ``np.random`` (production behavior, bit-exact to pre-Phase-P).
+    Test fixtures may pass ``rng=np.random.default_rng(seed)`` for
+    reproducible noise — see Phase P decision D6 in
+    docs/wiki/Plans-Phase-P-Pressure-Terms.md.
+    """
     pos = original_emb.copy()
     if displacement is not None:
         pos = pos + displacement
     if temperature > 0.001:
-        noise = np.random.randn(*pos.shape).astype(np.float32) * temperature
+        if rng is None:
+            noise = np.random.randn(*pos.shape).astype(np.float32) * temperature
+        else:
+            noise = rng.standard_normal(pos.shape).astype(np.float32) * temperature
         pos = pos + noise
     norm = np.linalg.norm(pos)
     if norm > 0:
@@ -175,7 +186,7 @@ def compute_acceleration(
 ) -> np.ndarray:
     """Compute total gravitational acceleration on node i.
 
-    Four components:
+    Four-plus-one components:
     1. Neighbor gravity: a = Σ_j [ G * m_j / (r² + ε) * direction(i→j) ]
     2. Anchor restoring force: a = -k_eff(m) * displacement (Hooke's law)
        Phase I Stage 4 — Mass-dependent Hooke: k_eff(m) = k * (1 + β * (1 -
@@ -201,6 +212,12 @@ def compute_acceleration(
        and the caller passes mass_i + query_anchor + query_score.
        θ = config.mass_anchor_threshold; θ=0 forces gate=1.0 (Stage 2
        legacy behaviour).
+    5. Cosmological Λ (Phase P-α, default OFF): a_Λ += +H · (pos_i - pos_j)
+       for every neighbor. Distance-proportional repulsion (Hubble flow);
+       balances gravity's monotonic attraction at long range so the field
+       cannot collapse into a single supermassive sink. Filter-shared with
+       gravity — operates on whatever neighbor scope the caller supplies.
+       Active iff config.cosmological_lambda_enabled and H > 0.
     """
     acc = np.zeros_like(pos_i)
 
@@ -255,6 +272,19 @@ def compute_acceleration(
         kick = (config.query_kick_strength * float(query_score) * gate / float(mass_i)) * diff_q
         acc = acc + kick
 
+    # 5. Cosmological Λ (Phase P-α). Distance-proportional repulsion shared
+    # with the gravity neighbor scope. Same loop as (1) reads ``neighbors``,
+    # so any self-force filter (Phase M) the caller applied to that list is
+    # automatically inherited here — Λ does not re-filter (Plan §3.1).
+    # Skips cleanly when the feature is off (default) so this is a true
+    # additive term, not a refactor of the gravity loop.
+    if config.cosmological_lambda_enabled and config.cosmological_lambda_h > 0.0:
+        h = config.cosmological_lambda_h
+        for pos_j, _ in neighbors:
+            # +H · (pos_i - pos_j) — push AWAY from neighbor, magnitude
+            # proportional to separation. ε is unnecessary here (no division).
+            acc = acc + h * (pos_i - pos_j)
+
     return acc.astype(np.float32)
 
 
@@ -270,17 +300,26 @@ def update_velocity(
     Two friction sources:
     - Constant: v *= (1 - friction)
     - Age-based: older nodes get additional friction
+
+    M6 — both friction multipliers are clamped to ``[0, 1]``. A friction
+    setting > 1 would otherwise produce ``(1 - friction) < 0``, **inverting
+    the velocity every step** (a runaway oscillator). Negative friction
+    would amplify velocity instead of dissipating it. Both are protected
+    here; out-of-range config values are also rejected by
+    ``GaOTTTConfig.validate_friction()`` at startup.
     """
     # Stage 2a: Apply acceleration (dt = 1.0 per query step)
     v = velocity + acceleration
 
     # Stage 2b: Constant friction
-    v = v * (1.0 - config.orbital_friction)
+    constant_keep = max(0.0, min(1.0, 1.0 - config.orbital_friction))
+    v = v * constant_keep
 
     # Stage 2c: Age-based friction (unaccessed nodes slow down more)
     age = now - last_access
     age_friction = config.orbital_friction_age_factor * (1.0 - math.exp(-config.displacement_age_delta * age))
-    v = v * (1.0 - age_friction)
+    age_keep = max(0.0, min(1.0, 1.0 - age_friction))
+    v = v * age_keep
 
     # Stage 2d: Clamp velocity
     v = clamp_vector(v, config.orbital_max_velocity)
@@ -300,6 +339,7 @@ def update_orbital_state(
     cache: "CacheLayer | None" = None,
     query_anchor: np.ndarray | None = None,
     query_scores: dict[str, float] | None = None,
+    rng: "np.random.Generator | None" = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     """Full orbital mechanics step for all nodes.
 
@@ -308,6 +348,13 @@ def update_orbital_state(
              are provided)
     Stage 2: Update velocities (+ friction)
     Stage 3: Update displacements (+ clamp)
+    Stage 4 (Phase P-β): Optional Langevin thermal kick on the position step
+             when ``config.langevin_temperature_enabled`` and ``T₀ > 0``.
+
+    ``rng`` is the source of Langevin noise. Defaults to ``None`` → unseeded
+    ``np.random`` (production), bit-exact to legacy when Langevin is off.
+    Test fixtures may pass ``rng=np.random.default_rng(seed)`` for reproducible
+    noise — see Phase P decision D6.
 
     Returns: (updated_displacements, updated_velocities)
     """
@@ -348,6 +395,15 @@ def update_orbital_state(
     new_displacements: dict[str, np.ndarray] = {}
     new_velocities: dict[str, np.ndarray] = {}
 
+    # Phase P-β: precompute Langevin σ once per call (dt=1.0 absorbed into T₀).
+    # σ > 0 only when both the feature flag is on AND T₀ is non-trivial.
+    langevin_sigma = 0.0
+    if (
+        config.langevin_temperature_enabled
+        and config.langevin_temperature_t0 > 0.0
+    ):
+        langevin_sigma = math.sqrt(2.0 * config.langevin_temperature_t0)
+
     for nid in active_ids:
         old_vel = velocities.get(nid, np.zeros(dim, dtype=np.float32))
         old_disp = displacements.get(nid, np.zeros(dim, dtype=np.float32))
@@ -358,6 +414,20 @@ def update_orbital_state(
 
         # Stage 3: position update (displacement += velocity * dt)
         new_disp = old_disp + new_vel  # dt = 1.0
+
+        # Stage 4 (Phase P-β): Langevin thermal kick.
+        # ``new_disp += √(2·T₀) · ξ`` — SGLD-shaped Brownian step. Placed
+        # AFTER the deterministic velocity update but BEFORE clamp so the
+        # thermal kick contributes to the bounded displacement (same blast
+        # radius as a normal step). When the feature is off (default) this
+        # branch is skipped → bit-exact equivalence to legacy.
+        if langevin_sigma > 0.0:
+            if rng is None:
+                noise = np.random.randn(dim).astype(np.float32) * langevin_sigma
+            else:
+                noise = rng.standard_normal(dim).astype(np.float32) * langevin_sigma
+            new_disp = new_disp + noise
+
         new_disp = clamp_vector(new_disp, config.max_displacement_norm)
 
         new_velocities[nid] = new_vel

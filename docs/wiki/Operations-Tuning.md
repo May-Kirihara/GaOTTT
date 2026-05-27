@@ -294,6 +294,32 @@ quiet node を idle 時間に synthetic recall で再活性化し、co-occurrenc
 | auto_remember_min_chars | 12 | 候補の最短文字数 |
 | auto_remember_max_chars | 400 | 候補の最長文字数 |
 
+## save_candidates Hook（Plans-Save-Candidates-Hook.md）
+
+`auto_remember` の Stop / turn-end hook ラッパー。backend service ([Plans-Save-Candidates-Hook.md](Plans-Save-Candidates-Hook.md)) 自体は `auto_remember_*` の knob を再利用する (max_candidates の既定だけ 3、token-budget 配慮)。hook script 側の env:
+
+| 環境変数 | 既定 | 説明 |
+|---|---|---|
+| `GAOTTT_SAVE_CANDIDATES_ENABLED` | `1` | `0`/`false`/`off` で Stop + UserPromptSubmit-inject 両方を無効化 |
+| `GAOTTT_SAVE_CANDIDATES_URL` | `http://127.0.0.1:7878/mcp` | proxy mode backend MCP endpoint (ambient_recall hook と共有) |
+| `GAOTTT_SAVE_CANDIDATES_TIMEOUT` | `3.0` | 秒。heuristic 抽出のみ (embedder 不使用) で steady-state ~10-50ms、3s は cold-start 余裕分 |
+| `GAOTTT_SAVE_CANDIDATES_MAX` | `3` | block に surface する上位 N 件 |
+| `GAOTTT_SAVE_CANDIDATES_TURNS` | `2` | Stop 側 — transcript から拾う直近 user+assistant 交換数 |
+| `GAOTTT_SAVE_CANDIDATES_STATE_DIR` | `~/.gaottt/save_candidates` | Stop → UserPromptSubmit bridge の per-session state file ディレクトリ |
+| `GAOTTT_SAVE_CANDIDATES_INCLUDE_PERSONA` | `1` | `0` で persona slot 省略 (ambient_recall persona slot との重複回避) |
+| `GAOTTT_SAVE_CANDIDATES_EMIT` | `state` | 出力モード。`state` = state file 書き込み (Claude Code Stop+Inject bridge)、`stdout` = block を直接 stdout に出力 (opencode plugin パス、`opencode-save-candidates.ts` が設定) |
+
+opencode plugin (`scripts/hooks/opencode-save-candidates.ts`) 専用の追加 env:
+
+| 環境変数 | 既定 | 説明 |
+|---|---|---|
+| `GAOTTT_REPO` | `/mnt/holyland/Project/GaOTTT` | opencode-ambient-recall.ts と共有。Python interpreter + script path の base |
+| `GAOTTT_SAVE_CANDIDATES_PYTHON` | `$GAOTTT_REPO/.venv/bin/python` | Python interpreter override |
+| `GAOTTT_SAVE_CANDIDATES_SCRIPT` | `$GAOTTT_REPO/scripts/hooks/save_candidates.py` | Hook script override |
+| `GAOTTT_SAVE_CANDIDATES_DEBUG` | (unset) | ファイル path をセットすると plugin の step trace を append (silent-by-default なので診断時のみ) |
+
+`.claude/settings.json` への hook 登録 + opencode plugin の install path は [Operations — Server Setup](Operations-Server-Setup.md) 参照。
+
 ## 情動・確信度（F7）
 
 | パラメータ | 既定 | 影響 | 上げると | 下げると |

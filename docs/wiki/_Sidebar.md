@@ -68,6 +68,7 @@
 - [Ambient Recall Enrichment](Plans-Ambient-Recall-Enrichment.md)
 - [Ambient Recall Refinement (Phase A 由来)](Plans-Ambient-Recall-Refinement.md)
 - [Ambient Recall Lateral Association (〇〇といえば〜)](Plans-Ambient-Recall-Lateral-Association.md)
+- [Save Candidates Hook (ambient-recall の write-side 対称)](Plans-Save-Candidates-Hook.md)
 - [Query as Mass Distribution](Plans-Query-Mass-Distribution.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
 - [Embedder Comparison (RURI vs RikkaBotan)](Plans-Embedder-Comparison.md)

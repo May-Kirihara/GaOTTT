@@ -622,6 +622,40 @@ class AutoRememberResponse(BaseModel):
     count: int = 0
 
 
+# --- Save-Candidates service (Plans-Save-Candidates-Hook.md) ---
+#
+# Write-side symmetric to Ambient Recall Enrichment: a Stop hook (turn-end)
+# surfaces auto_remember candidates as a structured block in the *next*
+# prompt. The model decides whether to call ``remember`` — the lens is
+# automated, the volitional moment (mass entry) stays manual. See
+# Observation vs Physics boundary (memory id 701e7822) for the design rule.
+
+class SaveCandidatesRequest(BaseModel):
+    """MCP shape — body is a transcript blob plus optional knobs."""
+    transcript: str = Field(..., min_length=1)
+    max_candidates: int = Field(default=3, ge=1, le=20)
+    include_reasons: bool = True
+    include_persona: bool = True
+
+
+class SaveCandidatesBody(BaseModel):
+    """REST shape — same fields. Kept separate per the CLAUDE.md REST/MCP
+    body-shape parity convention (``CompleteRequest`` / ``CompleteBody``)."""
+    transcript: str = Field(..., min_length=1)
+    max_candidates: int = Field(default=3, ge=1, le=20)
+    include_reasons: bool = True
+    include_persona: bool = True
+
+
+class SaveCandidatesResponse(BaseModel):
+    """Structured save-candidates block. ``count == 0`` means no candidate
+    cleared the heuristic — formatter returns a sentinel and the hook stays
+    silent (mirrors the ``AmbientRecallResponse.count == 0`` contract)."""
+    candidates: list[AutoRememberCandidate] = Field(default_factory=list)
+    persona: AmbientPersona | None = None
+    count: int = 0
+
+
 # --- Reflection service ---
 
 class ReflectSummaryResponse(BaseModel):

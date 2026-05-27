@@ -92,6 +92,9 @@ mcp = FastMCP(
         "serendipitous discovery, 'reflect' to analyze memory state "
         "(aspect='duplicates' for collision candidates, 'relations' for "
         "typed-edge overview), 'auto_remember' to extract save candidates, "
+        "'save_candidates' for the Stop-hook companion to ambient_recall "
+        "(turn-end heuristic surface as a structured block — observation "
+        "layer is automated, calling remember stays manual), "
         "'forget'/'restore' to prune (soft by default), 'merge' to collide "
         "near-duplicates, 'compact' for periodic maintenance, 'revalidate' to "
         "refresh certainty, 'relate'/'unrelate'/'get_relations' for typed "
@@ -855,6 +858,55 @@ async def auto_remember(
         max_candidates=max_candidates, include_reasons=include_reasons,
     )
     return formatters.format_auto_remember(result)
+
+
+@mcp.tool()
+async def save_candidates(
+    transcript: str,
+    max_candidates: int = 3,
+    include_reasons: bool = True,
+    include_persona: bool = True,
+) -> str:
+    """Stop-hook companion to ``ambient_recall`` — write-side symmetric.
+
+    Save filter (durable user preference, memory id ``93035d35``): save what
+    *changes future decisions* — design rationale with WHY, retracted
+    options, judgment-changing patterns, symmetric/structural insights,
+    durable user constraints. Skip bug-existence itself (commit covers it),
+    work-in-progress status (Phase D / TaskList covers it), and fact-only
+    statements derivable from code. The heuristic over-surfaces
+    "troubleshooting" tagged candidates; manual filter is expected.
+
+    Returns the ``<gaottt-save-candidates>`` block (or the sentinel
+    ``(保存候補なし)`` when nothing cleared the heuristic). Designed for the
+    Stop / turn-end hook to call once per turn, with the resulting block
+    injected into the *next* prompt — the model then decides whether to call
+    ``remember`` on any candidate (observation layer is automated, the
+    volitional mass-entry stays manual; see Observation vs Physics boundary).
+
+    Reuses ``auto_remember`` for heuristic extraction and the ambient persona
+    picker for the optional "▼ いま誰として" slot, so existing physics-invariant
+    primitives back the surface.
+
+    Args:
+        transcript: Recent conversation segment (typically last 1-N turns).
+        max_candidates: Max candidates to surface (default 3, ambient block
+                        token-budget aware).
+        include_reasons: Include the heuristic reasons each line was picked.
+        include_persona: Include an active value/intention slot for grounding
+                        (default on). Set False when persona context is
+                        already injected by ambient_recall and you want to
+                        avoid duplication.
+    """
+    engine = await get_engine()
+    result = await memory_service.save_candidates(
+        engine,
+        transcript=transcript,
+        max_candidates=max_candidates,
+        include_reasons=include_reasons,
+        include_persona=include_persona,
+    )
+    return formatters.format_save_candidates(result)
 
 
 @mcp.tool()

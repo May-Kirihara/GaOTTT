@@ -156,6 +156,14 @@ auto_remember(transcript, max_candidates=5, include_reasons=True)
 
 Pass a transcript chunk; returns ranked save candidates (decisions, failures/successes, preferences, lessons, metric-bearing lines). **Does not save** — review and call `remember` for the keepers.
 
+### save_candidates
+
+```
+save_candidates(transcript, max_candidates=3, include_reasons=True, include_persona=True)
+```
+
+Stop-hook companion to `ambient_recall` — write-side symmetric. Wraps `auto_remember` in a `<gaottt-save-candidates>` block formatter so a turn-end hook can surface candidates in the *next* prompt (option A in `docs/wiki/Plans-Save-Candidates-Hook.md`). Returns the sentinel `(保存候補なし)` when no candidate clears the heuristic — the hook keys on the leading block tag to stay silent. Observation layer is automated; calling `remember` to actually save stays the agent's volitional decision (preserves Articulation as Carrier + Phase M single-rule).
+
 ### forget / restore
 
 ```
@@ -352,7 +360,7 @@ for _ in range(3):
 
 ## Notes
 
-- **26 MCP tools**: 7 memory (remember/recall/ambient_recall/explore/reflect/auto_remember/ingest) + 10 maintenance / relations / prefetch + 9 Phase D (commit/start/complete/abandon/depend/declare_value/declare_intention/declare_commitment/inherit_persona).
+- **27 MCP tools**: 8 memory (remember/recall/ambient_recall/explore/reflect/auto_remember/save_candidates/ingest) + 10 maintenance / relations / prefetch + 9 Phase D (commit/start/complete/abandon/depend/declare_value/declare_intention/declare_commitment/inherit_persona).
 - **Duplicate `content` is auto-skipped** via SHA-256 hashing.
 - **Memory persists across sessions.** Every `recall` accumulates gravity — co-recalled memories drift closer over time.
 - **Cache is auto-invalidated** on `forget` / `restore` / `merge` / `compact`. Manual `force_refresh=True` is rarely needed.

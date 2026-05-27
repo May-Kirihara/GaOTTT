@@ -149,7 +149,7 @@ gaottt http backend  ← 1 process、全 shim で共有
 
 (shim 側には `--idle-timeout 0` は無関係だが、spawn する backend にそのまま forward されるので結果として backend が永久生存になる。)
 
-公開ツール（26 個）:
+公開ツール（27 個）:
 - 基本: `remember` / `recall` / `explore` / `reflect` / `ingest`
 - F1/F4/F5: `auto_remember` / `forget` / `restore`
 - F2.1: `merge` / `compact`
@@ -181,6 +181,91 @@ gaottt http backend  ← 1 process、全 shim で共有
 - shim が backend の有無を check → 居なければ detached spawn して engine load (~30s) を待つ
 - 以降 stdio↔HTTP relay
 - Claude Code 終了 → shim 死、backend は idle 5 分後に self-shutdown (Claude Code がすぐ再起動するなら backend は再利用される)
+
+### Hook の登録 (ambient_recall + save_candidates)
+
+`.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/ambient_recall.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/save_candidates_inject.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/save_candidates.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+- **UserPromptSubmit**: 2 連 hook。`ambient_recall.py` が長期記憶を `<gaottt-ambient-recall>` block で注入、`save_candidates_inject.py` が前 turn の Stop hook が書いた state file を読んで `<gaottt-save-candidates>` block を注入 (なければ no-op)
+- **Stop**: `save_candidates.py` が turn 終了時に `auto_remember` を走らせ、候補があれば state file (default `~/.gaottt/save_candidates/<session_id>.txt`) に block を書き込む。次 turn の UserPromptSubmit-inject 側が読んで消す (Stop → UserPromptSubmit bridge、option A)
+- どの hook も backend down/timeout で fail-silent (exit 0、agent を block しない)
+
+**動作確認**: 設定後に新しい conversation を始め、何ターンか会話してから:
+
+```bash
+# Stop hook が動いていれば state file が現れる
+ls ~/.gaottt/save_candidates/
+# block を確認
+cat ~/.gaottt/save_candidates/*.txt
+```
+
+state file が出ない場合の典型的な原因:
+1. **backend が古い**: `ps -ef | grep streamable-http` で start 時刻を確認、commit より古ければ `kill <pid>` (次の MCP 接続で自動 respawn) — 詳細は本ページの「code deploy 時の backend 再起動」節 / [CLAUDE.md backend kill on code deploy](https://github.com/May-Kirihara/GaOTTT/blob/main/CLAUDE.md) と memory id `feedback_backend_kill_on_code_deploy`
+2. **transcript 抽出 0 件**: 直近 N turn ([Operations — Tuning](Operations-Tuning.md#save_candidates-hookplans-save-candidates-hookmd) の `GAOTTT_SAVE_CANDIDATES_TURNS` 既定 2) に「決定」「失敗」「採用」等の save-worthy キーワードが無い → 設計通りの silent (sentinel `(保存候補なし)`)。短い会話なら `GAOTTT_SAVE_CANDIDATES_TURNS=5` で window を広げる
+3. **settings.json が malformed**: `/doctor` で警告が出ていないか確認、`python -c "import json; json.load(open('.claude/settings.json'))"` で parse 検証
+
+env tuning (`GAOTTT_SAVE_CANDIDATES_*`) は [Operations — Tuning](Operations-Tuning.md#save_candidates-hookplans-save-candidates-hookmd) 参照。詳細設計と option A bridge の理由は [Plans — Save Candidates Hook](Plans-Save-Candidates-Hook.md)。
+
+### opencode hook の登録
+
+opencode は Claude Code と違い `chat.message` plugin が message text を直接編集できるので、ambient_recall も save_candidates も **plugin 1 本ずつ** で済む (state-file bridge 不要):
+
+```bash
+mkdir -p ~/.config/opencode/plugin
+cp scripts/hooks/opencode-ambient-recall.ts \
+   ~/.config/opencode/plugin/gaottt-ambient-recall.ts
+cp scripts/hooks/opencode-save-candidates.ts \
+   ~/.config/opencode/plugin/gaottt-save-candidates.ts
+```
+
+opencode 起動時に `*.ts` が auto-load される。プロジェクト単位で有効化したい場合は `~/.config/opencode/plugin/` の代わりに `<project>/.opencode/plugin/` に置く。
+
+仕組み:
+- `opencode-ambient-recall.ts` (chat.message) → Python `ambient_recall.py` を spawn → `<gaottt-ambient-recall>` block を append
+- `opencode-save-candidates.ts` (chat.message) → `client.session.messages` で前ターン (user N-1, assistant N-1) を fetch → `[role] text` 整形 → Python `save_candidates.py` を `GAOTTT_SAVE_CANDIDATES_EMIT=stdout` で spawn → `<gaottt-save-candidates>` block を append
+- どちらも backend は `scripts/hooks/*.py` を再利用 ([opencode-ambient-recall.ts](https://github.com/May-Kirihara/GaOTTT/blob/main/scripts/hooks/opencode-ambient-recall.ts) と同じ single-source-of-truth 原則)、TS 側は薄い shim
+- どちらも fail-silent — backend down / timeout で agent は block されない
+
+**動作確認**: opencode を起動して 2 turn ほど会話してから、`GAOTTT_SAVE_CANDIDATES_DEBUG=/tmp/sc.log opencode` の形で起動すると spawn step trace が `/tmp/sc.log` に追記される (ambient 側は `GAOTTT_AMBIENT_DEBUG`)。
+
+opencode plugin が呼ばれない場合の典型:
+1. **backend (port 7878) が動いていない** — `curl -sf http://127.0.0.1:7878/mcp` を確認
+2. **Python interpreter path mismatch** — opencode が repo 外から起動されると `GAOTTT_REPO` (default `/mnt/holyland/Project/GaOTTT`) が違う path を指すので、`export GAOTTT_REPO=/your/path` を opencode 起動環境に追加
+3. **第 1 ターンは silent** — opencode plugin の save_candidates は前ターン lookback なので、session 1 turn目は何も出ない (設計通り)
 
 ### 旧 stdio mode (full engine in subprocess)
 

@@ -134,6 +134,41 @@ async def test_auto_remember_returns_candidates(rest_client):
     assert all("content" in c for c in data["candidates"])
 
 
+# ---------- Save-Candidates (Plans-Save-Candidates-Hook.md) ----------
+
+async def test_save_candidates_round_trip(rest_client):
+    """REST/MCP parity — same input → same SaveCandidatesResponse shape on
+    both transports."""
+    transcript = (
+        "[user] 設計判断: 観測層と物理層を分離\n"
+        "[assistant] 観測のみ自動化、save は能動的判断のまま\n"
+    )
+    resp = await rest_client.post(
+        "/save_candidates",
+        json={"transcript": transcript, "max_candidates": 3},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "candidates" in data
+    assert "count" in data
+    assert data["count"] == len(data["candidates"])
+
+
+async def test_save_candidates_persona_toggle(rest_client):
+    """``include_persona=False`` body field omits the persona slot — the
+    same knob the Stop hook flips when ambient_recall already injects
+    one upstream."""
+    resp = await rest_client.post(
+        "/save_candidates",
+        json={
+            "transcript": "[user] 確定: テストは pytest で書く\n",
+            "include_persona": False,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["persona"] is None
+
+
 # ---------- Reflection ----------
 
 async def test_reflect_summary_shape(rest_client):

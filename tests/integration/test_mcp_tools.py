@@ -287,6 +287,29 @@ async def test_auto_remember_returns_friendly_message_when_empty(engine_singleto
     assert "No save-worthy candidates" in out
 
 
+async def test_save_candidates_mcp_emits_block(engine_singleton):
+    """Stop-hook MCP path — formatter returns the ``<gaottt-save-candidates>``
+    block when the heuristic finds at least one candidate, matching the
+    fail-silent contract documented in Plans-Save-Candidates-Hook.md."""
+    transcript = (
+        "[user] 重要な決定: テストでは uv を使うこと\n"
+        "[assistant] 了解しました\n"
+        "[user] 失敗: numpy の or 演算子で ValueError\n"
+    )
+    out = await srv.save_candidates(transcript=transcript, max_candidates=3)
+    assert out.lstrip().startswith("<gaottt-save-candidates>")
+    assert "</gaottt-save-candidates>" in out
+    assert "<!-- save-candidates count=" in out
+
+
+async def test_save_candidates_mcp_sentinel_on_chatter(engine_singleton):
+    """No candidates → sentinel ``(保存候補なし)`` (no block tag) so the Stop
+    hook stays silent."""
+    out = await srv.save_candidates(transcript="\n".join(["ok", "thanks"]))
+    assert out == "(保存候補なし)"
+    assert "<gaottt-save-candidates>" not in out
+
+
 async def test_merge_combines_two_memories(engine_singleton):
     out_a = await srv.remember(content="tidal duplicate one")
     out_b = await srv.remember(content="tidal duplicate one extra")

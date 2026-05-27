@@ -315,14 +315,69 @@
   - [Plans — Phase N (Mass Evaporation)](docs/wiki/Plans-Phase-N-Mass-Evaporation.md) — 着手順序の前提
   - memory `[STAGE-7-LIMITATION]` — Phase P が解く対象の literal 観察
 
-### 🟢 6-9. Hardening Stage 2-4 (HIGH/MEDIUM/LOW catalogue) `[Stage 1 完了 / 2-4 未着手]`
-- 状態: `Plans-Hardening-Concurrency-Persistence.md`、Stage 1 (C1/C3/C4 修正) 完了
-- 残: Stage 2 HIGH / Stage 3 MEDIUM / Stage 4 LOW
-- [ ] catalogue の優先度順に着手判断
+### 🟡 6-9. Hardening Stage 3-4 (MEDIUM/LOW catalogue) `[Stage 1/1.5/2 完了 / Stage 3 第一弾着手中 (2026-05-27)]`
+- 状態: `Plans-Hardening-Concurrency-Persistence.md` の Stage 1 (CRITICAL C1/C3/C4)、Stage 1.5 (L-flaky)、Stage 2 (HIGH H1-H8 全 8 件) 完了。catalogue は M1-M11 (MEDIUM 11 件) + LOW 10+ 件
+- **Stage 3 第一弾** (本タスク、storage/physics の低リスク safety 3 件を 1 PR にまとめる、`hardening-stage-3-batch-1` branch):
+  - [ ] **M3** — `sqlite_store.py` の多文 destructive op に `BEGIN`/`COMMIT`+`rollback` を入れる (部分適用防止)
+  - [ ] **M4** — `save_displacements`/`save_velocities` の dtype guard (`np.ascontiguousarray(disp, dtype=np.float32)`、float64 無言ゴミ化防止)
+  - [ ] **M6** — `update_velocity` の friction step を `max(0.0, 1-friction)` で clamp + config range 検証 (`orbital_friction > 1` で velocity 反転 runaway 防止)
+- **Stage 3 第二弾** (規模問題、別 PR 予定):
+  - [ ] **M1** — `IN (?,?,...)` の SQLite 999 変数上限を `_in_chunks(ids, fn, 900)` で全 call site 分割
+  - [ ] **M5** — BM25 tombstone 無限増加対策 (removed 比率 20% で自動 rebuild)
+- **Stage 3 第三弾** (観測性 / retrieval / セキュリティ、順次):
+  - [ ] **M2** — reflect/dormant/summary の逐次 `get_document` バッチ化 (event loop ブロック解消)
+  - [ ] **M7** — `/admin/*` 無認証 → Architecture 設計判断表に「network 隔離前提」明記 (or 共有 secret/unix socket)
+  - [ ] **M8** — `recall(source_filter=...)` の sparse class 空返し対策 (`wave_k_with_filter` default 化)
+  - [ ] **M9** — `cache.flush_to_store` の `await` 中の lost-update (ids 局所捕捉後 `.clear()`)
+  - [ ] **M10** — supernova cohort dedup で閾値割れ無警告 (stamp 一致 + log)
+  - [ ] **M11** — `compact` 部分失敗の不可視性 (`CompactResponse.faiss_rebuilt`/`error` フィールド)
+- **Stage 4 LOW** (機会対応、catalogue は plan §LOW/NIT 節): faiss fsync, get_vectors reconstruct 化, 移行台帳テーブル, BM25 breakdown 例外, MCP relate ValueError, shutdown cancel await, working_on edge デッド定義, dormant 同名別定義, proxy spawn log fd リーク, RecallRequest.mode 無検証 str
+- **回帰テスト規律**: 各修正に teeth-having 回帰テスト (修正前なら落ちる test) を必ず付ける。Stage 1/2 で確立した style (`tests/integration/test_engine_concurrent.py` 等) を踏襲
 
 ### 🟢 6-10. Phase G Stage 3 (重心アンカー) `[永久保留]`
 - ロードマップ上は homogenization リスクで permanently shelved
 - [ ] 保留の根拠を `Research-Index.md` に明示 (現状は Plans-Roadmap.md 内のみ)
+
+### 🟡 6-11. Config default ↔ production env 同期レビュー `[起草 2026-05-27、未着手]`
+- 状態: production env (`~/.claude.json` / `~/.config/opencode/opencode.json`) で 3 flag が `gaottt/config.py` の default と乖離。observation が安定している項目は **default 昇格で env override を整理** できる
+- 動機:
+  - 新規 user / 新規 setup で本番相当の挙動を得るのに 5 env 設定が必要 (現状)
+  - default に昇格すれば env は 1-2 個まで削減可、setup 摩擦が減る
+  - production で 1 ヶ月+ 実証済の値を default 化 = 安全な「現状追認」
+  - §10 rollout discipline の段階 3 (default 昇格 or env-opt-in のまま維持) の判断を、各 Stage 別ではなく一括レビューで実施
+- 対象 3 flag (production env で override 中、default と乖離):
+
+| flag | 現 default | production env | 提案 | 前提となる measurement |
+|---|---|---|---|---|
+| `ambient_persona_mass_weight` | `1.0` (Stage 1 完全互換) | `0.3` | `0.3` に昇格 | §6-7 measurement (acceptance pass, mass×cos の知覚改善) |
+| `dormant_age_threshold_seconds` | `2592000` (30d) | `604800` (7d) | `7 * 86400` (7d) に昇格 | Phase N β + Stage 7.2 で dormant 母集団復元確認済 (Stage 7.1/7.2 acceptance) |
+| `mass_evaporation_enabled` | `False` | `True` | `True` に昇格 | §6-4 Phase N β Stage 2 (1-2 週観測 + 99.9% 一致確認、`project_phase_n_stage_1_5_enabled`) |
+
+- 触らない (今回 scope 外):
+  - `direct_hit_anti_hub_lambda=0.4` / `dormant_mass_percentile=10.0` — **既に code default 昇格済**、env は冗長な重複指定 (削除しても挙動同じ)。本タスクで env からも削除予定
+  - `cosmological_lambda_enabled` / `langevin_temperature_enabled` — Phase P Stage 1/2 merge 後、§6-8 で Stage 1.5/2.5 env opt-in → Stage 3 で default 昇格判断
+  - `mass_anchor_extra_strength=0.0` — Phase I Stage 4 予防的 OFF、観察 pathology が出るまで
+- 作業:
+  - [ ] **前提待ち**: §6-4 Stage 2 (Phase N β 1-2 週観測完了) と §6-7 (Heavy Persona measurement 結果) を待つ
+  - [ ] `gaottt/config.py` で 3 flag の default 値を変更する小 PR (`config-default-sync` 等のブランチ名)
+  - [ ] `~/.claude.json` / `~/.config/opencode/opencode.json` から該当 env を削除 — env override が default と同値になるので冗長 (`MASS_EVAPORATION_ENABLED` / `DORMANT_AGE_THRESHOLD_SECONDS` / `AMBIENT_PERSONA_MASS_WEIGHT` の 3 件 + 既に冗長な `DIRECT_HIT_ANTI_HUB_LAMBDA` / `DORMANT_MASS_PERCENTILE` の 2 件)
+  - [ ] `docs/wiki/Operations-Tuning.md` で「production-default」を明記、CLAUDE.md の関連箇所も更新
+  - [ ] §10 rollout discipline の段階 3 判断を記録 — 3 flag それぞれについて「default 昇格 ✅」or「env-opt-in 維持」を明示
+- **検証方法**: 「現状追認」型なので 3-observer pattern を踏襲した literal 一致確認:
+  - Observer A: 変更前の env-on 状態で `scripts/diag_recall.py` snapshot
+  - Observer B: 変更後の env-削除済 + 新 default 状態で同 snapshot
+  - Observer C: 両者が literal に一致することを secondopinion-MCP 経由 GLM に diff 検証依頼
+  - 仮説: A と B は完全に一致する (env で override していた値が default になっただけなので no-op であるべき)
+- リスク: 低
+  - default 変更 = production と同じ挙動 (production で 1 ヶ月+ 実証済)
+  - env 削除 = override が消えても default が同値なので no-op
+  - 新規 user は default で本番相当の挙動を得る (現状より親切)
+- 関連:
+  - §6-4 Phase N β Mass Evaporation (default 昇格候補の代表ケース、Stage 2 完了が前提)
+  - §6-6 Lateral Stage 7 (既に default 昇格済の前例、本タスクで env 重複削除のみ)
+  - §6-7 Heavy Persona Dominance (measurement 中、結果次第で対象に含む / 除外)
+  - §10 rollout discipline 3 段階
+  - memory `project_phase_n_stage_1_5_enabled` / `project_ambient_persona_mass_dominance`
 
 ---
 

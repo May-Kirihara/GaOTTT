@@ -30,7 +30,9 @@ EXPECTED_TOOLS = {
     "explore", "reflect", "prefetch", "prefetch_status", "relate", "unrelate",
     "get_relations", "commit", "start", "complete", "abandon", "depend",
     "declare_value", "declare_intention", "declare_commitment",
-    "inherit_persona", "merge", "compact", "auto_remember", "ingest",
+    "inherit_persona", "merge", "compact", "auto_remember",
+    "save_candidates",  # Plans-Save-Candidates-Hook.md (2026-05-27)
+    "ingest",
 }
 
 
@@ -47,11 +49,11 @@ async def engine_singleton(tmp_path, monkeypatch):
 
 
 def test_mcp_surface_count_matches_expected():
-    """The 26-tool surface is a contract — additions/removals are intentional."""
+    """The 27-tool surface is a contract — additions/removals are intentional."""
     source = Path(srv.__file__).read_text(encoding="utf-8")
     decorator_count = len(re.findall(r"^@mcp\.tool\(\)\s*$", source, re.MULTILINE))
-    assert decorator_count == 26, (
-        f"Found {decorator_count} @mcp.tool() decorators; expected 26"
+    assert decorator_count == 27, (
+        f"Found {decorator_count} @mcp.tool() decorators; expected 27"
     )
 
     discovered = set()
@@ -69,7 +71,7 @@ def _extract_id(text: str) -> str:
     return match.group(0)
 
 
-async def test_all_26_tools_round_trip(engine_singleton):
+async def test_all_27_tools_round_trip(engine_singleton):
     """Drive every tool through a single coherent workflow.
 
     The order is chosen so each tool gets realistic inputs from prior tool
@@ -153,6 +155,16 @@ async def test_all_26_tools_round_trip(engine_singleton):
         max_candidates=3,
     )
     assert "Extracted" in auto_out or "candidate" in auto_out.lower()
+
+    # Save-candidates wraps auto_remember in the Stop-hook block formatter.
+    save_out = await srv.save_candidates(
+        transcript="[user] 重要な決定: pip ではなく uv を使う\n",
+        max_candidates=3,
+    )
+    assert (
+        "<gaottt-save-candidates>" in save_out
+        or save_out == "(保存候補なし)"
+    )
 
     # Relations ----------------------------------------------------------
     relate_out = await srv.relate(

@@ -1,6 +1,35 @@
 # Phase P — Pressure Terms (Cosmological Λ + Langevin Temperature)
 
-**状態**: 起草 (2026-05-26)。Phase N の「Plans 化された最初の案が Phase 確定」規約に従い、本ページが Phase P を確定する。
+**状態**: ✅ **Stage 1 (Langevin Temperature, P-β) + Stage 2 (Cosmological Λ, P-α) 両方実装完了** (2026-05-27、default OFF)。Stage 1.5 / 2.5 (本番 env opt-in) は Phase N β Stage 1.5 観測後。Phase N の「Plans 化された最初の案が Phase 確定」規約に従い、本ページが Phase P を確定する。
+
+## Stage 2 (Cosmological Λ, P-α) 実装完了サマリ (2026-05-27)
+
+| 項目 | 実装 |
+|---|---|
+| Config | `cosmological_lambda_enabled: bool = False` / `cosmological_lambda_h: float = 0.001` |
+| `compute_acceleration` | 5 番目の項を追加: `a_Λ(i) += +H · (pos_i - pos_j)` を neighbor loop で。既存 4 項目 (gravity / Hooke / mass-BH / query attraction) は完全不変、Λ は純粋に additive |
+| 自己力 filter | 共有 — `compute_acceleration` に渡される `neighbors` を生成する呼び出し側 (`propagate_gravity_wave` 等) が適用した filter を Λ もそのまま受け継ぐ (Plan §3.1) |
+| テスト | unit 11 (off で zero、literal form、direction、distance-proportional、neighbor sum、H=0 no-op、additivity、scale-linear in H) + integration 4 (smoke off / 拡張観測 / rollback / α と β 共存) |
+| 検証 | 全 674 test pass、ruff clean、Stage 1+2 同時 enable で engine.query 正常動作 |
+
+**力学的保証**:
+- `cosmological_lambda_enabled=False` で legacy 完全 bit-exact (unit assertion 済)
+- `cosmological_lambda_h=0.0` でも no-op (flag on/off 両方で rollback 可能)
+- Λ と Langevin は独立に enable/disable できる (Plan §1 「数学的に直交」を unit test で確認)
+
+## Stage 1 (Langevin Temperature, P-β) 実装完了サマリ (2026-05-27)
+
+| 項目 | 実装 |
+|---|---|
+| Config | `langevin_temperature_enabled: bool = False` / `langevin_temperature_t0: float = 0.001` |
+| Acceleration loop | 変更なし (Stage 1 は velocity → position 段のみ触る) |
+| Position update | `update_orbital_state` の `new_disp = old_disp + new_vel` の **後**、`clamp_vector` の前に `new_disp += √(2·T₀)·ξ` 加算 |
+| RNG | D6 通り: `rng: np.random.Generator | None = None` 引数追加、None なら production unseeded、tests は `np.random.default_rng(seed)` 渡しで reproducible |
+| 副次作業 | `compute_virtual_position` も同じ rng-injected pattern に refactor (既存 callers は無変更で動作) |
+| テスト | unit 9 (bit-exact legacy / σ scale / determinism / clamp / velocity 不変) + integration 3 (engine path / displacement variance 増加 / T₀=0 rollback) |
+| 検証 | 全 659 test pass、ruff clean、既存 logic に regression なし |
+
+**力学的保証**: `langevin_temperature_enabled=False` または `langevin_temperature_t0=0.0` で legacy 完全 bit-exact (unit test で assertion 済)。Stage 1 単独で merge しても本番 default 挙動は完全に変わらない。
 
 > Phase L (hybrid retrieval) — Phase M (mass conservation) — Phase N β (mass evaporation) — **Phase P (pressure terms)** の 4 連は、それぞれ retrieval の異なる層を扱う:
 >
@@ -208,13 +237,21 @@ def update_orbital_state(..., rng: np.random.Generator | None = None):
 - tests: `rng = np.random.default_rng(42)` を fixture から渡して reproducible
 - 既存 `compute_virtual_position` の `np.random.randn` (line 87) も同様に rng-injected に refactor (Phase P-β 副次作業)
 
-### D7. 観測ハンドル ✅ **`scripts/diag_pressure.py` 新設**
+### D7. 観測ハンドル ✅ **`scripts/diag_pressure.py` 実装完了 (2026-05-27)**
 
 Phase N β の `scripts/diag_dormant.py` / `phase_n_dry_run.py` と同じ位置付け:
 
-- `diag_pressure.py snapshot`: 本番 DB を read-only で開き、Λ と Langevin を有効化したときの 1-step 効果を dry-run projection
-- 出力: 各 node の `|displacement| before/after`、最大変位 top-K、cluster centroid 距離変化
-- secondopinion-MCP 経由 GLM での independent observer (Observer C) 用入力にもなる
+- `diag_pressure.py snapshot`: 本番 DB を read-only で開き (write-behind loop 全 disable)、Λ と Langevin の 1-step 効果を dry-run projection
+- 出力 (text mode):
+  - 全体: active nodes / embedding dim / H / T₀ / σ=√(2·T₀) / Langevin expected per-step ||noise||=σ·√dim
+  - Top-K mass hubs (default K=20): mass / |d| / source / neighbor count / ||a_Λ|| / a_Λ/m / content preview
+  - Λ accel 統計: min / p50 / p90 / p95 / p99 / max / mean over hubs
+  - Headlines: largest Λ accel hub、median ||a_Λ|| vs Langevin step norm の比 (どちらが dominant か)
+- `--json` mode: machine-readable で diff 駆動・secondopinion-MCP Observer C 入力に
+- `--out FILE`: stdout でなくファイルに書き出し
+- `--lambda-h` / `--langevin-t0` で config default を override して試算可能
+- **safety contract**: SQLite + FAISS とも read-only。`faiss_save_interval=999s` / `flush_interval=999s` / `virtual_faiss_save_interval=999s` で write-behind loop 全 disable、`genesis_kick` / `dream` も off
+- Tier 4 smoke: 3 test (`tests/perf/test_tier4_diag_pressure.py`) — JSON 出力 / text mode headline / `--out` file 書き出し
 
 ## 5. 副次予測 — 検証可能な仮説
 

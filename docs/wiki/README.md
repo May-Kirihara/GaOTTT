@@ -18,7 +18,7 @@
    Guides-Visualization.md              ── Cosmic 3D 可視化
 
 🛠 MCP Reference/
-   MCP-Reference-Index.md               ── 26 ツール早見表
+   MCP-Reference-Index.md               ── 27 ツール早見表
    MCP-Reference-Memory.md              ── remember/recall/explore/reflect/ingest/auto_remember
    MCP-Reference-Tasks-and-Persona.md   ── commit/start/complete/abandon/depend/declare_*/inherit_persona
    MCP-Reference-Maintenance.md         ── forget/restore/merge/compact/revalidate/relate/prefetch
