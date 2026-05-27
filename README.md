@@ -109,14 +109,16 @@ Have an agent search every user prompt automatically and inject relevant long-te
 
 > ⚠️ **Use absolute paths, not `$CLAUDE_PROJECT_DIR`.** Claude Code expands `$CLAUDE_PROJECT_DIR` to the *current* project — so a hook command using it would look for `scripts/hooks/ambient_recall.py` inside whatever repo you happen to be in, not inside the GaOTTT checkout. Replace `/Path/to/GaOTTT` with the actual absolute path of your GaOTTT clone (e.g. `/Users/you/code/GaOTTT` or `/mnt/holyland/Project/GaOTTT`). For per-project enablement use `<project>/.claude/settings.json` with the same absolute paths.
 
-**opencode** — copy the plugin into a plugin directory (auto-loaded at startup):
+**opencode** — copy the plugin into a plugin directory + **`GAOTTT_REPO` env var is required**:
 
 ```bash
 mkdir -p ~/.config/opencode/plugin
 cp scripts/hooks/opencode-ambient-recall.ts ~/.config/opencode/plugin/gaottt-ambient-recall.ts
+echo 'export GAOTTT_REPO=/Path/to/GaOTTT' >> ~/.bashrc   # required; substitute your clone path
+source ~/.bashrc
 ```
 
-The TS plugin reads `GAOTTT_REPO` env var (default `/mnt/holyland/Project/GaOTTT`); set it in your shell rc to your install path so the plugin spawns the right Python interpreter.
+> ⚠️ **`GAOTTT_REPO` MUST be set.** The TS plugin's internal fallback (`process.env.GAOTTT_REPO ?? "/mnt/holyland/Project/GaOTTT"`) just happens to hard-code this repository author's path. Without the env var, the plugin will look for the Python interpreter at the wrong path and silently fail — no error message, the block simply never injects (hook is fail-safe by design, so it stays quiet). Put the `export` in your shell rc so every opencode subprocess inherits it.
 
 → Full setup, relevance gate, observer effect: [Guides — Ambient Recall](docs/wiki/Guides-Ambient-Recall.md)
 

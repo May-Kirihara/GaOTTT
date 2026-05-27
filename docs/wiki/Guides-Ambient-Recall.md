@@ -128,19 +128,24 @@ opencode は起動時にプラグインディレクトリの `*.ts` を自動ロ
 - **グローバル** `~/.config/opencode/plugin/` — 全 opencode セッションに効く
 - **プロジェクト単位** `<project>/.opencode/plugin/` — そのプロジェクトでのみ
 
-リポジトリ内の SoT は `scripts/hooks/opencode-ambient-recall.ts`。これをプラグインディレクトリにコピー（または symlink）する:
+リポジトリ内の SoT は `scripts/hooks/opencode-ambient-recall.ts`。これをプラグインディレクトリにコピー（または symlink）する + **`GAOTTT_REPO` の export は必須**:
 
 ```bash
+# 1. plugin install
 mkdir -p ~/.config/opencode/plugin
 cp scripts/hooks/opencode-ambient-recall.ts \
    ~/.config/opencode/plugin/gaottt-ambient-recall.ts
+
+# 2. shell rc に GAOTTT_REPO を追加 (必須)
+echo 'export GAOTTT_REPO=/Path/to/GaOTTT' >> ~/.bashrc   # 自分の clone path に置き換え
+source ~/.bashrc
 ```
+
+⚠️ **`GAOTTT_REPO` を設定しないと plugin は silent fail する**。TS plugin の内部 fallback は `process.env.GAOTTT_REPO ?? "/mnt/holyland/Project/GaOTTT"` — 本リポジトリ作者の machine の path が default で hard-coded されている。他人の machine では env を set しないと wrong path で Python interpreter を探し、error も出さず block を inject しない（hook が「fail-safe」設計なので一切静かに止まる）。`GAOTTT_AMBIENT_PYTHON` / `GAOTTT_AMBIENT_SCRIPT` を個別に指定することも可能だが、`GAOTTT_REPO` 1 本で済むのが推奨。
 
 プラグインは opencode の `chat.message` フック（新しいユーザーメッセージ受信時に発火）で動く。メッセージのテキストパートを連結して prompt にし、Python フック `scripts/hooks/ambient_recall.py` を `Bun.spawn` で子プロセス起動して `{"prompt": ...}` を stdin に渡す。返ってきた `<gaottt-ambient-recall>` ブロックを、メッセージ末尾のテキストパートに追記する（Claude Code フックがユーザー発話の後ろに文脈を添えるのと同じ振る舞い）。
 
-> **opencode サブエージェントにも効く** — secondopinion-MCP 経由で起動される opencode サブエージェントを含め、`chat.message` を持つすべての opencode セッションに注入される。グローバルインストールなら、どのディレクトリで起動した opencode エージェントも同じ長期記憶を共有する（「opencode エージェントにも同じ記憶を」という目的どおり）。
-
-> プラグインは GaOTTT リポジトリのパスを `GAOTTT_REPO`（既定 `/mnt/holyland/Project/GaOTTT`）から解決する。リポジトリが別の場所にあるなら、opencode を起動するシェルで `GAOTTT_REPO` を設定するか、`GAOTTT_AMBIENT_PYTHON` / `GAOTTT_AMBIENT_SCRIPT` を直接指す。
+> **opencode サブエージェントにも効く** — secondopinion-MCP 経由で起動される opencode サブエージェントを含め、`chat.message` を持つすべての opencode セッションに注入される。グローバルインストールなら、どのディレクトリで起動した opencode エージェントも同じ長期記憶を共有する（「opencode エージェントにも同じ記憶を」という目的どおり）。ただし subprocess の env に `GAOTTT_REPO` が継承されている必要があるので、shell rc に書くのが確実。
 
 ## backend の再起動が必要なとき
 
