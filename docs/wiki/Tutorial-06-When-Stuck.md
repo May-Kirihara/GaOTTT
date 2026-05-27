@@ -90,8 +90,9 @@ source $HOME/.cargo/env
 #### チェック 3: パス
 
 ```bash
-# 設定ファイルに書いた command のパスが本当にあるか:
-ls /Users/あなたのユーザー名/GaOTTT/.venv/bin/python
+# 設定ファイルに書いた command のパスが本当にあるか
+# (シェルが $HOME を展開してくれるのでそのままコピペ OK):
+ls "$HOME/GaOTTT/.venv/bin/python"
 ```
 
 ファイルが見つかれば OK。`No such file or directory` なら、パスが間違っているか、Tutorial-02 のインストールが完了していません。
@@ -138,6 +139,70 @@ cd ~/GaOTTT
 
 ---
 
+## フックを入れたけど効いてない
+
+[Tutorial-05 の発展編](Tutorial-05-Everyday-Use.md#-発展-自動で記憶を引かせる--保存候補を浮かべる-オプション) で ambient_recall / save_candidates を入れたのに、`<gaottt-ambient-recall>` ブロックも `<gaottt-save-candidates>` ブロックも出てこない場合:
+
+### 共通: フックは「fail-safe」で**静かに失敗**する
+
+ユーザー入力を絶対にブロックしない設計なので、エラーが起きても何も表示せず exit します。だから「効いてないけど何が悪いかわからない」が起きやすい。順番にチェック:
+
+### 1. backend が古いコードを掴んだままになってないか
+
+`git pull` した後はこれをやらないと、Python 側の新コードが backend に乗りません:
+
+```bash
+ps -ef | grep "gaottt.server.mcp_server.*streamable-http" | grep -v grep
+# 起動時刻が最新 commit より古ければ:
+kill <PID>
+# 次の MCP 接続で新 backend が auto-respawn する
+```
+
+### 2. パス / GAOTTT_REPO のチェック
+
+**Claude Code の場合**: `~/.claude/settings.json` の `command` が **絶対パス** になっているか。Tutorial-02 どおりなら `~/GaOTTT` 下にあるはず:
+
+```bash
+# 設定に書いたパスが本当にファイルとして存在するか:
+ls "$HOME/GaOTTT/.venv/bin/python"
+ls "$HOME/GaOTTT/scripts/hooks/ambient_recall.py"
+```
+
+**opencode の場合**: `GAOTTT_REPO` が現在のシェルで export されているか:
+
+```bash
+echo $GAOTTT_REPO
+# /home/<ユーザー名>/GaOTTT のような値が出れば OK
+# 空なら .bashrc に書いた export が読み込まれていないので、
+# ターミナルを開き直すか source ~/.bashrc
+```
+
+### 3. デバッグログを出してみる
+
+**opencode**:
+
+```bash
+export GAOTTT_AMBIENT_DEBUG=/tmp/gaottt-hook.log
+# opencode を起動して 1 プロンプト送信
+cat /tmp/gaottt-hook.log
+```
+
+**Claude Code**: フックを手動で叩いてエラーを見ます:
+
+```bash
+echo '{"prompt": "test"}' | "$HOME/GaOTTT/.venv/bin/python" \
+  "$HOME/GaOTTT/scripts/hooks/ambient_recall.py"
+```
+
+何かエラーが出れば、それを Claude に貼って聞いてください。
+
+### 4. それでも何も出ない
+
+- 記憶が空っぽだと当然ブロックは出ません。`reflect(aspect="summary")` で `Total memories` を確認
+- ambient_recall は **強一致 gate** が入っているので、関連記憶が薄いプロンプトでは何も注入されません（これが正常）。何度か `remember` してから再試行
+
+---
+
 ## 「やっぱり全部消したい」
 
 もう使わない、最初からやり直したい、というとき:
@@ -147,17 +212,19 @@ cd ~/GaOTTT
 使っている AI クライアントを終了してから、ターミナルで:
 
 ```bash
-rm ~/.local/share/gaottt/gaottt.db
-rm ~/.local/share/gaottt/gaottt.faiss
-rm ~/.local/share/gaottt/gaottt.faiss.ids
+# データディレクトリごとまるごと消すのが一番確実
+# (SQLite WAL ファイル / virtual FAISS / .ids サイドカーも一緒に消える)
+rm -rf ~/.local/share/gaottt/
 ```
+
+Windows の方は `%LOCALAPPDATA%\gaottt\` フォルダをエクスプローラーから削除してください。
 
 次に Claude を起動すると **空っぽの状態** から始まります。
 
 ### GaOTTT 自体を完全アンインストール
 
 ```bash
-rm -rf ~/GER-RAG          # ソースコード
+rm -rf ~/GaOTTT                 # ソースコード（Tutorial-02 で clone した先）
 rm -rf ~/.local/share/gaottt/   # 記憶データ
 ```
 
