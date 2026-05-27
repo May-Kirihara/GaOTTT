@@ -315,10 +315,24 @@
   - [Plans — Phase N (Mass Evaporation)](docs/wiki/Plans-Phase-N-Mass-Evaporation.md) — 着手順序の前提
   - memory `[STAGE-7-LIMITATION]` — Phase P が解く対象の literal 観察
 
-### 🟢 6-9. Hardening Stage 2-4 (HIGH/MEDIUM/LOW catalogue) `[Stage 1 完了 / 2-4 未着手]`
-- 状態: `Plans-Hardening-Concurrency-Persistence.md`、Stage 1 (C1/C3/C4 修正) 完了
-- 残: Stage 2 HIGH / Stage 3 MEDIUM / Stage 4 LOW
-- [ ] catalogue の優先度順に着手判断
+### 🟡 6-9. Hardening Stage 3-4 (MEDIUM/LOW catalogue) `[Stage 1/1.5/2 完了 / Stage 3 第一弾着手中 (2026-05-27)]`
+- 状態: `Plans-Hardening-Concurrency-Persistence.md` の Stage 1 (CRITICAL C1/C3/C4)、Stage 1.5 (L-flaky)、Stage 2 (HIGH H1-H8 全 8 件) 完了。catalogue は M1-M11 (MEDIUM 11 件) + LOW 10+ 件
+- **Stage 3 第一弾** (本タスク、storage/physics の低リスク safety 3 件を 1 PR にまとめる、`hardening-stage-3-batch-1` branch):
+  - [ ] **M3** — `sqlite_store.py` の多文 destructive op に `BEGIN`/`COMMIT`+`rollback` を入れる (部分適用防止)
+  - [ ] **M4** — `save_displacements`/`save_velocities` の dtype guard (`np.ascontiguousarray(disp, dtype=np.float32)`、float64 無言ゴミ化防止)
+  - [ ] **M6** — `update_velocity` の friction step を `max(0.0, 1-friction)` で clamp + config range 検証 (`orbital_friction > 1` で velocity 反転 runaway 防止)
+- **Stage 3 第二弾** (規模問題、別 PR 予定):
+  - [ ] **M1** — `IN (?,?,...)` の SQLite 999 変数上限を `_in_chunks(ids, fn, 900)` で全 call site 分割
+  - [ ] **M5** — BM25 tombstone 無限増加対策 (removed 比率 20% で自動 rebuild)
+- **Stage 3 第三弾** (観測性 / retrieval / セキュリティ、順次):
+  - [ ] **M2** — reflect/dormant/summary の逐次 `get_document` バッチ化 (event loop ブロック解消)
+  - [ ] **M7** — `/admin/*` 無認証 → Architecture 設計判断表に「network 隔離前提」明記 (or 共有 secret/unix socket)
+  - [ ] **M8** — `recall(source_filter=...)` の sparse class 空返し対策 (`wave_k_with_filter` default 化)
+  - [ ] **M9** — `cache.flush_to_store` の `await` 中の lost-update (ids 局所捕捉後 `.clear()`)
+  - [ ] **M10** — supernova cohort dedup で閾値割れ無警告 (stamp 一致 + log)
+  - [ ] **M11** — `compact` 部分失敗の不可視性 (`CompactResponse.faiss_rebuilt`/`error` フィールド)
+- **Stage 4 LOW** (機会対応、catalogue は plan §LOW/NIT 節): faiss fsync, get_vectors reconstruct 化, 移行台帳テーブル, BM25 breakdown 例外, MCP relate ValueError, shutdown cancel await, working_on edge デッド定義, dormant 同名別定義, proxy spawn log fd リーク, RecallRequest.mode 無検証 str
+- **回帰テスト規律**: 各修正に teeth-having 回帰テスト (修正前なら落ちる test) を必ず付ける。Stage 1/2 で確立した style (`tests/integration/test_engine_concurrent.py` 等) を踏襲
 
 ### 🟢 6-10. Phase G Stage 3 (重心アンカー) `[永久保留]`
 - ロードマップ上は homogenization リスクで permanently shelved

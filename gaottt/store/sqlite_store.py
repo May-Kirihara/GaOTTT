@@ -431,10 +431,22 @@ class SqliteStore(StoreBase):
         return edges
 
     async def save_displacements(self, displacements: dict[str, np.ndarray]) -> None:
+        # M4 — coerce to contiguous float32 before serialization. Without
+        # this, a caller passing float64 (numpy default for `np.zeros(dim)`)
+        # silently writes 2× bytes per element, and ``load_displacements``
+        # reads it back via ``np.frombuffer(..., dtype=np.float32)``
+        # producing garbage (half the values are misaligned high-bits).
+        # Same fix mirrored for ``save_velocities`` below.
         assert self._conn is not None
         await self._conn.executemany(
             "UPDATE nodes SET displacement = ? WHERE id = ?",
-            [(disp.tobytes(), node_id) for node_id, disp in displacements.items()],
+            [
+                (
+                    np.ascontiguousarray(disp, dtype=np.float32).tobytes(),
+                    node_id,
+                )
+                for node_id, disp in displacements.items()
+            ],
         )
         await self._conn.commit()
 
@@ -461,10 +473,17 @@ class SqliteStore(StoreBase):
         return result
 
     async def save_velocities(self, velocities: dict[str, np.ndarray]) -> None:
+        # M4 — see ``save_displacements`` above for the dtype guard rationale.
         assert self._conn is not None
         await self._conn.executemany(
             "UPDATE nodes SET velocity = ? WHERE id = ?",
-            [(vel.tobytes(), node_id) for node_id, vel in velocities.items()],
+            [
+                (
+                    np.ascontiguousarray(vel, dtype=np.float32).tobytes(),
+                    node_id,
+                )
+                for node_id, vel in velocities.items()
+            ],
         )
         await self._conn.commit()
 
@@ -535,16 +554,24 @@ class SqliteStore(StoreBase):
         row = await cursor.fetchone()
         edges_count = row[0] if row else 0
 
-        await self._conn.execute(
-            "UPDATE nodes SET mass = 1.0, temperature = 0.0, last_access = NULL, "
-            "sim_history = NULL, displacement = NULL, velocity = NULL, return_count = 0.0, "
-            "expires_at = NULL, is_archived = 0, "
-            "merged_into = NULL, merge_count = 0, merged_at = NULL, "
-            "emotion_weight = 0.0, certainty = 1.0, last_verified_at = NULL"
-        )
-        await self._conn.execute("DELETE FROM edges")
-        await self._conn.execute("DELETE FROM directed_edges")
-        await self._conn.commit()
+        # M3 — wrap multi-statement destructive op so a mid-sequence
+        # exception (SIGTERM, disk full, etc.) rolls back the whole batch
+        # instead of leaving the DB partially mutated (e.g., nodes reset
+        # but edges still present, or vice versa).
+        try:
+            await self._conn.execute(
+                "UPDATE nodes SET mass = 1.0, temperature = 0.0, last_access = NULL, "
+                "sim_history = NULL, displacement = NULL, velocity = NULL, return_count = 0.0, "
+                "expires_at = NULL, is_archived = 0, "
+                "merged_into = NULL, merge_count = 0, merged_at = NULL, "
+                "emotion_weight = 0.0, certainty = 1.0, last_verified_at = NULL"
+            )
+            await self._conn.execute("DELETE FROM edges")
+            await self._conn.execute("DELETE FROM directed_edges")
+            await self._conn.commit()
+        except Exception:
+            await self._conn.rollback()
+            raise
         return nodes_count, edges_count
 
     # --- Archive / delete (F4 + F5) ---
@@ -563,28 +590,38 @@ class SqliteStore(StoreBase):
         return cursor.rowcount or 0
 
     async def hard_delete_nodes(self, node_ids: list[str]) -> int:
-        """Physically delete nodes, their documents, and any edges touching them."""
+        """Physically delete nodes, their documents, and any edges touching them.
+
+        M3 — wraps the 4-statement delete sequence in an explicit
+        try/commit/rollback so a mid-sequence exception (e.g., SIGTERM
+        between DELETE edges and DELETE nodes) doesn't leave dangling
+        edge rows pointing at deleted-but-not-quite nodes.
+        """
         assert self._conn is not None
         if not node_ids:
             return 0
         placeholders = ",".join("?" for _ in node_ids)
-        await self._conn.execute(
-            f"DELETE FROM edges WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
-            [*node_ids, *node_ids],
-        )
-        await self._conn.execute(
-            f"DELETE FROM directed_edges "
-            f"WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
-            [*node_ids, *node_ids],
-        )
-        cursor = await self._conn.execute(
-            f"DELETE FROM nodes WHERE id IN ({placeholders})", node_ids,
-        )
-        deleted = cursor.rowcount or 0
-        await self._conn.execute(
-            f"DELETE FROM documents WHERE id IN ({placeholders})", node_ids,
-        )
-        await self._conn.commit()
+        try:
+            await self._conn.execute(
+                f"DELETE FROM edges WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
+                [*node_ids, *node_ids],
+            )
+            await self._conn.execute(
+                f"DELETE FROM directed_edges "
+                f"WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
+                [*node_ids, *node_ids],
+            )
+            cursor = await self._conn.execute(
+                f"DELETE FROM nodes WHERE id IN ({placeholders})", node_ids,
+            )
+            deleted = cursor.rowcount or 0
+            await self._conn.execute(
+                f"DELETE FROM documents WHERE id IN ({placeholders})", node_ids,
+            )
+            await self._conn.commit()
+        except Exception:
+            await self._conn.rollback()
+            raise
         return deleted
 
     # --- F3: Directed (typed) edges ---
