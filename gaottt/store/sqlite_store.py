@@ -133,17 +133,38 @@ class SqliteStore(StoreBase):
     def _content_hash(content: str) -> str:
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
+    # M1 — SQLite default ``SQLITE_MAX_VARIABLE_NUMBER`` is 999 (host-build
+    # dependent, can be 32766 on newer libs but we cannot assume). Any
+    # ``IN (?,?,...)`` with more than 999 params raises ``sqlite3.OperationalError:
+    # too many SQL variables`` mid-query, after the work has partially started
+    # if part of a transaction. Chunking at 900 leaves headroom for callers
+    # who pass ``[*ids, *ids]`` (e.g., ``hard_delete_nodes`` ``src IN OR dst IN``).
+    _IN_CHUNK_SIZE = 900
+
+    @staticmethod
+    def _in_chunks(items: list[str], chunk_size: int = _IN_CHUNK_SIZE) -> list[list[str]]:
+        """Split a list of bind values into chunks small enough for SQLite's
+        variable limit. Returns the original list as a single chunk if it
+        already fits, so the common short-list path stays one query."""
+        if len(items) <= chunk_size:
+            return [items]
+        return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
+
     async def find_existing_hashes(self, hashes: list[str]) -> set[str]:
         """Return the subset of content hashes that already exist in the DB."""
         assert self._conn is not None
         if not hashes:
             return set()
-        placeholders = ",".join("?" for _ in hashes)
-        cursor = await self._conn.execute(
-            f"SELECT content_hash FROM documents WHERE content_hash IN ({placeholders})",
-            hashes,
-        )
-        return {row[0] async for row in cursor}
+        found: set[str] = set()
+        for chunk in self._in_chunks(hashes):
+            placeholders = ",".join("?" for _ in chunk)
+            cursor = await self._conn.execute(
+                f"SELECT content_hash FROM documents WHERE content_hash IN ({placeholders})",
+                chunk,
+            )
+            async for row in cursor:
+                found.add(row[0])
+        return found
 
     async def save_documents(self, docs: list[dict[str, Any]]) -> None:
         assert self._conn is not None
@@ -363,14 +384,15 @@ class SqliteStore(StoreBase):
         assert self._conn is not None
         if not ids:
             return {}
-        placeholders = ",".join("?" for _ in ids)
-        cursor = await self._conn.execute(
-            f"SELECT {self._NODE_COLS} FROM nodes WHERE id IN ({placeholders})",
-            ids,
-        )
-        result = {}
-        async for row in cursor:
-            result[row[0]] = self._row_to_node_state(row)
+        result: dict[str, NodeState] = {}
+        for chunk in self._in_chunks(ids):
+            placeholders = ",".join("?" for _ in chunk)
+            cursor = await self._conn.execute(
+                f"SELECT {self._NODE_COLS} FROM nodes WHERE id IN ({placeholders})",
+                chunk,
+            )
+            async for row in cursor:
+                result[row[0]] = self._row_to_node_state(row)
         return result
 
     async def get_all_node_states(self) -> list[NodeState]:
@@ -454,22 +476,25 @@ class SqliteStore(StoreBase):
         self, ids: list[str] | None = None,
     ) -> dict[str, np.ndarray]:
         assert self._conn is not None
+        result: dict[str, np.ndarray] = {}
         if ids is not None:
             if not ids:
                 return {}
-            placeholders = ",".join("?" for _ in ids)
-            cursor = await self._conn.execute(
-                f"SELECT id, displacement FROM nodes "
-                f"WHERE displacement IS NOT NULL AND id IN ({placeholders})",
-                ids,
-            )
+            for chunk in self._in_chunks(ids):
+                placeholders = ",".join("?" for _ in chunk)
+                cursor = await self._conn.execute(
+                    f"SELECT id, displacement FROM nodes "
+                    f"WHERE displacement IS NOT NULL AND id IN ({placeholders})",
+                    chunk,
+                )
+                async for row in cursor:
+                    result[row[0]] = np.frombuffer(row[1], dtype=np.float32).copy()
         else:
             cursor = await self._conn.execute(
                 "SELECT id, displacement FROM nodes WHERE displacement IS NOT NULL"
             )
-        result = {}
-        async for row in cursor:
-            result[row[0]] = np.frombuffer(row[1], dtype=np.float32).copy()
+            async for row in cursor:
+                result[row[0]] = np.frombuffer(row[1], dtype=np.float32).copy()
         return result
 
     async def save_velocities(self, velocities: dict[str, np.ndarray]) -> None:
@@ -491,22 +516,25 @@ class SqliteStore(StoreBase):
         self, ids: list[str] | None = None,
     ) -> dict[str, np.ndarray]:
         assert self._conn is not None
+        result: dict[str, np.ndarray] = {}
         if ids is not None:
             if not ids:
                 return {}
-            placeholders = ",".join("?" for _ in ids)
-            cursor = await self._conn.execute(
-                f"SELECT id, velocity FROM nodes "
-                f"WHERE velocity IS NOT NULL AND id IN ({placeholders})",
-                ids,
-            )
+            for chunk in self._in_chunks(ids):
+                placeholders = ",".join("?" for _ in chunk)
+                cursor = await self._conn.execute(
+                    f"SELECT id, velocity FROM nodes "
+                    f"WHERE velocity IS NOT NULL AND id IN ({placeholders})",
+                    chunk,
+                )
+                async for row in cursor:
+                    result[row[0]] = np.frombuffer(row[1], dtype=np.float32).copy()
         else:
             cursor = await self._conn.execute(
                 "SELECT id, velocity FROM nodes WHERE velocity IS NOT NULL"
             )
-        result = {}
-        async for row in cursor:
-            result[row[0]] = np.frombuffer(row[1], dtype=np.float32).copy()
+            async for row in cursor:
+                result[row[0]] = np.frombuffer(row[1], dtype=np.float32).copy()
         return result
 
     async def reset_orbital_state(self) -> int:
@@ -581,13 +609,21 @@ class SqliteStore(StoreBase):
         assert self._conn is not None
         if not node_ids:
             return 0
-        placeholders = ",".join("?" for _ in node_ids)
-        cursor = await self._conn.execute(
-            f"UPDATE nodes SET is_archived = ? WHERE id IN ({placeholders})",
-            [1 if archived else 0, *node_ids],
-        )
-        await self._conn.commit()
-        return cursor.rowcount or 0
+        flag = 1 if archived else 0
+        affected = 0
+        try:
+            for chunk in self._in_chunks(node_ids):
+                placeholders = ",".join("?" for _ in chunk)
+                cursor = await self._conn.execute(
+                    f"UPDATE nodes SET is_archived = ? WHERE id IN ({placeholders})",
+                    [flag, *chunk],
+                )
+                affected += cursor.rowcount or 0
+            await self._conn.commit()
+        except Exception:
+            await self._conn.rollback()
+            raise
+        return affected
 
     async def hard_delete_nodes(self, node_ids: list[str]) -> int:
         """Physically delete nodes, their documents, and any edges touching them.
@@ -596,28 +632,40 @@ class SqliteStore(StoreBase):
         try/commit/rollback so a mid-sequence exception (e.g., SIGTERM
         between DELETE edges and DELETE nodes) doesn't leave dangling
         edge rows pointing at deleted-but-not-quite nodes.
+
+        M1 — chunks ``IN (?,?,...)`` lists so large deletions don't trip
+        SQLite's 999-variable limit. The ``src IN (...) OR dst IN (...)``
+        edges/directed_edges statements double the bind count, so they use
+        a 450-chunk size; the single-IN nodes/documents statements use the
+        standard 900. All chunks share one transaction (commit at the end,
+        rollback on any failure), preserving the atomicity guarantee.
         """
         assert self._conn is not None
         if not node_ids:
             return 0
-        placeholders = ",".join("?" for _ in node_ids)
+        deleted = 0
         try:
-            await self._conn.execute(
-                f"DELETE FROM edges WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
-                [*node_ids, *node_ids],
-            )
-            await self._conn.execute(
-                f"DELETE FROM directed_edges "
-                f"WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
-                [*node_ids, *node_ids],
-            )
-            cursor = await self._conn.execute(
-                f"DELETE FROM nodes WHERE id IN ({placeholders})", node_ids,
-            )
-            deleted = cursor.rowcount or 0
-            await self._conn.execute(
-                f"DELETE FROM documents WHERE id IN ({placeholders})", node_ids,
-            )
+            for chunk in self._in_chunks(node_ids, self._IN_CHUNK_SIZE // 2):
+                placeholders = ",".join("?" for _ in chunk)
+                await self._conn.execute(
+                    f"DELETE FROM edges "
+                    f"WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
+                    [*chunk, *chunk],
+                )
+                await self._conn.execute(
+                    f"DELETE FROM directed_edges "
+                    f"WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
+                    [*chunk, *chunk],
+                )
+            for chunk in self._in_chunks(node_ids):
+                placeholders = ",".join("?" for _ in chunk)
+                cursor = await self._conn.execute(
+                    f"DELETE FROM nodes WHERE id IN ({placeholders})", chunk,
+                )
+                deleted += cursor.rowcount or 0
+                await self._conn.execute(
+                    f"DELETE FROM documents WHERE id IN ({placeholders})", chunk,
+                )
             await self._conn.commit()
         except Exception:
             await self._conn.rollback()

@@ -46,6 +46,7 @@ def build_engine(config: GaOTTTConfig) -> GaOTTTEngine:
             k1=config.bm25_k1,
             b=config.bm25_b,
             tokenizer=config.bm25_tokenizer,
+            auto_rebuild_threshold=config.bm25_auto_rebuild_threshold,
         )
         if config.hybrid_bm25_enabled else None
     )

@@ -41,9 +41,18 @@ class BM25Index:
         k1: float = 1.5,
         b: float = 0.75,
         tokenizer: str | Tokenizer = "trigram",
+        auto_rebuild_threshold: float = 0.2,
     ) -> None:
+        # M5 — when soft-removed (tombstone) docs reach
+        # ``auto_rebuild_threshold`` of the total (active + removed), trigger
+        # a rebuild from inside ``remove()``. Without this, ``search`` keeps
+        # filtering tombstones inside the hot path and the inverted index
+        # grows monotonically over a long-running process. Set to ``0.0`` to
+        # disable (only ``compact()`` will rebuild). 0.2 = 20% bloat ceiling
+        # is a balance between filter overhead and rebuild cost.
         self.k1 = k1
         self.b = b
+        self.auto_rebuild_threshold = max(0.0, auto_rebuild_threshold)
         self._tokenize: Tokenizer = (
             get_tokenizer(tokenizer) if isinstance(tokenizer, str) else tokenizer
         )
@@ -89,7 +98,17 @@ class BM25Index:
     def remove(self, ids: list[str]) -> None:
         """Soft-remove. Statistics drop the doc immediately; the inverted
         index entries persist until :meth:`rebuild` is called (typically
-        via ``engine.compact()``)."""
+        via ``engine.compact()``).
+
+        M5 — if ``auto_rebuild_threshold > 0`` and the post-remove tombstone
+        ratio (``|removed| / (|active| + |removed|)``) reaches it, rebuild
+        immediately. This bounds the inverted-index bloat over long-running
+        sessions where compact never runs. Side-effect: a subsequent
+        :meth:`restore` on a doc that was already rebuilt away is a no-op
+        (same as the post-compact behavior already documented in
+        ``engine.restore``) — the next startup rebuild from store picks it
+        up. Set the threshold to ``0.0`` to disable auto-rebuild entirely.
+        """
         for doc_id in ids:
             if doc_id in self._removed:
                 continue
@@ -99,6 +118,10 @@ class BM25Index:
             self._removed.add(doc_id)
             self._active_count -= 1
             self._active_total_dl -= self._doc_lens[doc_idx]
+        if self.auto_rebuild_threshold > 0.0 and self._removed:
+            total = self._active_count + len(self._removed)
+            if total > 0 and len(self._removed) / total >= self.auto_rebuild_threshold:
+                self.rebuild()
 
     def restore(self, ids: list[str]) -> None:
         """Undo a previous soft-remove. The doc's postings were retained,
