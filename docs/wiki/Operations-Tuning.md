@@ -110,13 +110,13 @@
 
 > **チューニング助言**: 新規 `remember` の original_id は `node_id` 自身 (自己一致なので自己フィルタの影響 0)。file ingest (`scripts/load_files.py`) は `original_id = file_path` で chunk 群を共通グループ化。Phase K supernova batch は `cohort_id = uuid4().hex[:12]` を共有 — `cohort_id` が **同じ** node 同士の force は mass update に寄与しない (Articulation as Carrier の literal な物理実装)。`mass_bh_theta` を下げ過ぎると低 mass node も attractor 化 → homogenization リスク。上げ過ぎると 1-2 週観測しても BH が発生しない (期待 1.7-5% の節点が θ 超え)。Stage 1 暫定 θ=5.0 は旧規則下の p99=26.5 から「新規則下は inflation が消えるので θ は大幅に下がる」前提の placeholder。
 
-## Mass Evaporation (Phase N candidate β Stage 1)
+## Mass Evaporation (Phase N — β 確定、Stage 1.5 本番 opt-in)
 
 Phase M 「自己関与は mass を生まない」(入力側) の対称形として「使われない mass は時間で蒸発する」(出力側) を物理化。単一規則: `mass -= ε · max(mass - floor, 0)^β · (t_idle / τ_idle)^γ`、`mass > floor AND t_idle > τ_grace` のとき。source 分岐ゼロ (Phase M と整合)、`evaporate_mass` 純粋関数。詳細: [Plans — Phase N candidate β](Plans-Phase-N-Mass-Evaporation.md)。
 
 | パラメータ | 既定 | 影響 |
 |---|---|---|
-| mass_evaporation_enabled | `False` | Stage 1 は merge 安全のため default OFF。Stage 1.5 で本番 opt-in PR。 |
+| mass_evaporation_enabled | `False` | Stage 1 は merge 安全のため default OFF。本番は env `GAOTTT_MASS_EVAPORATION_ENABLED=1` で opt-in (Stage 1.5 起動済 2026-05-26、123.92 mass drained / `scripts/diag_pressure.py` dry-run 予測との一致 99.9%) |
 | mass_evaporation_floor (M_floor) | 1.0 | 初期質量。下まで decay しない (新規ノード保護)。変更非推奨 (Phase G 初期化と一致)。|
 | mass_evaporation_grace_seconds (τ_grace) | 7d = 604800 | recall 直後の即時 decay 抑止窓。短くすると aggressive、長くすると "使ったらしばらく守られる" 挙動。|
 | mass_evaporation_idle_normalize_seconds (τ_idle) | 30d = 2592000 | 1 単位の decay が起こる基準 idle 期間。`t_idle/τ_idle` の正規化。 |
@@ -130,6 +130,23 @@ Phase M 「自己関与は mass を生まない」(入力側) の対称形とし
 > **本番ロールアウト手順 (Stage 1.5、Phase M Stage 2 後)**: (1) `scripts/mass_distribution.py` (要新設) で production の p50/p90/p99 mass を測定 → (2) `ε / β / γ / τ_idle` の本決め → (3) 他 MCP / REST プロセス停止 → (4) DB backup → (5) `mass_evaporation_enabled=True` で engine 起動 → startup sweep で cold-start debt 一括清算 → (6) 1-2 週 monitor して `hot_topics` 上位陣の入れ替わり / Phase O Stage 5 dormant の母集団復元 / 新規 `agent` memo の top1 取得確率 を観測。仮説 4 件は [Plans — Phase N β §5](Plans-Phase-N-Mass-Evaporation.md#5-副次予測--検証可能な仮説) 参照。
 
 > **チューニング助言**: `ε=0.01, β=1.5, γ=1.0` の初期値 sanity check — `mass=5.0` で 30d idle なら decay = `0.01 · 4^1.5 · 1 = 0.08` → 5.0 → 4.92 (∝ 1.6% loss)。`mass=10.0` で 30d idle なら decay = `0.01 · 9^1.5 = 0.27` → 10.0 → 9.73 (∝ 2.7% loss)。`mass=2.0` で 30d idle なら decay = `0.01 · 1^1.5 = 0.01` → 2.0 → 1.99 (塵レベルはほぼ不変)。Stage 1.5 で本番 mass 分布測定後、p99 が 1-2 週で 10% 程度 evaporate するレートに ε を調整するのが現在の目安。
+
+## Pressure Terms (Phase P — Cosmological Λ + Langevin Temperature)
+
+Phase M (mass 増の単一規則、入力側) + Phase N (mass 減の単一規則、時間側) に続く「gravity への対抗 pressure」第 3 法則。**Λ** (P-α) は長距離斥力 (Hubble flow 類比) を `compute_acceleration` に加算、**Langevin** (P-β) は熱的揺らぎ (SGLD 類比) を position-update step に加算。Stage 7.1 anti-hub の scope 外として残った **individual-node high-mass dominance** (`ffe48a30` 等 singleton hub) を、ranking 層ではなく acceleration / displacement step で構造的に押し返す第 3 法則。両 knob は数学的に直交、両 default OFF、本番 opt-in は Phase N β Stage 1.5 完了 + 1-2 週観測後。詳細: [Plans — Phase P](Plans-Phase-P-Pressure-Terms.md)。
+
+| パラメータ | 既定 | 影響 |
+|---|---|---|
+| cosmological_lambda_enabled | `False` | P-α — Λ 項の on/off。`True` で `compute_acceleration` の 5 番目の項として加算、`a_Λ(i) += +H · (pos_i - pos_j)` を wave neighbor scope の全 pair に適用 |
+| cosmological_lambda_h | `0.001` | Hubble 定数 H (`gravity_G=0.01` の 1/10)。典型 displacement (‖Δ‖~0.5) で `a_Λ ~ 5e-4` (gravity `a_grav ~ 5e-3` の ~10%)。上げると long-range 斥力が強く dense cluster が分解しやすい、下げると Λ がほぼ no-op |
+| langevin_temperature_enabled | `False` | P-β — Langevin 項の on/off。`True` で `position` 更新時に `√(2·T·dt)·ξ` (`ξ~N(0,I)`) を加算 |
+| langevin_temperature_t0 | `0.001` | 温度定数 T₀。`σ = √(2·T₀) ≈ 0.045` per step (L2)、Hooke 平衡 `(G·m/k)^(1/3) ≈ 0.8` の ~5%。上げると singleton hub から escape しやすい代わりに健全な cluster も noisy に、下げると no-op |
+
+> **チューニング助言 (P-α Λ)**: Λ は **gravity と filter 共有** ([Plan §3.1](Plans-Phase-P-Pressure-Terms.md))、neighbor scope (`propagate_gravity_wave` が渡す) を gravity と共有する。Self-force filter (Phase M `is_self_force`) は Λ には適用されない (Λ は mass を生まない、distance の関数のみ)。本番 opt-in 前に `scripts/diag_pressure.py --enable lambda --h <値>` で dry-run projection (mass / displacement 分布の予測) を取って観測、`p99 displacement` が現状から 20% 以内なら安全側。`h=0.001` 既定は保守的、`0.005` 程度まで実機検証可能と試算。
+
+> **チューニング助言 (P-β Langevin)**: Langevin は legacy `state.temperature` (read-time noise、measurement side) とは **別経路** — write-time noise (dynamics side) で、SGLD (Welling-Teh 2011) の literal な実装。1 つの singleton high-mass attractor (Stage 7.1 limit、Phase N β でも届かない領域) が周囲を完全に支配する状況で、確率的 escape を加える。`T₀=0.001` は escape Boltzmann factor `exp(-ΔE/T)` で「mass 5 の well に mass 1 の node が捕まる」典型シナリオを 1 週間スケールで 1-2 回 escape させる目安。上げる前に `scripts/diag_pressure.py --enable langevin --t0 <値>` で displacement 分布の RMS 変化を確認、本番 opt-in は Phase N β 観測が落ち着いてから。
+
+> **両者の関係**: P-α (Λ) は **deterministic** な長距離斥力 (時間平均的に cluster 構造が緩む)、P-β (Langevin) は **stochastic** な per-step ゆらぎ (個別 node が確率的に hop)。**両方有効** にしても干渉せず — Λ は acceleration loop、Langevin は post-acceleration position update に作用。両方とも default OFF で merge 済、env で個別に `GAOTTT_COSMOLOGICAL_LAMBDA_ENABLED=1` / `GAOTTT_LANGEVIN_TEMPERATURE_ENABLED=1` opt-in。
 
 ## Ambient Recall Enrichment
 

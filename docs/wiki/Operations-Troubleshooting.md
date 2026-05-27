@@ -317,3 +317,19 @@ target chunk が **Stage 4-5 (RRF union + source filter) で top に居る** が
 **対処**: `gaottt/config.py:wave_seed_mass_alpha` を `0.0` に固定(2026-05-14 以降 default)。RRF fusion が既に raw + virtual + BM25 を scale-invariant に組み合わせているため、seed boost で更に mass を加える必要はない。
 
 **Phase N tuning target**(未着手): RRF-mode を検出して mass term を score scale に正規化するか、rank-based boost に切り替える。詳細: [Plans — Roadmap](Plans-Roadmap.md)。
+
+## 診断ツール一覧 (read-only)
+
+retrieval / mass / displacement の挙動を読み解くための副作用なしスクリプト群。本番 DB に対して安全に走らせて良い (write しない、cache を汚さない)。
+
+| スクリプト | 用途 | 主な出力 |
+|---|---|---|
+| `scripts/diag_recall.py` | `engine.query` の per-query snapshot (raw FAISS / BM25 / virtual / final) を取って 2 snapshot の diff を取る | `snapshot --queries-file ... --out before.json` / `diff before.json after.json`、retrieval geometry の前後比較に |
+| `scripts/diag_dormant.py` | active mass 分布の percentile 表示 (Stage 7.2 `dormant_mass_percentile` のチューニング基準値を取る) | `mass` の p10/p25/p50/p75/p90 と dormant 候補数の推定 |
+| `scripts/diag_pressure.py` | Phase P (Λ / Langevin) の **dry-run projection** — knob を弄った時の mass / displacement 分布変化を本番 opt-in 前に予測 | `--enable lambda --h <値>` / `--enable langevin --t0 <値>` / `--enable both`、Phase N β でも dry-run が一致 99.9% の実績 |
+| `scripts/compare_retrieval.py` | `recall` / `explore(serendipity)` / `explore(dormant)` / `ambient_recall` を **同 query で横並びに表示**、Observation Apparatus Refinement Stage 3 の観測 wrapper | 同じ問いに対する 4 経路の応答差分、どの slot に何が surface しているかを 1 view で |
+| `scripts/diag_dynamics.py` | mass / displacement / velocity の集計と時系列 hint | 全 node の `(mass, |d|, |v|)` 分布と簡易統計 |
+| `scripts/diag_cluster_coverage.py` | cluster (`cohort_id` / `original_id`) coverage 統計 — Stage 7.1 anti-hub の effective scope 確認 | cluster_key 保有率、cluster サイズ分布 |
+| `scripts/verify_faiss_recovery.py` | FAISS index と SQLite の整合性確認 (Tier B 自己診断の手動版) | ギャップ node ID 一覧、再 embed 要否 |
+
+> **使い方の原則**: いずれも `--data-dir <path>` で本番 DB に向ける場合は他 MCP / REST プロセスを一旦停止 (read-only でも SQLite WAL のロック争奪は起こり得る、`cache - faiss` 整合性の write-behind 罠を避ける)。一時 DB で実験するなら `--data-dir ./.diag-tmp` のように project root 配下に置く (`/tmp` は外部 directory permission で拒否される環境あり)。
