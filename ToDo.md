@@ -77,6 +77,57 @@
 
 ---
 
+## 0.5. 最優先 (P0.5) — Lens Hygiene [2026-05-27 起案]
+
+> **計画書**: [`docs/wiki/Plans-Lens-Hygiene.md`](docs/wiki/Plans-Lens-Hygiene.md)
+> **トリガー**: 2026-05-27 GLM-5.1 free-exploration review ([`evaluation-2026-05-27-free-exploration.md`](docs/maintainers/evaluation-2026-05-27-free-exploration.md)) の 3 主張を production 41k corpus 上で検証 → 1 つは literal 確証、1 つは症状 real だが GLM の根本原因診断が誤り (実 mass 分布で別 gap が露呈)、1 つは pool 計算と観察の乖離。観察可能な 3 つの lens 歪みを 4 stage で順次解消する。
+>
+> **原則**: physics rule (force / mass update) は **一切触らない**。Phase M 単一規則と完全直交、Phase P (pressure terms) と並行進行可。Stage 1/4 は observation layer、Stage 2 は cluster_key (ranking layer) で source-blind 制約厳守、Stage 3 は調査 only。
+
+### 🔴 P0.5-Stage1. Meta-extraction loop fix `[着手 2026-05-27]`
+- 目的: `save_candidates` / `ambient_recall` block を含む transcript を heuristic extractor に流すと、**block 自身の内容 (前候補・filter 行・manifest)** が re-extract される自己再帰的 false positive を遮断
+- 検証で確証: 7 candidates 中 4 件が前 block leak、特に save-policy filter 行 (「bug fix の途中経過は git log」) が `_OUTCOME_KEYWORDS` の "bug fix" で score=1.80 ヒット = **policy 自身が自己再帰的 noise になる**
+- 作業:
+  - [ ] `services/memory.py` に `_GAOTTT_BLOCK_PATTERN = re.compile(r"<gaottt-[a-z-]+>.*?</gaottt-[a-z-]+>", re.DOTALL)` + `_strip_gaottt_blocks(text)` 追加
+  - [ ] `auto_remember()` 入口で env-gated strip (`config.auto_remember_strip_gaottt_blocks: bool = True`、env `GAOTTT_AUTO_REMEMBER_STRIP_GAOTTT_BLOCKS`)
+  - [ ] `tests/unit/test_save_candidates.py` に regression block (本起案検証時の fake_transcript 流用、prior block の candidate/manifest/filter 行いずれも leak しないこと)
+  - [ ] `tests/integration/test_engine_save_candidates.py` で MCP 経由の strip 動作確認
+  - [ ] live Claude Code 2-3 turn dogfooding で自己候補の re-extract 消滅を目視
+- D1-D3: [Plan §Stage 1](docs/wiki/Plans-Lens-Hygiene.md#stage-1--meta-extraction-loop-fix-着手-2026-05-27)
+- default: **ON** (env opt-out 残す)
+
+### 🟢 P0.5-Stage4. Narrative engine use case の文書化 `[未着手]`
+- 目的: GLM レビュー §1/§4 で報告された "parallel recall → 重力 accumulation → 自己発見的 narrative synthesis" の使用パターンを skill docs / Guides に明示
+- Stage 1 と同 PR に積む (低コスト docs only)
+- 作業:
+  - [ ] `Guides-Use-As-Narrative-Engine.md` 新規 or 既存 Guide に節追加
+  - [ ] `Reflections-A-Note-From-Claude.md` に "external observer (GLM) review" 節
+  - [ ] `Guides-Ambient-Recall.md` のフロントに use-case 並置 (task-driven / serendipitous / narrative)
+- D1-D3: [Plan §Stage 4](docs/wiki/Plans-Lens-Hygiene.md#stage-4--documentation-narrative-engine-use-case-未着手)
+
+### 🟢 P0.5-Stage3. Dormant explore observed-empty 調査 `[未着手 / 調査のみ]`
+- 目的: GLM が `explore(mode="dormant")` で 0 件を観察 vs 本 ToDo 起案時の検証で pool=45-57 candidates 残存している矛盾の root cause 特定
+- 仮説 4 候補 (BM25 floor / recently_surfaced rotation / last_access 短い / dispatch bug)
+- 作業:
+  - [ ] `scripts/diag_dormant.py` 拡張で各 filter stage の通過数表示
+  - [ ] 本番に `explore(mode="dormant")` を read-only で 1 query 叩いて返値観察
+  - [ ] 仮説排除 → 修正方針を別 ToDo / 別 PR で
+- D1-D3: [Plan §Stage 3](docs/wiki/Plans-Lens-Hygiene.md#stage-3--dormant-explore-observed-empty-investigation-未着手)
+
+### 🟡 P0.5-Stage2. File source の Stage 7.1 anti-hub gap closure `[未着手]`
+- 目的: 実 mass 分布検証で file source (max=31.78、書籍 chunk) が真の質量黒洞と判明。一方 `cluster_key = cohort_id OR original_id` で file source は両方 0% → Stage 7.1 anti-hub が **全く効かない**
+- 設計クリティカル: **source class 分岐を入れない** (`if source == "file"` 禁止)。階層追加 `cohort → original → file_path → title → None` で source-blind に
+- 作業:
+  - [ ] `services/memory._cluster_key_for` chain を `cohort → original → file_path → title → None` に拡張
+  - [ ] config `cluster_key_use_file_path: bool = True` + env opt-out
+  - [ ] `tests/unit/test_anti_hub.py` (新規 or 既存) で source ごとの cluster coverage assertion (file=≥90%)
+  - [ ] `tests/integration/test_engine_anti_hub_file.py` で同一書籍 100 chunks の top-K 重複緩和確認
+  - [ ] Phase M source-blindness の test も緑のまま (mass update に source 分岐が混入していないことを別 test で確認)
+  - [ ] `scripts/diag_cluster_coverage.py` 新設 (source 別 cluster_key 保有率の read-only diag)
+- D1-D3: [Plan §Stage 2](docs/wiki/Plans-Lens-Hygiene.md#stage-2--file-source-anti-hub-gap-closure-未着手)
+
+---
+
 ## 1. レビュー §1 — 構造的同型を「みなす」から「示す」へ
 
 レビュー本文は `Research-Gravity-As-Optimizer.md:77-81` の「開いている問い」を優先順位付きで再勧告したものに相当する。実装と文書の不整合 (実装は Newtonian 1/r²、ドキュメントの暗黙 U は cos_sim) を露出させる効果が高い。

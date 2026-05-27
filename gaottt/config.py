@@ -700,6 +700,13 @@ class GaOTTTConfig:
     auto_remember_default_max: int = 5
     auto_remember_min_chars: int = 12
     auto_remember_max_chars: int = 400
+    # Strip ``<gaottt-…>…</gaottt-…>`` blocks (save-candidates, ambient-recall)
+    # from the transcript before heuristic extraction. Default ON closes the
+    # meta-extraction loop where save_candidates would re-extract its own prior
+    # block content — including the save-policy filter line whose literal
+    # "bug fix" keyword self-triggers _OUTCOME_KEYWORDS. Env opt-out via
+    # GAOTTT_AUTO_REMEMBER_STRIP_GAOTTT_BLOCKS=0 for safety-net rollback.
+    auto_remember_strip_gaottt_blocks: bool = True
 
     # F7: emotional weight & certainty
     emotion_alpha: float = 0.04                       # Score weight per |emotion|
