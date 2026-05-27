@@ -31,6 +31,7 @@ from gaottt.core.types import (
     RestoreResponse,
     RevalidateResponse,
     RoutingHint,
+    SaveCandidatesResponse,
     ScoreBreakdown,
     TrainingDelta,
 )
@@ -1258,3 +1259,51 @@ async def auto_remember(
         for c in raw_candidates
     ]
     return AutoRememberResponse(candidates=candidates, count=len(candidates))
+
+
+async def save_candidates(
+    engine: GaOTTTEngine,
+    transcript: str,
+    max_candidates: int = 3,
+    include_reasons: bool = True,
+    include_persona: bool = True,
+) -> SaveCandidatesResponse:
+    """Stop-hook companion to ``ambient_recall`` (Plans-Save-Candidates-Hook.md).
+
+    Reuses ``auto_remember`` for heuristic extraction and ``_pick_persona`` for
+    the persona slot — both are existing physics-invariant primitives. The
+    block this surfaces is *observation layer* only: it suggests what to save
+    but never calls ``remember``. The agent's volitional act of articulating
+    a save preserves the mass entry point that Articulation as Carrier
+    (memory id 9a954c62) and the Phase M single-rule rely on.
+
+    Returns ``count == 0`` when no candidate cleared the heuristic — the
+    formatter then emits a sentinel and the hook stays silent.
+    """
+    auto_result = await auto_remember(
+        engine,
+        transcript=transcript,
+        max_candidates=max_candidates,
+        include_reasons=include_reasons,
+    )
+    persona: AmbientPersona | None = None
+    if include_persona and engine.config.ambient_persona_enabled:
+        # ``_pick_persona`` re-ranks active value/intention by
+        # mass^w × cosine(transcript, node), so the persona slot reflects
+        # who-I-am-as on the topic just discussed. Falls back to None when
+        # no candidate clears ``ambient_persona_min_relevance`` — irrelevant
+        # persona is worse than no persona (same lesson as ambient_recall).
+        try:
+            persona = await _pick_persona(
+                engine,
+                transcript,
+                engine.config.ambient_excerpt_chars,
+            )
+        except Exception:
+            # Persona pick is best-effort context; never block candidates.
+            persona = None
+    return SaveCandidatesResponse(
+        candidates=list(auto_result.candidates),
+        persona=persona,
+        count=len(auto_result.candidates),
+    )

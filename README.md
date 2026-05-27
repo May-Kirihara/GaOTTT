@@ -77,11 +77,11 @@ Data is stored in a fixed per-OS directory (`~/.local/share/gaottt/` on Linux/ma
 
 ## Usage
 
-### MCP tools (26)
+### MCP tools (27)
 
 The agent-facing protocol is defined in **[`SKILL.md`](SKILL.md)** (English, MCP-loaded at runtime).
 
-- **Memory**: `remember`, `recall`, `ambient_recall`, `explore`, `reflect`, `ingest`, `auto_remember`
+- **Memory**: `remember`, `recall`, `ambient_recall`, `explore`, `reflect`, `ingest`, `auto_remember`, `save_candidates`
 - **Maintenance**: `forget`, `restore`, `merge`, `compact`, `revalidate`, `relate`/`unrelate`/`get_relations`, `prefetch`/`prefetch_status`
 - **Tasks (Phase D)**: `commit`, `start`, `complete`, `abandon`, `depend`
 - **Persona (Phase D)**: `declare_value`, `declare_intention`, `declare_commitment`, `inherit_persona`
@@ -115,6 +115,49 @@ cp scripts/hooks/opencode-ambient-recall.ts ~/.config/opencode/plugin/gaottt-amb
 ```
 
 → Full setup, relevance gate, observer effect: [Guides — Ambient Recall](docs/wiki/Guides-Ambient-Recall.md)
+
+### Save Candidates Hook — write-side symmetric
+
+Ambient Recall's symmetric counterpart on the write side: a turn-end `Stop` hook calls `save_candidates`, extracts heuristic save-worthy lines from the recent transcript, and injects them into the *next* prompt as a `<gaottt-save-candidates>` block — so the lens that decides "is this worth remembering?" surfaces at the exact moment of articulation. The agent still decides whether to call `remember`: **observation layer is automated, the volitional mass-entry stays manual** (preserves Articulation as Carrier + Phase M single-rule).
+
+**Claude Code** — add a `Stop` hook plus a second `UserPromptSubmit` hook to your existing `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [
+        { "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/ambient_recall.py\"",
+          "timeout": 10 },
+        { "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/save_candidates_inject.py\"",
+          "timeout": 5 }
+      ] }
+    ],
+    "Stop": [
+      { "hooks": [
+        { "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/save_candidates.py\"",
+          "timeout": 10 }
+      ] }
+    ]
+  }
+}
+```
+
+The two scripts form a **Stop → UserPromptSubmit bridge**: `save_candidates.py` runs at turn end and writes a per-session state file, `save_candidates_inject.py` reads + clears it at the start of the next turn and emits the block. The block itself carries the save-policy filter line ("save what changes future decisions; skip bug-existence, work-in-progress, code snippets") right next to the candidates, so the rule is articulated at every lens firing rather than buried in a doc.
+
+**opencode** — single-plugin equivalent. `chat.message` looks back at the previous turn (via the SDK's `client.session.messages`), spawns `save_candidates.py` in stdout-emit mode, and injects the block into the incoming user message — no state-file bridge needed because opencode plugins can mutate the message directly.
+
+```bash
+mkdir -p ~/.config/opencode/plugin
+cp scripts/hooks/opencode-save-candidates.ts ~/.config/opencode/plugin/gaottt-save-candidates.ts
+```
+
+codex CLI support is planned (v3) once codex publishes an equivalent plugin hook. All hooks are fail-silent — if GaOTTT is down or times out, your agent is never blocked.
+
+→ Full plan, design rationale, two-script bridge: [Plans — Save Candidates Hook](docs/wiki/Plans-Save-Candidates-Hook.md) · env knobs: [Operations — Tuning](docs/wiki/Operations-Tuning.md#save_candidates-hookplans-save-candidates-hookmd)
 
 ### REST API
 

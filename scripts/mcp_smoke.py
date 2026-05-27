@@ -178,6 +178,18 @@ async def scenario_memory_roundtrip(session: ClientSession) -> Scenario:
     s.check("recall surfaces again after restore",
             "uv over pip" in recall)
 
+    # Stop-hook companion — Plans-Save-Candidates-Hook.md.
+    save = await _call(session, "save_candidates", {
+        "transcript": (
+            "[user] 重要な決定: pip ではなく uv を使う\n"
+            "[assistant] 了解、uv で進めます\n"
+        ),
+        "max_candidates": 3,
+    })
+    s.check("save_candidates emits block or sentinel",
+            ("<gaottt-save-candidates>" in save) or (save == "(保存候補なし)"),
+            f"len={len(save)}")
+
     return s
 
 

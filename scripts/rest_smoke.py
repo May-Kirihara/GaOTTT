@@ -200,6 +200,22 @@ def scenario_knowledge_curation(client: httpx.Client) -> Scenario:
             and summary["total_memories"] >= len(ids)
             and isinstance(summary["sources"], dict),
             f"total={summary['total_memories']} sources={summary['sources']}")
+
+    # Stop-hook companion — Plans-Save-Candidates-Hook.md.
+    r = client.post("/save_candidates", json={
+        "transcript": (
+            "[user] 重要な決定: pip ではなく uv を使う\n"
+            "[user] 失敗: numpy の or 演算子で ValueError\n"
+        ),
+        "max_candidates": 3,
+    })
+    payload = r.json()
+    s.check("save_candidates returns shape with count + candidates",
+            r.status_code == 200
+            and "count" in payload
+            and "candidates" in payload
+            and payload["count"] == len(payload["candidates"]),
+            f"count={payload.get('count')}")
     return s
 
 

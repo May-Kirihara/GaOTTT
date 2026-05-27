@@ -241,6 +241,20 @@ auto_remember(transcript=..., max_candidates=5, include_reasons=True)
 
 返り値の各候補には推奨 `source` と `tags` が付くので、内容を確認してから `remember` で正式保存する。
 
+## save_candidates
+
+`auto_remember` を Stop / turn-end hook 用にラップした **書き込み側の symmetric 機能** ([Plans](Plans-Save-Candidates-Hook.md))。`<gaottt-save-candidates>` block を返し、Claude Code Stop hook が **次 prompt 先頭に注入** する (option A = ambient_recall と同 pattern)。候補ゼロ時は sentinel `(保存候補なし)` (hook は block タグの有無を見て無音化)。
+
+```
+save_candidates(transcript, max_candidates=3, include_reasons=True, include_persona=True)
+```
+
+- `transcript`: 直近 N 会話 (Claude Code hook は `transcript_path` から自動抽出、env `GAOTTT_SAVE_CANDIDATES_TURNS` で N 制御)
+- `max_candidates`: 上位 N 件 (default 3、token-budget 配慮)
+- `include_persona`: ambient_recall persona slot との重複を避けたい場合 `False`
+
+**設計原理**: 観察層 (lens で候補を浮かべる) は自動化、physics 層 (`remember` 呼び出し = mass の入口) は agent の能動的判断のまま。Articulation as Carrier (mass の入口は articulation の volitional moment) と Phase M 単一規則の前提を崩さない (詳細 [[observation-vs-physics-boundary]])。
+
 ## ソースの使い分け
 
 | source | TTL | 用途 |

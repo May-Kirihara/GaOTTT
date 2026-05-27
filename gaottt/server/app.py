@@ -14,6 +14,8 @@ from gaottt.core.types import (
     AmbientRecallResponse,
     AutoRememberRequest,
     AutoRememberResponse,
+    SaveCandidatesBody,
+    SaveCandidatesResponse,
     CommitRequest,
     CommitResponse,
     CompactRequest,
@@ -437,6 +439,22 @@ async def auto_remember_endpoint(request: AutoRememberRequest):
         transcript=request.transcript,
         max_candidates=request.max_candidates,
         include_reasons=request.include_reasons,
+    )
+
+
+# -----------------------------------------------------------------------
+# Save-Candidates (Plans-Save-Candidates-Hook.md) — REST/MCP parity
+# -----------------------------------------------------------------------
+
+@app.post("/save_candidates", response_model=SaveCandidatesResponse)
+async def save_candidates_endpoint(body: SaveCandidatesBody):
+    engine = _get_engine()
+    return await memory_service.save_candidates(
+        engine,
+        transcript=body.transcript,
+        max_candidates=body.max_candidates,
+        include_reasons=body.include_reasons,
+        include_persona=body.include_persona,
     )
 
 

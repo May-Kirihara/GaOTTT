@@ -32,7 +32,7 @@
 
 ### 🛠 GaOTTT の MCP ツールリファレンスを引きたい
 
-→ [MCP Reference Index](MCP-Reference-Index.md) — **26 ツール** の早見表
+→ [MCP Reference Index](MCP-Reference-Index.md) — **27 ツール** の早見表
 - [Memory](MCP-Reference-Memory.md) — remember/recall/explore/reflect/ingest/auto_remember
 - [Tasks & Persona](MCP-Reference-Tasks-and-Persona.md) — Phase D の 9 ツール
 - [Maintenance](MCP-Reference-Maintenance.md) — forget/restore/merge/compact/revalidate/relate*/prefetch*

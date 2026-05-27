@@ -22,7 +22,7 @@ GaOTTT の Phase 進捗と未実装機能の俯瞰。
 
 ## 累積 MCP ツール数
 
-**26 ツール** + **11 reflect aspect**
+**27 ツール** + **11 reflect aspect**
 
 詳細: [MCP Reference Index](MCP-Reference-Index.md)
 
@@ -47,6 +47,7 @@ GaOTTT の Phase 進捗と未実装機能の俯瞰。
 - [Hardening — Concurrency & Persistence](Plans-Hardening-Concurrency-Persistence.md) — 2026-05-18 網羅コードレビュー由来。proxy mode (N agents → engine 1 プロセス) で顕在化する並行性・永続化の正確性バグを機構で閉じる。physics Phase ではないので Phase レター非消費。**Stage 1 完了 (2026-05-18)**: C1 (displacement 消失 → column-preserving upsert) / C3 (explore の共有 gamma 破壊 → per-call gamma_override) / C4 (reset の prefetch 未無効化) を修正 + teeth-having 回帰、487 passed。C2 (並行 recall の lost-update 説) は調査の結果バグでないと判明 (mutation phase は asyncio 下でアトミック) し no-op 確定。Stage 2-4 = HIGH/MEDIUM/LOW catalogue
 - [Ambient Recall](Guides-Ambient-Recall.md) — `recall(passive=True)`（read-only / 摂動なしの観察 — mass・displacement・co-occurrence・`last_access` を一切書かない）+ Claude Code `UserPromptSubmit` フック / opencode `chat.message` プラグインによる受動的文脈注入。明示的に recall を呼ばなくても長期記憶が自動で効く。observer effect (P7-Z) を機構で閉じる。physics Phase ではないので Phase レター非消費。**完了（2026-05-21）**
 - [Ambient Recall Enrichment](Plans-Ambient-Recall-Enrichment.md) — 上記の read-side 拡張。注入を「フラットな top-k」から「構造化スロット」（直接ヒット / 重力レンズ枠 / 理由の連鎖 / 矛盾フラグ / 人格行 / メタ注釈）に。`services/memory.ambient_recall()` + 新 MCP ツール `ambient_recall` + REST `/ambient_recall`。physics Phase 非消費。**Stage 1-4 実装完了（2026-05-21）** — 538 passed。Stage 4 で relevance gate を本番校正に基づき `virtual_score` → BM25 語彙一致に差し替え（dense cosine は 32k コーパスで on/off-topic 分離不能と実証）。フックは `ambient_recall` 呼び出しに差し替え済
+- [Save Candidates Hook](Plans-Save-Candidates-Hook.md) — Ambient Recall の **write-side 対称**。Stop / turn-end hook で `auto_remember` を走らせ `<gaottt-save-candidates>` block を **次 prompt 先頭に注入** (option A、ambient_recall と同 pattern)。新サービス `services/memory.save_candidates()` + MCP tool + REST `/save_candidates` + `scripts/hooks/save_candidates.py` (Stop 側) + `save_candidates_inject.py` (UserPromptSubmit 側) の Stop → UserPromptSubmit bridge。観測層 (lens) は自動化、`remember` 呼び出し (mass の入口) は能動的判断のまま — Articulation as Carrier + Phase M 単一規則の前提を崩さない。physics Phase 非消費。**v1 (Stage 1-2) 実装完了 (2026-05-27)** — 725 passed、両 smoke green。v2 opencode plugin / v3 codex / Stage 5 heuristic 精緻化は別 PR
 - [Query as Mass Distribution (Multi-Source Query)](Plans-Query-Mass-Distribution.md) — クエリを単一の pooled centroid ではなく N 個の点質量（節分割）として扱い、seed pool 段で superpose（per-segment `_union_pool` を RRF 融合、wave は 1 回）。複合プロンプトが語彙的に重い側に引っ張られる問題（2026-05-21 opencode ambient 本番観察）を、pooling という唯一の非物理ステップの修正として解決。physics rule 不変（centroid は scoring / TTT anchor のまま）なので Phase レター非消費。`multi_source_enabled` / `multi_source_ambient_enabled` 両 default ON（2026-05-21 実 RURI perf 検証後 — 複合クエリ recall ~2× / p95 ~40ms）。**Stage 1-2 実装完了（2026-05-21）**
 - [REST × MCP Unification Plan (Phase S)](https://github.com/May-Kirihara/GaOTTT/blob/main/docs/maintainers/rest-mcp-unification-plan.md) — 保守者向け、Phase S0–S6 の作業計画
 

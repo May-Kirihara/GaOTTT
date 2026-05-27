@@ -546,6 +546,61 @@ def format_auto_remember(result: AutoRememberResponse) -> str:
     return "\n\n".join(lines)
 
 
+# --- Save-Candidates (Plans-Save-Candidates-Hook.md) ---
+
+def format_save_candidates(result) -> str:
+    """``<gaottt-save-candidates>`` block — Stop-hook companion to format_ambient.
+
+    Returns the full block when there is something to surface. When the
+    heuristic found no candidate (``count == 0``) returns the sentinel
+    ``(保存候補なし)`` — the Stop hook keys on the leading
+    ``<gaottt-save-candidates>`` tag to decide whether to emit, exactly
+    mirroring the ``format_ambient`` contract so the two hooks share a
+    fail-silent pattern.
+    """
+    if result.count == 0:
+        return "(保存候補なし)"
+    lines = [
+        "<gaottt-save-candidates>",
+        "GaOTTT が直前ターンから抽出した save 候補です"
+        "（観察層: lens で見せています、save するかは agent の判断）。",
+        # Save policy harness — the durable user preference (memory id
+        # 93035d35) lives right next to the candidates so the filter is
+        # visible at the exact moment the decision happens. Articulation
+        # as Carrier applied to the policy itself: the rule is articulated
+        # at every lens firing, not buried in a reference doc.
+        "判断 filter: 未来の判断を変える insight/pattern なら save。"
+        "bug fix の途中経過・fact 単体・code snippet は git log・diff・code に任せる。",
+        "",
+        "▼ 候補 (score 順)",
+    ]
+    for i, c in enumerate(result.candidates, start=1):
+        tags = (
+            f", tags={list(c.suggested_tags)}" if c.suggested_tags else ""
+        )
+        # One-line header + indented content. Truncate content to 200 chars
+        # for token budget — full text is what the agent would re-articulate
+        # in the remember() call anyway, this is just the recognition hook.
+        excerpt = c.content.replace("\n", " ").strip()
+        if len(excerpt) > 200:
+            excerpt = excerpt[:200] + "..."
+        lines.append(
+            f" {i}. [score={c.score:.2f}, source={c.suggested_source}{tags}] "
+            f"{excerpt}"
+        )
+        if c.reasons:
+            lines.append(f"    reason: {', '.join(c.reasons)}")
+    if result.persona is not None:
+        lines.append("")
+        lines.append("▼ いま誰として")
+        lines.append(
+            f" · {result.persona.kind}: {result.persona.content}"
+        )
+    lines.append(f"<!-- save-candidates count={result.count} -->")
+    lines.append("</gaottt-save-candidates>")
+    return "\n".join(lines)
+
+
 # --- Reflection ---
 
 def format_reflect_summary(r: ReflectSummaryResponse) -> str:

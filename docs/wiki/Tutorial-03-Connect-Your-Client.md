@@ -88,7 +88,7 @@ open ~/Library/Application\ Support/Claude/
 
 ### 成功の目印 ✅
 
-入力欄の左下に **小さなハンマー🔨アイコン**（または「ツール」表示）が出ていて、クリックすると `gaottt` の名前と `remember` / `recall` など 26 個のツールが並びます。
+入力欄の左下に **小さなハンマー🔨アイコン**（または「ツール」表示）が出ていて、クリックすると `gaottt` の名前と `remember` / `recall` など 27 個のツールが並びます。
 
 → [ステップ 6: 動作確認](#-ステップ-6-ai-に話しかけて確認) に飛ぶ
 
@@ -163,7 +163,7 @@ OpenCode (https://opencode.ai) は `opencode.json` （または `opencode.jsonc`
 
 ### 成功の目印 ✅
 
-OpenCode の TUI で `/mcp` や `/tools` でツール一覧を見たとき、`gaottt` の 26 個のツールが見えていれば成功。
+OpenCode の TUI で `/mcp` や `/tools` でツール一覧を見たとき、`gaottt` の 27 個のツールが見えていれば成功。
 
 > 💡 **GaOTTT のデータは「どこに」保存される？**
 > OpenCode の設定には `cwd` がありませんが、GaOTTT は自動で `~/.local/share/gaottt/` (Linux/macOS) または `%LOCALAPPDATA%\gaottt\` (Windows) にデータを作ります。別の場所に置きたければ `"environment": {"GAOTTT_DATA_DIR": "/your/path"}` を同セクションに追加してください。
@@ -295,7 +295,7 @@ EOF
 
 ### 成功の目印 ✅
 
-Codex CLI のセッション内で MCP ツール一覧（`/tools` 等）を見たとき、`gaottt` の 26 個のツール（`remember`, `recall`, ...）が見えていれば成功。あるいは「gaottt の `reflect` を aspect=summary で呼んで」と頼んで結果が返ればOK。
+Codex CLI のセッション内で MCP ツール一覧（`/tools` 等）を見たとき、`gaottt` の 27 個のツール（`remember`, `recall`, ...）が見えていれば成功。あるいは「gaottt の `reflect` を aspect=summary で呼んで」と頼んで結果が返ればOK。
 
 > 💡 **proxy mode について**: GaOTTT の MCP サーバーは default で proxy mode（軽量 stdio shim → HTTP backend）で動くので、Claude Code / OpenCode 等と **同じ backend プロセス（port 7878）を共有** します。N 個のエージェントで合計 ~3-4 GB の RAM が 1 backend で済む仕組み。詳細は [Operations — Server Setup](Operations-Server-Setup.md) 「起動モード」節。
 
