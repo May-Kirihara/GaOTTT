@@ -126,14 +126,16 @@ reflect(aspect="hot_topics", limit=10)
 
 > `$CLAUDE_PROJECT_DIR` は使わない — 現在の project の dir に展開されるので別レポで Claude Code を起動すると hook script が見つからない。詳細: [Operations — Server Setup §Hook の登録](Operations-Server-Setup.md#hook-の登録-ambient_recall--save_candidates)
 
-**opencode** — プラグインをプラグインディレクトリにコピー（起動時に自動ロード）:
+**opencode** — プラグインをプラグインディレクトリにコピー（起動時に自動ロード）+ **必ず** `GAOTTT_REPO` を export:
 
 ```bash
 mkdir -p ~/.config/opencode/plugin
 cp scripts/hooks/opencode-ambient-recall.ts ~/.config/opencode/plugin/gaottt-ambient-recall.ts
+echo 'export GAOTTT_REPO=/Path/to/GaOTTT' >> ~/.bashrc   # 必須、自分の clone path
+source ~/.bashrc
 ```
 
-詳細・relevance gate・観察者効果は [Guides — Ambient Recall](Guides-Ambient-Recall.md)。
+⚠️ `GAOTTT_REPO` を設定しないと plugin が wrong path で Python interpreter を探して silent fail する（error 出ず、ただ block が injection されない）。詳細・relevance gate・観察者効果は [Guides — Ambient Recall](Guides-Ambient-Recall.md)。
 
 ## 次に進む
 

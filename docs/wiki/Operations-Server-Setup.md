@@ -250,12 +250,20 @@ env tuning (`GAOTTT_SAVE_CANDIDATES_*`) は [Operations — Tuning](Operations-T
 opencode は Claude Code と違い `chat.message` plugin が message text を直接編集できるので、ambient_recall も save_candidates も **plugin 1 本ずつ** で済む (state-file bridge 不要):
 
 ```bash
+# 1. plugin を install (cp または ln -sf。開発中なら symlink が便利)
 mkdir -p ~/.config/opencode/plugin
 cp scripts/hooks/opencode-ambient-recall.ts \
    ~/.config/opencode/plugin/gaottt-ambient-recall.ts
 cp scripts/hooks/opencode-save-candidates.ts \
    ~/.config/opencode/plugin/gaottt-save-candidates.ts
+
+# 2. shell rc (~/.bashrc / ~/.zshrc) に GAOTTT_REPO を export
+#    ※ 必ず設定。自分の GaOTTT clone の絶対 path を指す
+echo 'export GAOTTT_REPO=/Path/to/GaOTTT' >> ~/.bashrc
+source ~/.bashrc
 ```
+
+⚠️ **`GAOTTT_REPO` の設定は必須**。TS plugin は内部で `process.env.GAOTTT_REPO ?? "/mnt/holyland/Project/GaOTTT"` をフォールバックで持っているが、これは **本リポジトリ作者の machine の path がたまたま hard-coded されているだけ**。他人の machine では env を set しないと plugin が wrong path で Python interpreter を探して silent fail する (Bash の `which python` のように見える error は一切出ず、ただ block が injection されないだけ)。
 
 opencode 起動時に `*.ts` が auto-load される。プロジェクト単位で有効化したい場合は `~/.config/opencode/plugin/` の代わりに `<project>/.opencode/plugin/` に置く。
 
