@@ -422,6 +422,31 @@
 - CLAUDE.md 冒頭で言及されている `scripts/visualize_3d.py` の sphere geometry (default) と `--flat` / `--straight-lines` モード
 - [ ] `Guides-Visualization.md` に sphere wrap / slerp arc / tangent geodesic / Mass-BH diamond の挙動と画面例を追記
 
+### 🟡 8-5. Save Candidates Stage 5 — heuristic refinement `[未着手 / 2026-05-27 起案]`
+- 計画: [Plans-Save-Candidates-Hook.md §残課題](docs/wiki/Plans-Save-Candidates-Hook.md) "heuristic 精緻化 (Stage 5)"
+- 起点: 2026-05-27 v2 acceptance (PR #28、handover [`handover-2026-05-27-save-candidates-v1-v2.md`](handover-2026-05-27-save-candidates-v1-v2.md) §3) で meta-instruction (「以下の決定を 2-3 文で要約してください」) が **content と同じ score 2.20** で抽出された false positive を観察。score gating の粒度が荒く、bug fix 途中経過・code snippet・meta-instruction の boost 寄与を分離できていない
+- 作業:
+  - [ ] dogfooding ログ (Claude Code + opencode 両系で 1-2 週) から実 score 分布を採取
+  - [ ] 「決定/結論キーワード」のうち content keyword (採用/確定/却下) と meta keyword (要約/確認/教えて) を語彙レベルで分離
+  - [ ] 訂正 pattern ("実は X だった") / 絶対表現 ("今後は〜") の boost を新設
+  - [ ] tool_result / thinking 残滓の追加 filter (現状の `_extract_text` で取り切れていないパターンがあれば)
+  - [ ] `auto_remember` 既存 heuristic との回帰互換 (一方向の boost 追加のみ、減点ロジックは別 score field に分ける)
+- 観察パターン: 3-Observer Pattern §9 の Observer A (heuristic 関数の直叩き分布) + Observer C (GLM に「実 production dogfooding ログでこの候補は save 価値があるか」評価依頼)
+
+### 🟢 8-6. Save Candidates v3 — codex CLI 対応 `[codex hook spec 待ち]`
+- 計画: [Plans-Save-Candidates-Hook.md](docs/wiki/Plans-Save-Candidates-Hook.md) "codex 対応 (Stage 4)"
+- 前提: codex CLI が `chat.message` 相当 (incoming user message を mutate できる plugin point) を公開すること。Stop event 相当のみだと bridge 設計を Claude Code から移植
+- 設計流用率の見積:
+  - codex が `chat.message` 相当 → opencode plugin (`opencode-save-candidates.ts`) を 80% 再利用 (SDK の型シグネチャ差を吸収するだけ)
+  - codex が Stop 相当のみ → Claude Code 2-script bridge (`save_candidates.py` + `save_candidates_inject.py`) を shell shim 添えて持ち込み
+- 着手判断: codex CLI を実際に使う user / agent が出てから。投機的実装は不要 (CLAUDE.md「未来の判断を変える」原則)
+
+### 🟢 8-7. opencode plugin install pattern の選択 `[観察待ち]`
+- 現状 README install snippet は `cp scripts/hooks/opencode-save-candidates.ts ~/.config/opencode/plugin/gaottt-save-candidates.ts`
+- 開発中の頻繁更新には `ln -sf` の方が便利、本番運用 (滅多に更新しない) は `cp` のままで OK (repo 削除時に dangling しない)
+- 着手判断: v2 plugin の更新頻度を 1-2 ヶ月観察してから — Stage 5 heuristic refinement が動き出すと書き換えが増えるので、その時 README を `ln -sf` 推奨に切り替えるか判断
+- 関連: handover [`handover-2026-05-27-save-candidates-v1-v2.md`](handover-2026-05-27-save-candidates-v1-v2.md) §4.3
+
 ---
 
 ## 9. 検証方法論 — 3-Observer Pattern (再利用可能)
