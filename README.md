@@ -6,7 +6,7 @@
 >
 > *(formerly GER-RAG — read the right way, the gravity model also describes an optimizer.)*
 
-[日本語 README](README_ja.md) · **[📖 Documentation Wiki](docs/wiki/Home.md)**
+[日本語 README](README_ja.md) · **[📖 Documentation Wiki](docs/wiki/Home.md)** · [Blog](https://harakiriworks.art/articles/what-is-gaottt/)
 
 ---
 

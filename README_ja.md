@@ -6,7 +6,7 @@
 >
 > *(旧名 GER-RAG — 重力の比喩の先に、構造的な対応関係があった、という話。)*
 
-[English README](README.md) · **[📖 ドキュメント Wiki](docs/wiki/Home.md)**
+[English README](README.md) · **[📖 ドキュメント Wiki](docs/wiki/Home.md)** · [ブログ記事](https://harakiriworks.art/articles/what-is-gaottt/)
 
 ---
 
