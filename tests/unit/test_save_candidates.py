@@ -430,6 +430,61 @@ def test_strip_gaottt_blocks_leaves_unrelated_text_intact():
     assert _strip_gaottt_blocks(text) == text
 
 
+def test_strip_gaottt_blocks_does_not_pair_mismatched_tag_names():
+    """Live-acceptance regression (2026-05-27 GLM turn 2 retest):
+    a user prompt containing a literal bare-open tag like
+    ``<gaottt-save-candidates>`` (no matching close) must NOT pair up with
+    a later real ``</gaottt-ambient-recall>`` block end. The first version
+    used ``<gaottt-[a-z-]+>.*?</gaottt-[a-z-]+>`` which silently swallowed
+    every turn-1 user/assistant exchange between the literal mention and
+    the next legitimate block close — make-or-break for the fix."""
+    from gaottt.services.memory import _strip_gaottt_blocks
+    transcript = (
+        "[user] Backend framework として FastAPI を採用すると決定した。\n"
+        "[assistant] FastAPI 採用。理由は async/await native の 3 点。\n"
+        "[user] 質問: `<gaottt-save-candidates>` block が含まれていますか?\n"
+        "[assistant] 確認します。\n"
+        "\n"
+        "<gaottt-ambient-recall>\n"
+        "ambient lens content here\n"
+        "</gaottt-ambient-recall>"
+    )
+    stripped = _strip_gaottt_blocks(transcript)
+    # The well-formed ambient block IS removed
+    assert "ambient lens content" not in stripped
+    assert "<gaottt-ambient-recall>" not in stripped
+    # But the turn-1 / turn-2 user/assistant exchanges SURVIVE — they were
+    # accidentally eaten by the buggy any-name pattern
+    assert "FastAPI を採用すると決定した" in stripped, \
+        "turn-1 user decision was eaten by over-matching strip"
+    assert "FastAPI 採用。理由は async/await" in stripped, \
+        "turn-1 assistant summary was eaten by over-matching strip"
+    assert "[user] 質問: `<gaottt-save-candidates>` block" in stripped, \
+        "literal bare-open-tag mention must survive verbatim"
+
+
+def test_strip_gaottt_blocks_strips_each_block_independently():
+    """Two real blocks (one save-candidates, one ambient-recall) interleaved
+    with prose — each must be stripped at its own boundary, the prose
+    between them must survive. Tests that the backreference forces
+    per-tag-name matching even when multiple block kinds are present."""
+    from gaottt.services.memory import _strip_gaottt_blocks
+    transcript = (
+        "[user] 進捗どう?\n"
+        "<gaottt-save-candidates>\n SAVE A \n</gaottt-save-candidates>\n"
+        "間の prose は残るはず\n"
+        "<gaottt-ambient-recall>\n AMB B \n</gaottt-ambient-recall>\n"
+        "[assistant] 順調"
+    )
+    stripped = _strip_gaottt_blocks(transcript)
+    assert "SAVE A" not in stripped
+    assert "AMB B" not in stripped
+    assert "<gaottt-" not in stripped
+    assert "進捗どう?" in stripped
+    assert "間の prose は残るはず" in stripped
+    assert "[assistant] 順調" in stripped
+
+
 def test_auto_remember_does_not_leak_prior_block_content():
     """End-to-end heuristic regression — the live failure mode observed in
     PR #28 acceptance: feeding a transcript that includes a prior block to

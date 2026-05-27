@@ -39,7 +39,7 @@ from gaottt.core.types import (
 from gaottt.core.explain import explain_score
 from gaottt.services import query_routing, reflection as reflection_service
 
-# Strip any <gaottt-*>...</gaottt-*> block before heuristic extraction.
+# Strip any <gaottt-NAME>...</gaottt-NAME> block before heuristic extraction.
 # Prevents the meta-extraction loop where ``save_candidates`` re-extracts
 # its own prior block (the candidate list, score lines, manifest comment,
 # and especially the save-policy filter line — whose literal "bug fix"
@@ -48,8 +48,16 @@ from gaottt.services import query_routing, reflection as reflection_service
 # every turn). The service layer knows the block format because it also
 # *writes* it (``services.formatters.format_save_candidates`` /
 # ``format_ambient``); the extractor stays pure / transport-blind.
+#
+# The backreference ``\1`` is load-bearing: it forces the closing tag's
+# NAME to match the opening tag's name. Without it, a user prompt that
+# literally mentions ``<gaottt-save-candidates>`` (as a bare open tag, no
+# close) would pair up with a later real ``</gaottt-ambient-recall>`` from
+# the next ambient block and silently eat ALL content in between — every
+# turn-1 user/assistant exchange would vanish before extraction. Caught
+# in 2026-05-27 GLM acceptance turn 2 (Plans-Lens-Hygiene Stage 1 retest).
 _GAOTTT_BLOCK_PATTERN = re.compile(
-    r"<gaottt-[a-z-]+>.*?</gaottt-[a-z-]+>", re.DOTALL,
+    r"<gaottt-([a-z-]+)>.*?</gaottt-\1>", re.DOTALL,
 )
 
 
