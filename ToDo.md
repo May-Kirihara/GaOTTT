@@ -315,12 +315,12 @@
   - [Plans — Phase N (Mass Evaporation)](docs/wiki/Plans-Phase-N-Mass-Evaporation.md) — 着手順序の前提
   - memory `[STAGE-7-LIMITATION]` — Phase P が解く対象の literal 観察
 
-### 🟡 6-9. Hardening Stage 3-4 (MEDIUM/LOW catalogue) `[Stage 1/1.5/2 完了 / Stage 3 第一弾着手中 (2026-05-27)]`
+### 🟡 6-9. Hardening Stage 3-4 (MEDIUM/LOW catalogue) `[Stage 1/1.5/2 + Stage 3 第一弾 完了 / 第二弾着手 2026-05-27]`
 - 状態: `Plans-Hardening-Concurrency-Persistence.md` の Stage 1 (CRITICAL C1/C3/C4)、Stage 1.5 (L-flaky)、Stage 2 (HIGH H1-H8 全 8 件) 完了。catalogue は M1-M11 (MEDIUM 11 件) + LOW 10+ 件
-- **Stage 3 第一弾** (本タスク、storage/physics の低リスク safety 3 件を 1 PR にまとめる、`hardening-stage-3-batch-1` branch):
-  - [ ] **M3** — `sqlite_store.py` の多文 destructive op に `BEGIN`/`COMMIT`+`rollback` を入れる (部分適用防止)
-  - [ ] **M4** — `save_displacements`/`save_velocities` の dtype guard (`np.ascontiguousarray(disp, dtype=np.float32)`、float64 無言ゴミ化防止)
-  - [ ] **M6** — `update_velocity` の friction step を `max(0.0, 1-friction)` で clamp + config range 検証 (`orbital_friction > 1` で velocity 反転 runaway 防止)
+- **Stage 3 第一弾** (PR #27 merged 2026-05-26、`hardening-stage-3-batch-1`):
+  - [x] **M3** — `sqlite_store.py` の多文 destructive op に `BEGIN`/`COMMIT`+`rollback` を入れる (部分適用防止)
+  - [x] **M4** — `save_displacements`/`save_velocities` の dtype guard (`np.ascontiguousarray(disp, dtype=np.float32)`、float64 無言ゴミ化防止)
+  - [x] **M6** — `update_velocity` の friction step を `max(0.0, 1-friction)` で clamp + config range 検証 (`orbital_friction > 1` で velocity 反転 runaway 防止)
 - **Stage 3 第二弾** (規模問題、別 PR 予定):
   - [ ] **M1** — `IN (?,?,...)` の SQLite 999 変数上限を `_in_chunks(ids, fn, 900)` で全 call site 分割
   - [ ] **M5** — BM25 tombstone 無限増加対策 (removed 比率 20% で自動 rebuild)

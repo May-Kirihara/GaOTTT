@@ -307,6 +307,13 @@ class GaOTTTConfig:
     bm25_score_alpha: float = 0.5               # weighted_sum: BM25 normalized share; ignored for "rrf"
     rrf_k: int = 60                             # RRF rank-fusion constant (Cormack 2009 standard)
     bm25_tokenizer: str = "trigram"             # "trigram" (default) | "sudachi" (optional extra)
+    # M5 — auto-rebuild when soft-removed (tombstone) ratio reaches this.
+    # 0.2 = 20% bloat ceiling; 0.0 disables (then only ``compact()`` rebuilds).
+    # The trade-off: a higher value lets bloat accumulate (slow search,
+    # bigger RAM), a lower value rebuilds more often (CPU spikes during
+    # archive-heavy workflows). See ``BM25Index.remove`` for the side-effect
+    # on ``restore`` after auto-rebuild.
+    bm25_auto_rebuild_threshold: float = 0.2
 
     # Query as Mass Distribution — Multi-Source Query.
     # A compound prompt pooled into one embedding is a centroid, and the
