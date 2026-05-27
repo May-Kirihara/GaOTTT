@@ -3,6 +3,10 @@
 Documents attract each other in embedding space through Newtonian gravity.
 Velocity vectors give nodes inertia, enabling orbits, cometary trajectories,
 and gravitational slingshots.
+
+Author: May Kirihara (@May-Kirihara).
+A personal note from the author lives at
+``docs/maintainers/handover-2026-05-27-me.md``.
 """
 
 from __future__ import annotations

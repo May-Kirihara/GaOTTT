@@ -3,6 +3,10 @@
 Each function takes an engine and returns a Pydantic response model from
 ``gaottt.core.types``. The MCP server formats these into human-readable text
 via ``gaottt.services.formatters``; the REST server returns them as JSON.
+
+Author: May Kirihara (@May-Kirihara).
+A personal note from the author lives at
+``docs/maintainers/handover-2026-05-27-me.md``.
 """
 from __future__ import annotations
 

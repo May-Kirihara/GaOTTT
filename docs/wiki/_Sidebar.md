@@ -26,7 +26,7 @@
 - [Visualization](Guides-Visualization.md)
 
 ### 🛠 MCP Reference
-- [Tool Index (26)](MCP-Reference-Index.md)
+- [Tool Index (27)](MCP-Reference-Index.md)
 - [Memory Tools](MCP-Reference-Memory.md)
 - [Tasks & Persona](MCP-Reference-Tasks-and-Persona.md)
 - [Maintenance Tools](MCP-Reference-Maintenance.md)
@@ -70,6 +70,7 @@
 - [Ambient Recall Refinement (Phase A 由来)](Plans-Ambient-Recall-Refinement.md)
 - [Ambient Recall Lateral Association (〇〇といえば〜)](Plans-Ambient-Recall-Lateral-Association.md)
 - [Save Candidates Hook (ambient-recall の write-side 対称)](Plans-Save-Candidates-Hook.md)
+- [Lens Hygiene (ambient block の漏れ防止)](Plans-Lens-Hygiene.md)
 - [Query as Mass Distribution](Plans-Query-Mass-Distribution.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
 - [Embedder Comparison (RURI vs RikkaBotan)](Plans-Embedder-Comparison.md)
