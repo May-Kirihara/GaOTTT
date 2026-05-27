@@ -41,9 +41,11 @@ Read GaOTTT as a working implementation whose physics and optimizer forms coinci
 | Item | Recommended | Minimum |
 |---|---|---|
 | Python | 3.12 | 3.11 |
-| RAM | 8GB+ | 4GB |
-| Disk | 4GB+ (model ~2GB + data) | |
-| GPU | CUDA (faster) | None (CPU works) |
+| System RAM | 16GB+ | 8GB |
+| GPU VRAM | 16GB+ (for ingest) / 8GB (recall only) | None (CPU works but ingest is 1/15 the GPU speed) |
+| Disk | 4GB+ (model ~2GB + data; DB grows ~23KB/node) | |
+
+→ For DB-size sizing tables, GPU/CPU measured numbers, and OOM behavior: [Operations — Resource Requirements](docs/wiki/Operations-Resource-Requirements.md)
 
 ## Quick Start
 

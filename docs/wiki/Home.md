@@ -45,6 +45,7 @@ REST API は [REST API Reference](REST-API-Reference.md)。
 | やりたいこと | 行き先 |
 |---|---|
 | サーバー起動・MCP 登録 | [Operations — Server Setup](Operations-Server-Setup.md) |
+| VRAM/RAM/ディスクの必要量を見積もる | [Operations — Resource Requirements](Operations-Resource-Requirements.md) |
 | ハイパーパラメータ調整 | [Operations — Tuning](Operations-Tuning.md) |
 | ファイル・チャット履歴の取り込み | [Operations — Ingestion](Operations-Ingestion.md) |
 | アップグレード時の data migration | [Operations — Migration](Operations-Migration.md) |
