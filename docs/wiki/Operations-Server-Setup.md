@@ -184,7 +184,9 @@ gaottt http backend  ← 1 process、全 shim で共有
 
 ### Hook の登録 (ambient_recall + save_candidates)
 
-`.claude/settings.json`:
+**設定 file の場所**: `~/.claude/settings.json` (global、全 project で hook が effective) または `<project>/.claude/settings.json` (per-project)。複数 repo で Claude Code を使うなら global が楽 (GaOTTT 以外の repo でも同じ hook が自動で効く)。
+
+**path は絶対パスで書く**。`$CLAUDE_PROJECT_DIR` は Claude Code が「いま開いている project」に展開するので、GaOTTT 以外の repo で起動すると hook script を **その repo の中** で探してしまい `[Errno 2] No such file or directory` で `operation blocked by hook` になる (2026-05-27 production で発覚)。
 
 ```json
 {
@@ -194,12 +196,12 @@ gaottt http backend  ← 1 process、全 shim で共有
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/ambient_recall.py\"",
+            "command": "\"/Path/to/GaOTTT/.venv/bin/python\" \"/Path/to/GaOTTT/scripts/hooks/ambient_recall.py\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/save_candidates_inject.py\"",
+            "command": "\"/Path/to/GaOTTT/.venv/bin/python\" \"/Path/to/GaOTTT/scripts/hooks/save_candidates_inject.py\"",
             "timeout": 5
           }
         ]
@@ -210,7 +212,7 @@ gaottt http backend  ← 1 process、全 shim で共有
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/save_candidates.py\"",
+            "command": "\"/Path/to/GaOTTT/.venv/bin/python\" \"/Path/to/GaOTTT/scripts/hooks/save_candidates.py\"",
             "timeout": 10
           }
         ]
@@ -220,9 +222,11 @@ gaottt http backend  ← 1 process、全 shim で共有
 }
 ```
 
+`/Path/to/GaOTTT` は実際の GaOTTT clone の絶対パスに置き換え (例: `/Users/you/code/GaOTTT`、`/mnt/holyland/Project/GaOTTT`)。
+
 - **UserPromptSubmit**: 2 連 hook。`ambient_recall.py` が長期記憶を `<gaottt-ambient-recall>` block で注入、`save_candidates_inject.py` が前 turn の Stop hook が書いた state file を読んで `<gaottt-save-candidates>` block を注入 (なければ no-op)
 - **Stop**: `save_candidates.py` が turn 終了時に `auto_remember` を走らせ、候補があれば state file (default `~/.gaottt/save_candidates/<session_id>.txt`) に block を書き込む。次 turn の UserPromptSubmit-inject 側が読んで消す (Stop → UserPromptSubmit bridge、option A)
-- どの hook も backend down/timeout で fail-silent (exit 0、agent を block しない)
+- どの hook も backend down/timeout で fail-silent (exit 0、agent を block しない)。ただし **hook script file 自体が見つからない** (working tree が古い branch にある等) と Python interpreter の exec-time error になり non-zero exit → `operation blocked by hook` になる。下記 troubleshooting §4 参照
 
 **動作確認**: 設定後に新しい conversation を始め、何ターンか会話してから:
 
@@ -237,6 +241,7 @@ state file が出ない場合の典型的な原因:
 1. **backend が古い**: `ps -ef | grep streamable-http` で start 時刻を確認、commit より古ければ `kill <pid>` (次の MCP 接続で自動 respawn) — 詳細は本ページの「code deploy 時の backend 再起動」節 / [CLAUDE.md backend kill on code deploy](https://github.com/May-Kirihara/GaOTTT/blob/main/CLAUDE.md) と memory id `feedback_backend_kill_on_code_deploy`
 2. **transcript 抽出 0 件**: 直近 N turn ([Operations — Tuning](Operations-Tuning.md#save_candidates-hookplans-save-candidates-hookmd) の `GAOTTT_SAVE_CANDIDATES_TURNS` 既定 2) に「決定」「失敗」「採用」等の save-worthy キーワードが無い → 設計通りの silent (sentinel `(保存候補なし)`)。短い会話なら `GAOTTT_SAVE_CANDIDATES_TURNS=5` で window を広げる
 3. **settings.json が malformed**: `/doctor` で警告が出ていないか確認、`python -c "import json; json.load(open('.claude/settings.json'))"` で parse 検証
+4. **`operation blocked by hook` + `[Errno 2] No such file or directory`**: 設定ファイルが `$CLAUDE_PROJECT_DIR` を使っている、または GaOTTT working tree が古い branch (PR #28/#29 以前) に check out されたままで `scripts/hooks/save_candidates*.py` が disk に無い。`cd /Path/to/GaOTTT && git checkout main && git pull` で main に揃える + settings.json の path を上記の絶対パス形式に書き換える
 
 env tuning (`GAOTTT_SAVE_CANDIDATES_*`) は [Operations — Tuning](Operations-Tuning.md#save_candidates-hookplans-save-candidates-hookmd) 参照。詳細設計と option A bridge の理由は [Plans — Save Candidates Hook](Plans-Save-Candidates-Hook.md)。
 

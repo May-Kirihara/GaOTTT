@@ -115,14 +115,16 @@ reflect(aspect="hot_topics", limit=10)
 
 エージェントが明示的に `recall` しなくても、プロンプトを毎ターン自動検索して関連記憶を文脈に注入できます（[Ambient Recall](Guides-Ambient-Recall.md)）。フックを 1 つ登録するだけ — read-only な passive recall なので重力場を乱さず、関連性の低いプロンプトには何も注入しません。
 
-**Claude Code** — `.claude/settings.json`（無ければ新規作成）:
+**Claude Code** — `~/.claude/settings.json`（無ければ新規作成、`/Path/to/GaOTTT` は実際の GaOTTT clone path に置き換え）:
 
 ```json
 { "hooks": { "UserPromptSubmit": [ { "hooks": [ {
   "type": "command",
-  "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/ambient_recall.py\""
+  "command": "\"/Path/to/GaOTTT/.venv/bin/python\" \"/Path/to/GaOTTT/scripts/hooks/ambient_recall.py\""
 } ] } ] } }
 ```
+
+> `$CLAUDE_PROJECT_DIR` は使わない — 現在の project の dir に展開されるので別レポで Claude Code を起動すると hook script が見つからない。詳細: [Operations — Server Setup §Hook の登録](Operations-Server-Setup.md#hook-の登録-ambient_recall--save_candidates)
 
 **opencode** — プラグインをプラグインディレクトリにコピー（起動時に自動ロード）:
 
