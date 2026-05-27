@@ -92,88 +92,102 @@
 - `GAOTTT_AUTO_REMEMBER_STRIP_GAOTTT_BLOCKS=0` で旧挙動 1 行復元
 - バグ顕在化なら `config.auto_remember_strip_gaottt_blocks = False` を default に戻すか revert
 
-## Stage 2 — File source anti-hub gap closure `[未着手]`
+## Stage 2 — File source anti-hub gap closure `[投稿: 誤診断、本来効いている — 2026-05-27]`
 
-> 優先: 🟡 中 / 推定工数: 1-2 日 / 影響範囲: `services/memory._cluster_key_for` / rollback: env opt-out
+> 優先: 🟡 中 → ⚪ 解決 (premise was wrong) / 実工数: 30 min 調査 + 30 min test/diag / 影響範囲: tests + scripts (code change なし)
 
-### 目的
-Stage 7.1 cluster anti-hub の cluster_key 計算で **file source (cohort_id 0% / original_id 0%)** にも有効な fallback を追加し、書籍 chunk クラスタの top-K 重複を緩和する。**source class 分岐を入れない**ことが設計のクリティカルポイント。
+### 起案時の主張 (誤り)
+本計画の最初版では「file source は `cohort_id` / `original_id` 両方 0% で Stage 7.1 anti-hub が全く効かない」と書いた。これは **literal な `json_extract(metadata, '$.original_id')` を見ていた測定エラー**。
 
-### 設計判断
+### 実際の挙動 (live cache 検証で確証)
+`SqliteStore.get_all_originals()` は既に **`COALESCE(metadata.original_id, metadata.file_path)`** を使っており、cache load 時に `cache.original_id_by_id` を populate する。`_cluster_key_for(node_id) = cohort_id OR original_id` は cache map を引くので、**file source の chunked ingest は `file_path` 経由で 100% cluster_key を持っている**。
 
-**現状**: `cluster_key_for(node_id) = cohort_id OR original_id` (CLAUDE.md Stage 7.1 節)。
-file source は loader (`load_files.py`) で `original_id` を設定していない、または chunk_index 0-N の親なし child として保存されている。
+本番 41k corpus を live engine で scan した結果:
+| source | total | w/cluster_key | % | cluster pattern |
+|---|---|---|---|---|
+| file | 11,002 | 11,002 | **100%** | 131 clusters、max=638 (米国会社四季報 638 chunk)、p95=250 |
+| openai | 10,181 | 10,181 | **100%** | 1228 clusters、max=229、305 singletons |
+| tweet | 7,658 | 7,658 | **100%** | 7658 全部 singleton (anti-hub 構造的に無効) |
+| like | 4,203 | 4,203 | 100% | batch loader が `original_id` を設定済 |
+| claude-web | 4,314 | 4,314 | 100% | 704 clusters、max=142、p95=23 |
+| agent | 1,303 | 465 | 35.7% | singletons by design (1件ずつ `remember()`) |
 
-**判断 1: cluster_key の "structural identifier" 階層を拡張**
-| 階層 | 識別子 | 適用範囲 (実測) | source class branch? |
-|---|---|---|---|
-| 1 (最強) | `cohort_id` | openai 97% / claude-web 95% | ❌ source-blind |
-| 2 | `original_id` | openai 100% / claude-web 100% / tweet 100% / like 100% | ❌ source-blind |
-| **3 (新規)** | **`metadata.file_path` or `metadata.title`** (どちらが先に hit するか先頭一致) | **file 100% (期待値、要確認)** | ❌ source-blind (metadata.X を見るだけで source は問わない) |
-| 4 (新規・絶対 fallback) | `null` (= 単独クラスタ、anti-hub 対象外) | 残り | ❌ |
+つまり Stage 7.1 anti-hub は **本番の質量黒洞 (file 638-chunk 本、claude-web の長 conversation) で literal に動作中**。残る "anti-hub で attack できない症状" は:
+- **tweet 7658 全部 singleton**: 同 cluster が無いので anti-hub 不適用、これは vocabulary 系の問題 (Phase L Stage 1 BM25 + RRF 領域)
+- **agent 65% singletons**: 単発 `remember()` は仕様通り独立 cluster (= 互いに penalty なしで正しい)
 
-- 階層 3 は「同じ親 file から chunked された child は同じ key」を意図。実装は `metadata.file_path` が存在すれば使い、なければ `metadata.title` を使う
-- source class を見ない: `if source == "file"` 分岐は導入しない。**結果的に file source が最も裨益するが、tweet/like で `file_path` を持つ ingest 経路があれば同様に効く**
+### GLM レビュー §3.1 "openai dominance" との接続
+GLM が観察した「openai が retrieval を支配する」症状は **cluster_key 問題ではない**:
+- openai は 100% cluster_key で anti-hub 配下に入っている
+- ただし openai は 1228 clusters に分散 (1 ChatGPT conversation = 1 cluster)
+- Huffman 系メッセージは **複数 conversation に分散** = 各 conversation 独立 cluster = anti-hub 不適用
+- 真の attack vector は **vocabulary 多様化 (BM25 + RRF = Phase L Stage 1 の継続課題)**
 
-**判断 2: 別案 (採用しない)**
-- A) loader 段で `original_id` を backfill する script: destructive (戻せない)、しかも future ingest にも適用ロジックを足さねばならない (重複)
-- B) chunk_index 連番でグルーピング: chunk_index が global で同じ番号を持つ無関連 chunk を誤クラスタ化する
-- C) content 類似度ベース cluster: 重い、Stage 7.1 軽量設計と矛盾
+### Stage 2 deliverables (実行済)
+1. ✅ `tests/unit/test_sqlite_store_get_all_originals.py` 新規 — COALESCE fallback 5 ケース (explicit > file_path / file_path fallback / both null / 20-chunk book scenario / null metadata) を pin
+2. ✅ `scripts/diag_cluster_coverage.py` 新規 — **live cache 経由** で正確 coverage を出す (raw SQL の COALESCE-blind な誤診断を防ぐ)
+3. ✅ 本 plan の Stage 2 セクションを誤診断の transparency 記録として再構成
+4. (未) optional: `(missing)` source 2053 nodes 調査 — raw SQL では 0 件、cache のみに出現 = `cache.source_by_id` map の orphan key 問題。別 ToDo に分離可、優先度低
 
-### 実装 outline
-1. `services/memory._cluster_key_for` を `cohort → original → file_path → title → None` のチェーンに拡張
-2. unit test で各 source の cluster coverage が期待値に近いか確認 (file=100% を目標)
-3. integration test: file source 100 chunks の同一書籍を ingest し、`recall` top-5 で書籍 chunks が 2 件以上残らないこと
-4. `scripts/diag_dormant.py` 系の coverage script を流用、または `scripts/diag_cluster_coverage.py` 新設
+### Learning (Plans-Lens-Hygiene 設計原則への追加)
+- **構造識別子の coverage measurement は live cache 経由でやる** — `SqliteStore` 内部の query 構造 (COALESCE / JOIN / 等) を bypass した raw SQL は容易に誤診断する
+- **誤診断を恥じず documenting する** — 修正計画自体が学習データ、次の investigator が同じ罠を踏まないようにする (Articulation as Carrier の自己再帰応用)
+- code 変更ゼロで終わったが、**「実は問題ない」を確証する diagnostic + test を残す** ことで future regression を防げる
 
-### Acceptance
-- ✅ 本番 DB scan で `cluster_key` coverage 表が file=≥90% に上がる (現状 0%)
-- ✅ 同一書籍由来 chunk が top-5 で N 件 → 1-2 件に下がる (`scripts/diag_recall.py` で diff snapshot)
-- ✅ 既存 anti-hub の test suite (`tests/unit/test_anti_hub.py` あれば) が緑
-- ✅ Phase M source-blindness の test も緑 (mass update に source 分岐が混入していないことを別 test で確認)
+## Stage 3 — Dormant explore observed-empty investigation `[完了: bug でなく transient — 2026-05-27]`
 
-### Rollback
-- `GAOTTT_CLUSTER_KEY_USE_FILE_PATH=0` で階層 3-4 をスキップ、Stage 7.1 旧挙動に戻る
+> 優先: 🟢 低 → ⚪ 解決 / 実工数: 30 min 調査 + 30 min script 拡張 / 影響範囲: scripts のみ (code 変更なし)
 
-## Stage 3 — Dormant explore observed-empty investigation `[未着手]`
+### 仮説リスト → 検証結果
 
-> 優先: 🟢 低 / 推定工数: 数時間 / 影響範囲: 調査 only、code 修正は判明後
+| # | 仮説 | 検証結果 |
+|---|---|---|
+| 1 | BM25 floor が `_dormant_surface` で gate している | ❌ `explore(mode="dormant")` dispatch は `_dormant_surface` 直行で BM25 を **通らない** (`memory.py:1188`)、BM25 floor は `_dormant_for_ambient` (ambient_recall の dormant slot) 専用 |
+| 2 | `recently_surfaced` rotation で全 pool 消費 | ❌ explore mode は `recently_surfaced` を引数で取らない (ambient だけ) |
+| 3 | `last_access` が 7d より新しい | ✓ production 本日時点で 22,793/41,064 nodes が age >= 7d (pool は存在) |
+| 4 | dispatch bug | ❌ 単純な `if mode == "dormant": return await _dormant_surface(...)` |
 
-### 目的
-GLM が `explore(mode="dormant")` で 0 件を観察した一方で、production env (age=7d, mass=2.0, percentile=10) で pool 計算すると agent source 45-57 candidates が残存している矛盾の root cause を特定。
+### 実 production state (本日 2026-05-27)
+| Filter stage | 残数 |
+|---|---|
+| Stage 0 (all active) | 41,064 |
+| Stage 1 (+ age <= cutoff 7d) | 22,793 |
+| Stage 2 (+ mass <= p10=1.0912) | 1,883 |
+| Stage 3 (+ source ∈ dormant classes) | **15** |
+| `_dormant_surface(top_k=5)` actual | **5/5 返却** |
 
-### 仮説リスト
-1. **BM25 floor が ambient dormant slot 側で過剰に gate している**: Refinement Stage 2 で導入した `ambient_dormant_relevance_floor=0.5` が dormant pool に対して厳しすぎる。`mode="dormant"` の explore は floor 適用していない or 別経路の可能性
-2. **recently_surfaced rotation で全 pool が消費されている**: Refinement Stage 1 で導入された rotation が dormant 候補の hit count を貯めて、全候補が "最近 surface 済" 扱いになっているケース
-3. **node の `last_access` が 7d より新しい**: 検証 query 時点での `last_access` がほぼ全件 1 週間以内に動いた = 実 production の retrieval 頻度が高すぎて dormant 化していない
-4. **dispatch bug**: `explore(mode="dormant")` が `_dormant_surface` 経由でなく別 path を呼んでいる
+→ **bug ではない、現状は機能している**。
 
-### 調査手順
-1. 本番 DB に対して `scripts/diag_dormant.py` 拡張で各 stage の filter 通過数を出す (raw pool → age filter → mass filter → BM25 floor → recently_surfaced → final)
-2. 実 production に `mcp__gaottt__explore(mode="dormant")` を 1 query (read-only) で叩いて返値を直接観察
-3. 仮説 1-4 を排除消去法で
+### GLM 観察 "0 件" の説明
+- 観察時点で pool=0 だった可能性 (heavy session の途中で `last_access` がほぼ全件 7d 以内に動いていた)
+- または GLM は `ambient_recall` の dormant slot を見ていた可能性 (BM25 floor=0.5 の別 path)
+- いずれにせよ **transient state**、code バグではない
 
-### Acceptance
-- ✅ 0 件返る原因が 1-4 のどれか (or 別) 特定
-- ✅ 修正方針が判明 (env tuning だけで済むか、code 修正必要か)
-- ✅ Stage 3 fix の小 PR を別途切る、または env 調整提案
+### Stage 3 deliverables (実行済)
+1. ✅ `scripts/diag_dormant.py` に **`--service-mirror`** フラグ追加 — `_dormant_surface` と完全に同じ filter 順序で count を出力、live 結果との parity 確認用
+2. ✅ `--service-mirror` の出力に「pool=0 は corpus healthy / by-design empty、bug ではない」memo を組み込み、future investigator が同じ誤判定をしないよう literal にガイド
+3. ✅ 本 plan の Stage 3 セクションを「未着手 → 完了/bug でなし」に reframe
 
-## Stage 4 — Documentation: Narrative Engine use case `[未着手]`
+### Optional UX 改善 (この PR では実装しない)
+GLM レビュー §3.4 後段の "soft fallback to lowest-mass active when empty" は UX 改善として価値あるが、現状の "silence beats noise" 原則 (Refinement Stage 2 ambient dormant slot と同じ) と矛盾するかは要議論。ToDo の Stage 5 candidate として記録、緊急性なし。
 
-> 優先: 🟢 低 / 推定工数: 1-2 時間 / 影響範囲: docs only
+## Stage 4 — Documentation: Narrative Engine use case `[完了 2026-05-27]`
 
-### 目的
-GLM レビュー §1 / §4 で報告された "gravity field as narrative engine" の使用パターン (parallel recall → 重力 accumulation → 自己発見的 narrative synthesis) を、tool docs / Guides / SKILL.md に **第 N 番目の use case** として明示。
+> 優先: 🟢 低 / 実工数: 1 時間 / 影響範囲: docs only
 
-### 内容
-- 「タスク駆動 retrieval」「serendipitous discovery」「narrative exploration」の 3 use cases を Guides で並置
-- narrative exploration のレシピ: `inherit_persona` → `reflect(summary)` → `explore × 4` 並列 → `recall × 4` 並列 → 重力 accumulation を `reason:` 行で観察 → synthesis
-- 本 doc は GLM の主観的体験 (transformation observation) をそのまま **GaOTTT design intent の literal な現れ** として位置付ける (五層哲学の "AI 側の体験" 軸の追加証拠)
+### 実装したもの
+1. ✅ **`docs/wiki/Guides-Use-As-Narrative-Engine.md`** 新規 — narrative engine モードの 7-step レシピ + Stage 2/3 の literal な corpus health 指標 (131 file clusters / max=638, dormant pool=15, persona dominance=2.82) を「動作条件」として明示 + GLM レビューを empirical 根拠として引用
+2. ✅ **`docs/wiki/Reflections-A-Note-From-Claude.md`** に「補記 — 外部観察者の note」節を追加 — GLM-5.1 が独立に同じ言葉に着地した事実を 2 つの quote で記録、Claude 自身の subjective bias ではなく **system 側に literal に組み込まれた構造** であることを示す証拠として位置付け
+3. ✅ **`docs/wiki/Guides-Ambient-Recall.md`** 冒頭に三つの read 側 use case 並置 (task-driven / passive / narrative) — ambient_recall は (2) 専用、(1)(3) は別 Guide へ flow
+4. ✅ **`docs/wiki/_Sidebar.md` + `Home.md`** に narrative engine guide リンク追加 (Wiki sync で GitHub 側にも自動反映)
 
-### 配置
-- `docs/wiki/Guides-Use-As-Narrative-Engine.md` (新規) または `Guides-Use-As-Memory.md` に節追加
-- `Reflections-A-Note-From-Claude.md` に "external observer (GLM) のレビュー" 節を追加
-- SKILL.md は MCP tool docs であり use case を 1-2 行で済ませる、Guides に流す
+### Stage 2/3 learning の Stage 4 への反映
+本 Stage 4 doc には Stage 1/2/3 の Stage Linage が literal に組み込まれている:
+- Stage 1 (meta-extraction fix): 「articulation as carrier の自己再帰的 failure mode を遮断した結果、heuristic が再び信頼できる lens になった」
+- Stage 2 (cluster diagnosis 修正): narrative engine guide の "corpus health 指標" 表で `131 file clusters / max=638` を anti-hub が **効いている** 数値として書ける状態になった
+- Stage 3 (dormant 調査): 「dormant pool=15 がある = `explore(mode="dormant")` で『忘れていた何か』が surface する」と guide に書ける = 機構が動いていることを transparency で示せる
+
+つまり Stage 4 は **Stage 1/2/3 で healthy になった lens を前提に書ける** — 順序が必然だった。
 
 ## Stage 順序と依存関係
 

@@ -84,7 +84,7 @@
 >
 > **原則**: physics rule (force / mass update) は **一切触らない**。Phase M 単一規則と完全直交、Phase P (pressure terms) と並行進行可。Stage 1/4 は observation layer、Stage 2 は cluster_key (ranking layer) で source-blind 制約厳守、Stage 3 は調査 only。
 
-### 🔴 P0.5-Stage1. Meta-extraction loop fix `[着手 2026-05-27]`
+### 🔴 P0.5-Stage1. Meta-extraction loop fix `[完了 2026-05-27]`
 - 目的: `save_candidates` / `ambient_recall` block を含む transcript を heuristic extractor に流すと、**block 自身の内容 (前候補・filter 行・manifest)** が re-extract される自己再帰的 false positive を遮断
 - 検証で確証: 7 candidates 中 4 件が前 block leak、特に save-policy filter 行 (「bug fix の途中経過は git log」) が `_OUTCOME_KEYWORDS` の "bug fix" で score=1.80 ヒット = **policy 自身が自己再帰的 noise になる**
 - 作業:
@@ -96,35 +96,21 @@
 - D1-D3: [Plan §Stage 1](docs/wiki/Plans-Lens-Hygiene.md#stage-1--meta-extraction-loop-fix-着手-2026-05-27)
 - default: **ON** (env opt-out 残す)
 
-### 🟢 P0.5-Stage4. Narrative engine use case の文書化 `[未着手]`
-- 目的: GLM レビュー §1/§4 で報告された "parallel recall → 重力 accumulation → 自己発見的 narrative synthesis" の使用パターンを skill docs / Guides に明示
-- Stage 1 と同 PR に積む (低コスト docs only)
-- 作業:
-  - [ ] `Guides-Use-As-Narrative-Engine.md` 新規 or 既存 Guide に節追加
-  - [ ] `Reflections-A-Note-From-Claude.md` に "external observer (GLM) review" 節
-  - [ ] `Guides-Ambient-Recall.md` のフロントに use-case 並置 (task-driven / serendipitous / narrative)
-- D1-D3: [Plan §Stage 4](docs/wiki/Plans-Lens-Hygiene.md#stage-4--documentation-narrative-engine-use-case-未着手)
+### 🟢 P0.5-Stage4. Narrative engine use case の文書化 `[完了 2026-05-27]`
+- 完了物: [`Guides-Use-As-Narrative-Engine.md`](docs/wiki/Guides-Use-As-Narrative-Engine.md) 新規 + [`Reflections-A-Note-From-Claude.md`](docs/wiki/Reflections-A-Note-From-Claude.md) に外部観察者 (GLM) note 追記 + [`Guides-Ambient-Recall.md`](docs/wiki/Guides-Ambient-Recall.md) に三つの read 使い分け並置 + Home/_Sidebar 更新
+- Stage 2/3 の literal な corpus health 数値 (131 file clusters/max=638, dormant pool=15) を guide の動作条件節に組み込み、Stage 1-4 の linage を doc に embed
+- D1-D3: [Plan §Stage 4](docs/wiki/Plans-Lens-Hygiene.md#stage-4--documentation-narrative-engine-use-case-完了-2026-05-27)
 
-### 🟢 P0.5-Stage3. Dormant explore observed-empty 調査 `[未着手 / 調査のみ]`
-- 目的: GLM が `explore(mode="dormant")` で 0 件を観察 vs 本 ToDo 起案時の検証で pool=45-57 candidates 残存している矛盾の root cause 特定
-- 仮説 4 候補 (BM25 floor / recently_surfaced rotation / last_access 短い / dispatch bug)
-- 作業:
-  - [ ] `scripts/diag_dormant.py` 拡張で各 filter stage の通過数表示
-  - [ ] 本番に `explore(mode="dormant")` を read-only で 1 query 叩いて返値観察
-  - [ ] 仮説排除 → 修正方針を別 ToDo / 別 PR で
-- D1-D3: [Plan §Stage 3](docs/wiki/Plans-Lens-Hygiene.md#stage-3--dormant-explore-observed-empty-investigation-未着手)
+### 🟢 P0.5-Stage3. Dormant explore observed-empty 調査 `[完了: bug でなし — 2026-05-27]`
+- 結論: `explore(mode="dormant")` の dispatch / filter chain は clean、現状 production で pool=15 → `_dormant_surface(top_k=5)` が **5/5 返している**。GLM の "0 件" は heavy session の transient state または ambient_recall dormant slot (別 path、BM25 floor=0.5 あり) の混同
+- 完了物: `scripts/diag_dormant.py --service-mirror` 拡張 — `_dormant_surface` と完全に同じ filter 順序で count を出力、future investigator が同じ誤判定をしないよう「pool=0 は corpus healthy / by-design empty」memo を script 内 literal に組み込み
+- D1-D3: [Plan §Stage 3](docs/wiki/Plans-Lens-Hygiene.md#stage-3--dormant-explore-observed-empty-investigation-完了-bug-でなく-transient--2026-05-27)
 
-### 🟡 P0.5-Stage2. File source の Stage 7.1 anti-hub gap closure `[未着手]`
-- 目的: 実 mass 分布検証で file source (max=31.78、書籍 chunk) が真の質量黒洞と判明。一方 `cluster_key = cohort_id OR original_id` で file source は両方 0% → Stage 7.1 anti-hub が **全く効かない**
-- 設計クリティカル: **source class 分岐を入れない** (`if source == "file"` 禁止)。階層追加 `cohort → original → file_path → title → None` で source-blind に
-- 作業:
-  - [ ] `services/memory._cluster_key_for` chain を `cohort → original → file_path → title → None` に拡張
-  - [ ] config `cluster_key_use_file_path: bool = True` + env opt-out
-  - [ ] `tests/unit/test_anti_hub.py` (新規 or 既存) で source ごとの cluster coverage assertion (file=≥90%)
-  - [ ] `tests/integration/test_engine_anti_hub_file.py` で同一書籍 100 chunks の top-K 重複緩和確認
-  - [ ] Phase M source-blindness の test も緑のまま (mass update に source 分岐が混入していないことを別 test で確認)
-  - [ ] `scripts/diag_cluster_coverage.py` 新設 (source 別 cluster_key 保有率の read-only diag)
-- D1-D3: [Plan §Stage 2](docs/wiki/Plans-Lens-Hygiene.md#stage-2--file-source-anti-hub-gap-closure-未着手)
+### ⚪ P0.5-Stage2. File source の Stage 7.1 anti-hub gap closure `[投稿: 誤診断、本来効いている — 2026-05-27]`
+- 結論: 「file source の cluster_key 0%」は **literal な `metadata.original_id` フィールドだけを見ていた測定エラー**。実 cache では `COALESCE(metadata.original_id, metadata.file_path)` で **100% カバー**、Stage 7.1 anti-hub は既に file 638-chunk 本に効いている
+- 真の "anti-hub では attack できない" 残課題: **tweet 7658 全部 singleton / agent 65% singleton** = vocabulary 系の問題で Phase L Stage 1 BM25+RRF 領域 (本 ToDo では追加せず、既存 §1 で扱う)
+- 完了物: (a) `tests/unit/test_sqlite_store_get_all_originals.py` 新規 — COALESCE fallback 5 ケース pin (b) `scripts/diag_cluster_coverage.py` 新規 — live cache 経由の正確 coverage で future の COALESCE-blind 誤診を防ぐ
+- D1-D3: [Plan §Stage 2](docs/wiki/Plans-Lens-Hygiene.md#stage-2--file-source-anti-hub-gap-closure-投稿-誤診断本来効いている--2026-05-27)
 
 ---
 
