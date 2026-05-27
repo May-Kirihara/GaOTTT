@@ -323,3 +323,196 @@ def test_emit_mode_state_writes_state_file_not_stdout(
     state_file = state_dir / "claude-sess-1.txt"
     assert state_file.exists()
     assert "claude-code path sentinel" in state_file.read_text(encoding="utf-8")
+
+
+# --- Plans-Lens-Hygiene Stage 1: meta-extraction loop regression ---
+
+def _make_recursive_transcript() -> str:
+    """A transcript that contains a previously-injected <gaottt-save-candidates>
+    block — exactly the shape that arrives at the next turn's Stop event after
+    UserPromptSubmit injection. The block is the one observed live in the
+    2026-05-27 verification (PR #28 review), reduced to the parts that trigger
+    the regression."""
+    return (
+        "[user] こんにちは、今日も作業を進めていこう。\n"
+        "\n"
+        "<gaottt-save-candidates>\n"
+        "GaOTTT が直前ターンから抽出した save 候補です（観察層: lens で見せ"
+        "ています、save するかは agent の判断）。\n"
+        "判断 filter: 未来の判断を変える insight/pattern なら save。"
+        "bug fix の途中経過・fact 単体・code snippet は git log・diff・"
+        "code に任せる。\n"
+        "\n"
+        "▼ 候補 (score 順)\n"
+        " 1. [score=2.20, source=agent, tags=['design-decision']] "
+        "[assistant] Next.js を採用することを決定した。\n"
+        "    reason: 決定/結論キーワード, 適度な長さ\n"
+        " 2. [score=1.90, source=agent, tags=['letter-to-future-self']] "
+        "次に ToDo.md §8 に follow-up を追記。\n"
+        "    reason: 教訓/次回への申し送り\n"
+        "\n"
+        "▼ いま誰として\n"
+        " · intention: harakiriworks-art-website のプロジェクトノウハウを "
+        "GaOTTT に体系的な重力場として残す。\n"
+        "<!-- save-candidates count=2 -->\n"
+        "</gaottt-save-candidates>\n"
+        "\n"
+        "[assistant] わかりました、それで進めましょう。実際の作業は別の "
+        "API を採用することにします。"
+    )
+
+
+def test_strip_gaottt_blocks_removes_save_candidates_block():
+    """Pure-function test for the regex helper. The strip must remove the
+    entire <gaottt-save-candidates>…</gaottt-save-candidates> block (multi-line,
+    DOTALL) and leave the surrounding user/assistant text intact."""
+    from gaottt.services.memory import _strip_gaottt_blocks
+    transcript = _make_recursive_transcript()
+    stripped = _strip_gaottt_blocks(transcript)
+    # Surrounding human turns remain
+    assert "今日も作業を進めていこう" in stripped
+    assert "別の API を採用することにします" in stripped
+    # Block content gone
+    assert "<gaottt-save-candidates>" not in stripped
+    assert "</gaottt-save-candidates>" not in stripped
+    assert "Next.js を採用することを決定した" not in stripped
+    assert "次に ToDo.md §8" not in stripped
+    assert "save-candidates count=2" not in stripped
+    assert "判断 filter:" not in stripped
+
+
+def test_strip_gaottt_blocks_removes_ambient_recall_block():
+    """Same strip must work for ambient_recall blocks too — they follow the
+    same naming convention (<gaottt-…>…</gaottt-…>) so a single regex covers
+    every current and future lens block."""
+    from gaottt.services.memory import _strip_gaottt_blocks
+    transcript = (
+        "[user] 進捗どう?\n"
+        "\n"
+        "<gaottt-ambient-recall>\n"
+        "GaOTTT 長期記憶から自動取得した関連知識です。\n"
+        "▼ 直接ヒット\n"
+        " 1. [agent · certainty 0.90 · 0d] 失敗事例 — KUW-102\n"
+        "</gaottt-ambient-recall>\n"
+        "\n"
+        "[assistant] 順調です。"
+    )
+    stripped = _strip_gaottt_blocks(transcript)
+    assert "[user] 進捗どう?" in stripped
+    assert "[assistant] 順調です。" in stripped
+    assert "<gaottt-ambient-recall>" not in stripped
+    assert "KUW-102" not in stripped
+
+
+def test_strip_gaottt_blocks_handles_multiple_blocks_in_one_text():
+    """Defensive — when both ambient_recall AND save_candidates are injected
+    into the same user turn (the typical Claude Code + opencode setup), the
+    strip must remove every block, not just the first."""
+    from gaottt.services.memory import _strip_gaottt_blocks
+    transcript = (
+        "[user] テスト\n"
+        "<gaottt-ambient-recall>\n A \n</gaottt-ambient-recall>\n"
+        "<gaottt-save-candidates>\n B \n</gaottt-save-candidates>\n"
+        "[assistant] OK"
+    )
+    stripped = _strip_gaottt_blocks(transcript)
+    assert "<gaottt-" not in stripped
+    assert "[user] テスト" in stripped
+    assert "[assistant] OK" in stripped
+
+
+def test_strip_gaottt_blocks_leaves_unrelated_text_intact():
+    """A user message that literally mentions gaottt tag names in prose
+    (without the angle-bracketed open/close pair) must survive — the regex
+    only matches well-formed open+close tag pairs."""
+    from gaottt.services.memory import _strip_gaottt_blocks
+    text = "[user] gaottt-save-candidates の仕様について議論したい。"
+    assert _strip_gaottt_blocks(text) == text
+
+
+def test_strip_gaottt_blocks_does_not_pair_mismatched_tag_names():
+    """Live-acceptance regression (2026-05-27 GLM turn 2 retest):
+    a user prompt containing a literal bare-open tag like
+    ``<gaottt-save-candidates>`` (no matching close) must NOT pair up with
+    a later real ``</gaottt-ambient-recall>`` block end. The first version
+    used ``<gaottt-[a-z-]+>.*?</gaottt-[a-z-]+>`` which silently swallowed
+    every turn-1 user/assistant exchange between the literal mention and
+    the next legitimate block close — make-or-break for the fix."""
+    from gaottt.services.memory import _strip_gaottt_blocks
+    transcript = (
+        "[user] Backend framework として FastAPI を採用すると決定した。\n"
+        "[assistant] FastAPI 採用。理由は async/await native の 3 点。\n"
+        "[user] 質問: `<gaottt-save-candidates>` block が含まれていますか?\n"
+        "[assistant] 確認します。\n"
+        "\n"
+        "<gaottt-ambient-recall>\n"
+        "ambient lens content here\n"
+        "</gaottt-ambient-recall>"
+    )
+    stripped = _strip_gaottt_blocks(transcript)
+    # The well-formed ambient block IS removed
+    assert "ambient lens content" not in stripped
+    assert "<gaottt-ambient-recall>" not in stripped
+    # But the turn-1 / turn-2 user/assistant exchanges SURVIVE — they were
+    # accidentally eaten by the buggy any-name pattern
+    assert "FastAPI を採用すると決定した" in stripped, \
+        "turn-1 user decision was eaten by over-matching strip"
+    assert "FastAPI 採用。理由は async/await" in stripped, \
+        "turn-1 assistant summary was eaten by over-matching strip"
+    assert "[user] 質問: `<gaottt-save-candidates>` block" in stripped, \
+        "literal bare-open-tag mention must survive verbatim"
+
+
+def test_strip_gaottt_blocks_strips_each_block_independently():
+    """Two real blocks (one save-candidates, one ambient-recall) interleaved
+    with prose — each must be stripped at its own boundary, the prose
+    between them must survive. Tests that the backreference forces
+    per-tag-name matching even when multiple block kinds are present."""
+    from gaottt.services.memory import _strip_gaottt_blocks
+    transcript = (
+        "[user] 進捗どう?\n"
+        "<gaottt-save-candidates>\n SAVE A \n</gaottt-save-candidates>\n"
+        "間の prose は残るはず\n"
+        "<gaottt-ambient-recall>\n AMB B \n</gaottt-ambient-recall>\n"
+        "[assistant] 順調"
+    )
+    stripped = _strip_gaottt_blocks(transcript)
+    assert "SAVE A" not in stripped
+    assert "AMB B" not in stripped
+    assert "<gaottt-" not in stripped
+    assert "進捗どう?" in stripped
+    assert "間の prose は残るはず" in stripped
+    assert "[assistant] 順調" in stripped
+
+
+def test_auto_remember_does_not_leak_prior_block_content():
+    """End-to-end heuristic regression — the live failure mode observed in
+    PR #28 acceptance: feeding a transcript that includes a prior block to
+    extract_candidates leaked 4 candidates derived from the block itself
+    (prior candidates, "judgment filter" line scoring as troubleshooting via
+    the literal "bug fix" keyword, "reason:" lines, "<!-- save-candidates -->"
+    manifest). After the strip, none of these may surface."""
+    from gaottt.services.memory import _strip_gaottt_blocks
+    from gaottt.core.extractor import extract_candidates
+
+    transcript = _make_recursive_transcript()
+    cleaned = _strip_gaottt_blocks(transcript)
+    candidates = extract_candidates(cleaned, max_candidates=10, min_score=0.5)
+
+    contents = " | ".join(c.content for c in candidates)
+    # The 4 documented leaks from the verification fixture
+    assert "Next.js を採用することを決定した" not in contents, \
+        "prior-block candidate #1 leaked"
+    assert "次に ToDo.md §8" not in contents, "prior-block candidate #2 leaked"
+    assert "判断 filter:" not in contents, "policy filter line leaked"
+    assert "save-candidates count=" not in contents, "block manifest leaked"
+    # And the user/assistant turns survive — the strip must NOT eat the
+    # actual content the heuristic should still see (it just must not see
+    # the lens artifact).
+    survives_real_text = any(
+        "別の API を採用することにします" in c.content for c in candidates
+    )
+    assert survives_real_text, (
+        "the actual assistant decision should still be extracted after strip; "
+        f"got {[c.content[:50] for c in candidates]}"
+    )

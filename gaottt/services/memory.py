@@ -7,6 +7,7 @@ via ``gaottt.services.formatters``; the REST server returns them as JSON.
 from __future__ import annotations
 
 import random
+import re
 import time
 from bisect import bisect_right
 from typing import Any, Callable
@@ -37,6 +38,33 @@ from gaottt.core.types import (
 )
 from gaottt.core.explain import explain_score
 from gaottt.services import query_routing, reflection as reflection_service
+
+# Strip any <gaottt-NAME>...</gaottt-NAME> block before heuristic extraction.
+# Prevents the meta-extraction loop where ``save_candidates`` re-extracts
+# its own prior block (the candidate list, score lines, manifest comment,
+# and especially the save-policy filter line — whose literal "bug fix"
+# keyword would otherwise self-trigger ``_OUTCOME_KEYWORDS`` in the
+# heuristic and re-surface the policy as a "troubleshooting" candidate
+# every turn). The service layer knows the block format because it also
+# *writes* it (``services.formatters.format_save_candidates`` /
+# ``format_ambient``); the extractor stays pure / transport-blind.
+#
+# The backreference ``\1`` is load-bearing: it forces the closing tag's
+# NAME to match the opening tag's name. Without it, a user prompt that
+# literally mentions ``<gaottt-save-candidates>`` (as a bare open tag, no
+# close) would pair up with a later real ``</gaottt-ambient-recall>`` from
+# the next ambient block and silently eat ALL content in between — every
+# turn-1 user/assistant exchange would vanish before extraction. Caught
+# in 2026-05-27 GLM acceptance turn 2 (Plans-Lens-Hygiene Stage 1 retest).
+_GAOTTT_BLOCK_PATTERN = re.compile(
+    r"<gaottt-([a-z-]+)>.*?</gaottt-\1>", re.DOTALL,
+)
+
+
+def _strip_gaottt_blocks(text: str) -> str:
+    """Remove ``<gaottt-…>…</gaottt-…>`` blocks (save-candidates, ambient-recall,
+    and any future lens block following the same naming convention)."""
+    return _GAOTTT_BLOCK_PATTERN.sub("", text)
 
 
 def _enrich_breakdown(
@@ -1242,6 +1270,8 @@ async def auto_remember(
     include_reasons: bool = True,
 ) -> AutoRememberResponse:
     cfg = engine.config
+    if getattr(cfg, "auto_remember_strip_gaottt_blocks", True):
+        transcript = _strip_gaottt_blocks(transcript)
     raw_candidates = extract_candidates(
         transcript,
         max_candidates=max_candidates,

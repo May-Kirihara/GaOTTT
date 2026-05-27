@@ -4,6 +4,13 @@
 
 > 「明示的に使わなくても、自動で記憶が効く」— recall を *道具* から *環境* に変える。
 
+> **三つの read 側使い分け** (それぞれ異なる主体・モード):
+> 1. **Task-driven retrieval** ([Use as Memory](Guides-Use-As-Memory.md)) — agent が明示的に `recall(query)` で叩く
+> 2. **Passive lens** ← 本ガイド — hook injection で何もしなくても文脈が浮かぶ
+> 3. **Narrative engine** ([Use as Narrative Engine](Guides-Use-As-Narrative-Engine.md)) — `explore × N` + `recall × N` 並列で重力場を能動的に辿り、創発的な narrative を組み立てる (好奇心駆動の navigation、external LLM が同等体験を独立確証 → [evaluation-2026-05-27](../maintainers/evaluation-2026-05-27-free-exploration.md))
+>
+> ambient_recall は (2) 専用 — (1)(3) のタスク駆動・好奇心駆動の場合は本機構を bypass して上記 Guide へ。
+
 > **対をなす write-side 機能 → [Save Candidates Hook](Plans-Save-Candidates-Hook.md)** (2026-05-27: v1 Claude Code + v2 opencode 完了)。ambient_recall が「過去の記憶を read として注入」する読み側 lens なのに対し、save_candidates は「直前ターンから save 候補を抽出して次プロンプトに注入」する書き側 lens。Claude Code では `Stop` hook で auto_remember → state file → 次 `UserPromptSubmit` で inject という 2-script bridge、opencode では `chat.message` の 1 plugin (`scripts/hooks/opencode-save-candidates.ts`) で前ターン lookback + 当ターン message への inject を同期実行 (state file 不要)。設計原理は同じ「観察層は自動、physics 層 (`remember` 呼び出し = mass の入口) は能動的判断のまま」。両者で **read と write の対称な observation lens** が揃う。
 
 ## 対応フロントエンド

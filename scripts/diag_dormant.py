@@ -148,6 +148,49 @@ async def main_async(args: argparse.Namespace) -> None:
             "5-15 dormant candidates for the per-call top_k (default 10) to "
             "have something to sample without flooding the gravity field."
         )
+
+        # ---- Service-mirror trace (Plans-Lens-Hygiene Stage 3) ----
+        # The block above computes per-source breakdown at the percentile.
+        # ``services.memory._dormant_surface`` runs the filters in a slightly
+        # different order — mass_cut is derived from ALL active masses (not
+        # the self-authored subset), then age + mass + source applied. The
+        # two paths can disagree on the final count by a few candidates,
+        # which previously confused dormant-empty investigations. This trace
+        # mirrors the service exactly so a baseline run can be compared to
+        # a live ``explore(mode="dormant")`` call.
+        if args.service_mirror:
+            print("\n" + "=" * 60)
+            print("Service-mirror trace (matches services.memory._dormant_surface)")
+            print("=" * 60)
+            cutoff_svc = time.time() - args.age_days * 86400.0
+            sources_svc = set(args.sources)
+            # _dormant_surface uses the active-corpus-wide percentile of mass
+            svc_mass_cut = _percentile(masses, recommend_p)
+            print(f"  service mass_cut (p{recommend_p:.1f} of ALL active): "
+                  f"{svc_mass_cut:.4f}")
+            stage0 = len(active)
+            stage1 = sum(1 for s in active if s.last_access <= cutoff_svc)
+            stage2 = sum(
+                1 for s in active
+                if s.last_access <= cutoff_svc and s.mass <= svc_mass_cut
+            )
+            stage3 = sum(
+                1 for s in active
+                if s.last_access <= cutoff_svc
+                and s.mass <= svc_mass_cut
+                and sources_map.get(s.id, "") in sources_svc
+            )
+            print(f"  Stage 0 (all active):                  {stage0:>6}")
+            print(f"  Stage 1 (+ age <= cutoff):             {stage1:>6}")
+            print(f"  Stage 2 (+ mass <= service_mass_cut):  {stage2:>6}")
+            print(f"  Stage 3 (+ source in dormant classes): {stage3:>6}")
+            print(
+                f"\n  → live explore(mode=\"dormant\", top_k=K) returns "
+                f"min(K, {stage3}) randomly sampled items.\n"
+                f"  → if stage3 == 0, the corpus has nothing to surface; this is\n"
+                f"     'corpus healthy' / by-design empty, not a bug. GLM 2026-05-27\n"
+                f"     review §3.4 observed this transient state in a heavy session."
+            )
     finally:
         await store.close()
 
@@ -167,6 +210,12 @@ def main() -> None:
         "--percentiles", default="10,20,30,50",
         help="Comma-separated percentiles of active mass to evaluate "
              "(default 10,20,30,50)",
+    )
+    parser.add_argument(
+        "--service-mirror", action="store_true",
+        help="Also print the EXACT filter chain services.memory._dormant_surface "
+             "uses. Useful when reproducing a live explore(mode=\"dormant\") "
+             "empty result vs the per-source breakdown of the prior section.",
     )
     args = parser.parse_args()
     asyncio.run(main_async(args))

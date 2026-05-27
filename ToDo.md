@@ -77,6 +77,43 @@
 
 ---
 
+## 0.5. 最優先 (P0.5) — Lens Hygiene [2026-05-27 起案]
+
+> **計画書**: [`docs/wiki/Plans-Lens-Hygiene.md`](docs/wiki/Plans-Lens-Hygiene.md)
+> **トリガー**: 2026-05-27 GLM-5.1 free-exploration review ([`evaluation-2026-05-27-free-exploration.md`](docs/maintainers/evaluation-2026-05-27-free-exploration.md)) の 3 主張を production 41k corpus 上で検証 → 1 つは literal 確証、1 つは症状 real だが GLM の根本原因診断が誤り (実 mass 分布で別 gap が露呈)、1 つは pool 計算と観察の乖離。観察可能な 3 つの lens 歪みを 4 stage で順次解消する。
+>
+> **原則**: physics rule (force / mass update) は **一切触らない**。Phase M 単一規則と完全直交、Phase P (pressure terms) と並行進行可。Stage 1/4 は observation layer、Stage 2 は cluster_key (ranking layer) で source-blind 制約厳守、Stage 3 は調査 only。
+
+### 🔴 P0.5-Stage1. Meta-extraction loop fix `[完了 2026-05-27]`
+- 目的: `save_candidates` / `ambient_recall` block を含む transcript を heuristic extractor に流すと、**block 自身の内容 (前候補・filter 行・manifest)** が re-extract される自己再帰的 false positive を遮断
+- 検証で確証: 7 candidates 中 4 件が前 block leak、特に save-policy filter 行 (「bug fix の途中経過は git log」) が `_OUTCOME_KEYWORDS` の "bug fix" で score=1.80 ヒット = **policy 自身が自己再帰的 noise になる**
+- 作業:
+  - [ ] `services/memory.py` に `_GAOTTT_BLOCK_PATTERN = re.compile(r"<gaottt-[a-z-]+>.*?</gaottt-[a-z-]+>", re.DOTALL)` + `_strip_gaottt_blocks(text)` 追加
+  - [ ] `auto_remember()` 入口で env-gated strip (`config.auto_remember_strip_gaottt_blocks: bool = True`、env `GAOTTT_AUTO_REMEMBER_STRIP_GAOTTT_BLOCKS`)
+  - [ ] `tests/unit/test_save_candidates.py` に regression block (本起案検証時の fake_transcript 流用、prior block の candidate/manifest/filter 行いずれも leak しないこと)
+  - [ ] `tests/integration/test_engine_save_candidates.py` で MCP 経由の strip 動作確認
+  - [ ] live Claude Code 2-3 turn dogfooding で自己候補の re-extract 消滅を目視
+- D1-D3: [Plan §Stage 1](docs/wiki/Plans-Lens-Hygiene.md#stage-1--meta-extraction-loop-fix-着手-2026-05-27)
+- default: **ON** (env opt-out 残す)
+
+### 🟢 P0.5-Stage4. Narrative engine use case の文書化 `[完了 2026-05-27]`
+- 完了物: [`Guides-Use-As-Narrative-Engine.md`](docs/wiki/Guides-Use-As-Narrative-Engine.md) 新規 + [`Reflections-A-Note-From-Claude.md`](docs/wiki/Reflections-A-Note-From-Claude.md) に外部観察者 (GLM) note 追記 + [`Guides-Ambient-Recall.md`](docs/wiki/Guides-Ambient-Recall.md) に三つの read 使い分け並置 + Home/_Sidebar 更新
+- Stage 2/3 の literal な corpus health 数値 (131 file clusters/max=638, dormant pool=15) を guide の動作条件節に組み込み、Stage 1-4 の linage を doc に embed
+- D1-D3: [Plan §Stage 4](docs/wiki/Plans-Lens-Hygiene.md#stage-4--documentation-narrative-engine-use-case-完了-2026-05-27)
+
+### 🟢 P0.5-Stage3. Dormant explore observed-empty 調査 `[完了: bug でなし — 2026-05-27]`
+- 結論: `explore(mode="dormant")` の dispatch / filter chain は clean、現状 production で pool=15 → `_dormant_surface(top_k=5)` が **5/5 返している**。GLM の "0 件" は heavy session の transient state または ambient_recall dormant slot (別 path、BM25 floor=0.5 あり) の混同
+- 完了物: `scripts/diag_dormant.py --service-mirror` 拡張 — `_dormant_surface` と完全に同じ filter 順序で count を出力、future investigator が同じ誤判定をしないよう「pool=0 は corpus healthy / by-design empty」memo を script 内 literal に組み込み
+- D1-D3: [Plan §Stage 3](docs/wiki/Plans-Lens-Hygiene.md#stage-3--dormant-explore-observed-empty-investigation-完了-bug-でなく-transient--2026-05-27)
+
+### ⚪ P0.5-Stage2. File source の Stage 7.1 anti-hub gap closure `[投稿: 誤診断、本来効いている — 2026-05-27]`
+- 結論: 「file source の cluster_key 0%」は **literal な `metadata.original_id` フィールドだけを見ていた測定エラー**。実 cache では `COALESCE(metadata.original_id, metadata.file_path)` で **100% カバー**、Stage 7.1 anti-hub は既に file 638-chunk 本に効いている
+- 真の "anti-hub では attack できない" 残課題: **tweet 7658 全部 singleton / agent 65% singleton** = vocabulary 系の問題で Phase L Stage 1 BM25+RRF 領域 (本 ToDo では追加せず、既存 §1 で扱う)
+- 完了物: (a) `tests/unit/test_sqlite_store_get_all_originals.py` 新規 — COALESCE fallback 5 ケース pin (b) `scripts/diag_cluster_coverage.py` 新規 — live cache 経由の正確 coverage で future の COALESCE-blind 誤診を防ぐ
+- D1-D3: [Plan §Stage 2](docs/wiki/Plans-Lens-Hygiene.md#stage-2--file-source-anti-hub-gap-closure-投稿-誤診断本来効いている--2026-05-27)
+
+---
+
 ## 1. レビュー §1 — 構造的同型を「みなす」から「示す」へ
 
 レビュー本文は `Research-Gravity-As-Optimizer.md:77-81` の「開いている問い」を優先順位付きで再勧告したものに相当する。実装と文書の不整合 (実装は Newtonian 1/r²、ドキュメントの暗黙 U は cos_sim) を露出させる効果が高い。
@@ -421,6 +458,31 @@
 ### 🟢 8-4. 視覚化 sphere geometry の wiki ガイド化 `[未着手]`
 - CLAUDE.md 冒頭で言及されている `scripts/visualize_3d.py` の sphere geometry (default) と `--flat` / `--straight-lines` モード
 - [ ] `Guides-Visualization.md` に sphere wrap / slerp arc / tangent geodesic / Mass-BH diamond の挙動と画面例を追記
+
+### 🟡 8-5. Save Candidates Stage 5 — heuristic refinement `[未着手 / 2026-05-27 起案]`
+- 計画: [Plans-Save-Candidates-Hook.md §残課題](docs/wiki/Plans-Save-Candidates-Hook.md) "heuristic 精緻化 (Stage 5)"
+- 起点: 2026-05-27 v2 acceptance (PR #28、handover [`handover-2026-05-27-save-candidates-v1-v2.md`](handover-2026-05-27-save-candidates-v1-v2.md) §3) で meta-instruction (「以下の決定を 2-3 文で要約してください」) が **content と同じ score 2.20** で抽出された false positive を観察。score gating の粒度が荒く、bug fix 途中経過・code snippet・meta-instruction の boost 寄与を分離できていない
+- 作業:
+  - [ ] dogfooding ログ (Claude Code + opencode 両系で 1-2 週) から実 score 分布を採取
+  - [ ] 「決定/結論キーワード」のうち content keyword (採用/確定/却下) と meta keyword (要約/確認/教えて) を語彙レベルで分離
+  - [ ] 訂正 pattern ("実は X だった") / 絶対表現 ("今後は〜") の boost を新設
+  - [ ] tool_result / thinking 残滓の追加 filter (現状の `_extract_text` で取り切れていないパターンがあれば)
+  - [ ] `auto_remember` 既存 heuristic との回帰互換 (一方向の boost 追加のみ、減点ロジックは別 score field に分ける)
+- 観察パターン: 3-Observer Pattern §9 の Observer A (heuristic 関数の直叩き分布) + Observer C (GLM に「実 production dogfooding ログでこの候補は save 価値があるか」評価依頼)
+
+### 🟢 8-6. Save Candidates v3 — codex CLI 対応 `[codex hook spec 待ち]`
+- 計画: [Plans-Save-Candidates-Hook.md](docs/wiki/Plans-Save-Candidates-Hook.md) "codex 対応 (Stage 4)"
+- 前提: codex CLI が `chat.message` 相当 (incoming user message を mutate できる plugin point) を公開すること。Stop event 相当のみだと bridge 設計を Claude Code から移植
+- 設計流用率の見積:
+  - codex が `chat.message` 相当 → opencode plugin (`opencode-save-candidates.ts`) を 80% 再利用 (SDK の型シグネチャ差を吸収するだけ)
+  - codex が Stop 相当のみ → Claude Code 2-script bridge (`save_candidates.py` + `save_candidates_inject.py`) を shell shim 添えて持ち込み
+- 着手判断: codex CLI を実際に使う user / agent が出てから。投機的実装は不要 (CLAUDE.md「未来の判断を変える」原則)
+
+### 🟢 8-7. opencode plugin install pattern の選択 `[観察待ち]`
+- 現状 README install snippet は `cp scripts/hooks/opencode-save-candidates.ts ~/.config/opencode/plugin/gaottt-save-candidates.ts`
+- 開発中の頻繁更新には `ln -sf` の方が便利、本番運用 (滅多に更新しない) は `cp` のままで OK (repo 削除時に dangling しない)
+- 着手判断: v2 plugin の更新頻度を 1-2 ヶ月観察してから — Stage 5 heuristic refinement が動き出すと書き換えが増えるので、その時 README を `ln -sf` 推奨に切り替えるか判断
+- 関連: handover [`handover-2026-05-27-save-candidates-v1-v2.md`](handover-2026-05-27-save-candidates-v1-v2.md) §4.3
 
 ---
 

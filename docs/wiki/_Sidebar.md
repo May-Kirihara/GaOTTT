@@ -19,6 +19,7 @@
 - [As Long-Term Memory](Guides-Use-As-Memory.md)
 - [As Task Manager](Guides-Use-As-Task-Manager.md)
 - [As Persona Base](Guides-Use-As-Persona-Base.md)
+- [As Narrative Engine](Guides-Use-As-Narrative-Engine.md)
 - [Multi-Agent Setup](Guides-Multi-Agent.md)
 - [Per-Project DBs](Guides-Per-Project-DBs.md)
 - [Ambient Recall](Guides-Ambient-Recall.md)
