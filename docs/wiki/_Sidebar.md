@@ -65,6 +65,7 @@
 - [Phase N candidate β — Mass Evaporation](Plans-Phase-N-Mass-Evaporation.md)
 - [Phase O — TTT Observability](Plans-Phase-O-TTT-Observability.md)
 - [Phase P — Pressure Terms (Λ + Langevin)](Plans-Phase-P-Pressure-Terms.md)
+- [Phase Q — Orbital Mechanics (Rosette Orbits)](Plans-Phase-Q-Orbital-Mechanics.md)
 - [Observation Apparatus Refinement](Plans-Observation-Apparatus-Refinement.md)
 - [Hardening — Concurrency & Persistence](Plans-Hardening-Concurrency-Persistence.md)
 - [Ambient Recall Enrichment](Plans-Ambient-Recall-Enrichment.md)
