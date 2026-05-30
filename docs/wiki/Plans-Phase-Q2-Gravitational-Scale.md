@@ -1,6 +1,6 @@
 # Plans — Phase Q2: Gravitational Scale Matching（密度適応の重力 + velocity cooldown）
 
-> **Status (2026-05-30)**: **設計確定 + governor 実装済み（段階1-4 完了、`feat/phase-q-orbital-mechanics`、default OFF）。残り = rollout 設計確定（M005 velocity cooldown 実装 + α 初期値 + 観測手順）+ PR**。[Phase Q](Plans-Phase-Q-Orbital-Mechanics.md) の本番実測（§8 rollout findings）を承けた follow-on。すべて**隔離コピーで measurement-first**、本番未投入。Phase Q が「合わないスケールの項（tick 近傍重力）をとりあえず外す」保守的な床を入れたのに対し、本 plan は **「重力の重みを宇宙のスケールに合わせて項を生かす」** 原理的な天井 — 密度適応の有効重力結合（anchor 基準 governor、§4.1）と、過去に焼き付いた degenerate な velocity 場の一度きり cooldown（A、§5）。ユーザー（めいさん）の診断「重力の重みが宇宙のスケールに合っていないのかな」を literal に実装する Phase。
+> **Status (2026-05-31)**: **本番 LIVE。** 段階1-4 完了 + M006 velocity cooldown 適用 + governor 有効化（`feat/phase-q-orbital-mechanics`）。**2026-05-31 に governor を code default ON へ昇格**（段階4 acceptance + 本番 live healthy を承けた owner 判断、規約「新 field は default OFF」からの意図的 promotion。`gravity_neighbor_governor_enabled=False` で bit-exact pre-Q2 legacy に戻せる）。残り = **1-2 週観測 + α チューニング** + PR。[Phase Q](Plans-Phase-Q-Orbital-Mechanics.md) の本番実測（§8 rollout findings）を承けた follow-on。設計は**隔離コピーで measurement-first** に確定し、本番投入は M006 + env opt-in → default ON の順で実施（rollout 手順は [Operations — Migration](Operations-Migration.md) §Phase Q2）。Phase Q が「合わないスケールの項（tick 近傍重力）をとりあえず外す」保守的な床を入れたのに対し、本 plan は **「重力の重みを宇宙のスケールに合わせて項を生かす」** 原理的な天井 — 密度適応の有効重力結合（anchor 基準 governor、§4.1）と、過去に焼き付いた degenerate な velocity 場の一度きり cooldown（A、§5）。ユーザー（めいさん）の診断「重力の重みが宇宙のスケールに合っていないのかな」を literal に実装する Phase。
 >
 > **★ 段階4 の核心発見（§4.3）**: governor は単一クエリの ranking を変えない（中立）が、**過大な近傍重力に踏み潰されていた query 引力（Phase I Stage 2 の literal な TTT 勾配項）を un-mask する**（drift OFF 0.018 → ON 0.832、top-5 安定）。劣化ではなく**意図された学習機構の回復**。GaOTTT thesis（Gravity as Optimizer, TTT）に literal に噛み合う。
 
@@ -92,13 +92,13 @@ acc_neigh ← g_i · acc_neigh                              # 向きは保持、
 
 - **`compute_acceleration`（recall wave + tick 共通経路）に governor を入れる** = recall path も含む (ii)。これで velocity 再飽和も根絶（recall 時の近傍重力が cap される）。
 - genesis kick (`compute_gravity_kick`) / supernova は別関数（compute_acceleration を通らない）。同じ governor を後段で適用するかは段階4 の後に判断（初期 seed は再飽和の主因ではない）。
-- **default OFF**（`gravity_neighbor_governor_enabled=False` で bit-exact legacy）。
+- **default ON**（2026-05-31 昇格、Phase Q2 rollout 完了後）。`gravity_neighbor_governor_enabled=False` で bit-exact pre-Q2 legacy に戻せる。
 
 ### 4.2 適用範囲
 
 - governor は `compute_acceleration`（recall wave + tick 共通経路）に入る = recall path 含む (ii)。
 - genesis / supernova は別関数。段階4 後に判断。
-- default OFF（`gravity_neighbor_governor_enabled=False` で bit-exact legacy）。
+- default ON（2026-05-31 昇格）。`gravity_neighbor_governor_enabled=False` で bit-exact legacy。
 
 ### 4.3 段階4 実測 — governor は **query 引力（TTT 勾配）を un-mask する**（2026-05-30、fresh 隔離コピー）
 

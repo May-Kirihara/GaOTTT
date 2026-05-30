@@ -110,8 +110,11 @@ def test_governor_caps_include_mass_bh():
     assert attr <= _ref(cfg, disp_i) + 1e-6
 
 
-def test_governor_default_is_off():
+def test_governor_default_is_on():
+    # Promoted to default-ON on 2026-05-31 (Phase Q2 rollout). Set the flag
+    # False for bit-exact pre-Q2 legacy; the OFF path is covered by the
+    # explicit-flag tests above.
     c = GaOTTTConfig(embedding_dim=8)
-    assert c.gravity_neighbor_governor_enabled is False
+    assert c.gravity_neighbor_governor_enabled is True
     assert c.gravity_neighbor_governor_alpha == 0.2
     assert c.gravity_neighbor_governor_disp_floor == 0.1

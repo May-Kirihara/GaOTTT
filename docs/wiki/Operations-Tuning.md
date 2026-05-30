@@ -65,6 +65,18 @@
 
 > **チューニング助言 (Phase Q bundle、2026-05-30 本番実測で改訂)**: 公転を本番で有効化する推奨束は `orbital_tangential_alpha=0.5–1.0` / `orbital_integrator="verlet"` / `orbital_friction=0.005`（0.05 → 1/10、e-fold ~100 分で数十周後に井戸へ螺旋落下 = 熱力学的終末）/ `mass_anchor_extra_strength=1.0`（質量依存周期 — 重い星ほど緩い anchor・長周期・広い軌道、**Kepler 第3法則ではなく** 周回 star 自身の質量がバネ定数を決める調和振動子）/ `max_displacement_norm=2.0`（上記必須）/ `orbital_tick_enabled=True` / **`orbital_tick_neighbor_gravity_enabled=False`（上記★★ より必須 — 純 self-anchor 公転）**。すべて default OFF（`α_t=0` で bit-for-bit rollback）なので、**measurement-first** で env opt-in（`GAOTTT_ORBITAL_TANGENTIAL_ALPHA=0.5` 等）→ 1–2 週観測 → `tests/perf/test_tier4_phase_q_orbital.py` で displacement 分布を見て確定、の運用 pattern を踏む。本番投入前に DB backup + 他 MCP/REST プロセス停止（write-behind 上書き罠）。本番 velocity field は飽和（median `|v|=0.05`）だが、純 self-anchor 公転下では gentle に settle する（bounded、clamp 不到達）ので強制 cool-down は不要。
 
+## 重力スケール — 近傍重力 governor（Phase Q2 — Gravitational Scale、2026-05-31）
+
+密な corpus では近傍重力ベクトルが RURI の狭 cosine 帯で **coherent に加算**（coherence ~0.8-1.0、net∝N）し、anchor 復元力の ~10⁴-10⁵倍・重い裾（ratio p90~10⁵）になる。単一の大域 `gravity_G` ではこの裾を飼えないので、per-node で attractive 近傍力（近傍重力 + mass-BH）を `g_i = min(1, α · k_eff(m_i) · max(‖d_i‖, d_floor) / ‖acc_neigh‖)` で cap する（密度適応オートゲイン、方向は保存、anchor / query 引力 / Λ は cap しない、source 分岐ゼロ）。詳細: [Plans — Phase Q2](Plans-Phase-Q2-Gravitational-Scale.md)。
+
+| パラメータ | 既定 | 説明 |
+|---|---|---|
+| **gravity_neighbor_governor_enabled** | **`True`** | 近傍重力 governor。**2026-05-31 に default ON へ昇格**（段階4 acceptance + 本番 live healthy を承けた owner 判断、規約「新 field は default OFF」からの意図的 promotion）。`False` で bit-exact pre-Q2 legacy |
+| gravity_neighbor_governor_alpha (α) | 0.2 | cap 目標 = α × anchor 力スケール。query 引力の effective 学習率を実質決める（governor が近傍重力を抑えると query 引力項が un-mask される） |
+| gravity_neighbor_governor_disp_floor | 0.1 | `‖d‖` の床。anchor 直近（d≈0）でも cap ref が 0 にならないようにする |
+
+> **チューニング助言**: `α` が肝。**上げる**と近傍重力の許容量が増え（cluster 結合が強まる）query 引力の effective 学習率は相対的に下がる、**下げる**と近傍重力をより強く抑え query 引力ドリフトが効く（段階4 実測: ranking は単一クエリで中立だが、recall を重ねた drift が α 依存で OFF 0.018 → ON 0.832）。`0.2` は保守的初期値。**measurement-first**: 1-2 週観測して「query 方向ドリフトが relevance を改善するか / しすぎないか」を見て調整、env `GAOTTT_GRAVITY_NEIGHBOR_GOVERNOR_ALPHA=0.3` 等で JSON 編集なしに動かせる。velocity 飽和が起きている既存 DB は M006 cooldown（[Operations — Migration](Operations-Migration.md) §Phase Q2）とセットで投入。pre-Q2 挙動が要るときだけ `GAOTTT_GRAVITY_NEIGHBOR_GOVERNOR_ENABLED=false`。
+
 ## Query 引力（Phase I — Stage 2 + Stage 3 + Stage 4）
 
 `compute_acceleration` の 2 番目と 4 番目の項。recall 時に retrieved nodes へ query 方向の小さな引力 (kick、4 項目) を加える一方、anchor (raw embedding) への復元力 (Hooke、2 項目) を低 mass で増幅する (Stage 4)。`F_kick = α · score · gate · (q - pos)`, `a_kick = F_kick / m_i` で **mass damping** が自動で効く (BH 化 node はほぼ動かない)。**Stage 3** では `gate = tanh(m_i / θ)` で新規 (低 mass) ノードが anchor に守られる — 単一アトラクタ pathology の防止策。**Stage 4** はその対称形 — Hooke の effective k を `k · (1 + β · (1 - tanh(m / θ)))` に拡張し、軽い星を anchor 側からも守る。**transient force** — Hooke が raw embedding を anchor として引き続き保持するので anchor migration ではない。詳細: [Plans — Phase I](Plans-Phase-I-Free-Star-Movement.md) §Stage 2-4。

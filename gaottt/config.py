@@ -396,9 +396,11 @@ class GaOTTTConfig:
     # which holds neighbour gravity at ≤ α × the anchor force scale, adapting to
     # each node's local density (dense → smaller g_i; sparse → g_i=1, untouched).
     # The direction is preserved; anchor / query-attraction / Λ are NOT capped.
-    # Source-blind (mass + geometry only). Default OFF = bit-exact legacy.
-    # See docs/wiki/Plans-Phase-Q2-Gravitational-Scale.md §4.
-    gravity_neighbor_governor_enabled: bool = False
+    # Source-blind (mass + geometry only). Set False for bit-exact pre-Q2 legacy.
+    # Default ON since 2026-05-31 — promoted from opt-in after the Phase Q2
+    # rollout (段階4 acceptance: per-query ranking-neutral; production live +
+    # healthy, velocity field bounded). See Plans-Phase-Q2-Gravitational-Scale.md §4.
+    gravity_neighbor_governor_enabled: bool = True
     gravity_neighbor_governor_alpha: float = 0.2    # target net ≈ α × anchor force
     gravity_neighbor_governor_disp_floor: float = 0.1  # |d| floor so d≈0 isn't fully suppressed
 
