@@ -162,8 +162,11 @@ class GaOTTTEngine:
             self._virtual_faiss_save_task = asyncio.create_task(
                 self._virtual_faiss_save_loop()
             )
+        # The dream loop hosts both the synthetic-recall replay (dream_enabled)
+        # and the Phase Q Stage 2 continuous orbital tick (orbital_tick_enabled).
+        # Start it if either feature is on; each is independently gated inside.
         if (
-            self.config.dream_enabled
+            (self.config.dream_enabled or self.config.orbital_tick_enabled)
             and self.config.dream_interval_seconds > 0
         ):
             self._dream_stop = asyncio.Event()
@@ -357,33 +360,141 @@ class GaOTTTEngine:
                 pass
 
             try:
-                candidates = self._pick_dream_candidates(
-                    limit=self.config.dream_batch_size,
-                )
-                for nid in candidates:
-                    if self._dream_stop.is_set():
-                        break
-                    doc = await self.store.get_document(nid)
-                    if not doc:
-                        continue
-                    await self._query_internal(
-                        text=doc["content"],
-                        top_k=self.config.dream_top_k,
-                        wave_depth=None,
-                        wave_k=None,
-                        _is_synthetic=True,
-                    )
-                    # Phase M follow-up (2026-05-13): yield to the event loop
-                    # between candidates so foreground MCP / REST recalls
-                    # aren't starved during a dream tick. ``_query_internal``
-                    # is dominated by numpy / FAISS work that doesn't release
-                    # the GIL, so without this explicit yield a batch of N
-                    # candidates runs as a single contiguous CPU burst and
-                    # makes interactive recalls time out.
+                # Phase Q Stage 2: advance free orbital motion for the lively
+                # set (no recall, no mass/temp update). Runs first so the
+                # cosmos keeps moving even when synthetic replay is disabled.
+                if self.config.orbital_tick_enabled:
+                    self._orbital_tick()
                     await asyncio.sleep(0)
+
+                # Hippocampal replay: synthetic recalls of quiet nodes.
+                if self.config.dream_enabled:
+                    candidates = self._pick_dream_candidates(
+                        limit=self.config.dream_batch_size,
+                    )
+                    for nid in candidates:
+                        if self._dream_stop.is_set():
+                            break
+                        doc = await self.store.get_document(nid)
+                        if not doc:
+                            continue
+                        await self._query_internal(
+                            text=doc["content"],
+                            top_k=self.config.dream_top_k,
+                            wave_depth=None,
+                            wave_k=None,
+                            _is_synthetic=True,
+                        )
+                        # Phase M follow-up (2026-05-13): yield to the event
+                        # loop between candidates so foreground MCP / REST
+                        # recalls aren't starved during a dream tick.
+                        # ``_query_internal`` is dominated by numpy / FAISS work
+                        # that doesn't release the GIL, so without this explicit
+                        # yield a batch of N candidates runs as a single
+                        # contiguous CPU burst and makes interactive recalls
+                        # time out.
+                        await asyncio.sleep(0)
             except Exception:  # noqa: BLE001
                 # A bad tick should not kill the loop. Log and try again.
                 logger.exception("Dream tick failed; will retry next cycle")
+
+    def _orbital_tick(self) -> None:
+        """Phase Q Stage 2 — one continuous orbital integration step.
+
+        Advances the orbital state (displacement + velocity) of the *lively*
+        nodes — those whose cached velocity exceeds
+        ``orbital_lively_v_min`` — by reusing ``update_orbital_state`` with the
+        lively set as the active body. The dominant force is each node's own
+        Hooke anchor (``F = -k·d`` toward its raw embedding), which by
+        Bertrand's theorem is a closed-orbit central force; mutual gravity
+        among the lively set perturbs the ellipses into rosettes. The node
+        orbits its *own* anchor → zero anchor migration.
+
+        Unlike a recall, this touches **only** displacement and velocity:
+        mass, temperature, last_access, and co-occurrence are left untouched
+        (recall = energy injection; tick = free evolution). Age-based friction
+        is suppressed for the tick — it keys on ``last_access``, which is stale
+        for an orbiting-but-unrecalled node and would otherwise damp the orbit
+        to zero within a few ticks; only the small constant friction applies,
+        giving the slow thermodynamic decay back into the well.
+
+        Cost is O(L²) over the lively set L (mutual gravity in
+        ``update_orbital_state``). ``L`` is self-limiting because constant
+        friction returns kicked nodes to "cold" ~100 ticks after their last
+        recall; ``orbital_tick_max_nodes`` is a hard backstop and logs when it
+        truncates so a coverage cap is never silent.
+        """
+        if not self.config.orbital_tick_enabled:
+            return
+
+        v_min = self.config.orbital_lively_v_min
+        lively: list[tuple[str, float]] = []
+        for state in self.cache.get_all_nodes():
+            if state.is_archived:
+                continue
+            vel = self.cache.get_velocity(state.id)
+            if vel is None:
+                continue
+            speed = float(np.linalg.norm(vel))
+            if speed > v_min:
+                lively.append((state.id, speed))
+
+        if len(lively) < 2:
+            # update_orbital_state needs >= 2 bodies; a lone lively node has
+            # no mutual gravity to integrate against here (its anchor-only
+            # motion is picked up on the next recall path). Skip cleanly.
+            return
+
+        cap = self.config.orbital_tick_max_nodes
+        if len(lively) > cap:
+            # Process the fastest movers first; defer the rest to later ticks.
+            lively.sort(key=lambda t: t[1], reverse=True)
+            logger.info(
+                "orbital_tick: %d lively nodes > cap %d — integrating top %d "
+                "by speed, deferring %d to the next tick",
+                len(lively), cap, cap, len(lively) - cap,
+            )
+            lively = lively[:cap]
+
+        ids = [nid for nid, _ in lively]
+        original_embs = self.faiss_index.get_vectors(ids)
+        active = [nid for nid in ids if nid in original_embs]
+        if len(active) < 2:
+            return
+
+        dim = self.config.embedding_dim
+        displacements: dict[str, np.ndarray] = {}
+        velocities: dict[str, np.ndarray] = {}
+        masses: dict[str, float] = {}
+        last_accesses: dict[str, float] = {}
+        now = time.time()
+        for nid in active:
+            d = self.cache.get_displacement(nid)
+            displacements[nid] = d if d is not None else np.zeros(dim, dtype=np.float32)
+            v = self.cache.get_velocity(nid)
+            velocities[nid] = v if v is not None else np.zeros(dim, dtype=np.float32)
+            st = self.cache.get_node(nid)
+            masses[nid] = st.mass if st is not None else 1.0
+            last_accesses[nid] = st.last_access if st is not None else now
+
+        # Suppress age friction for the free-evolution tick (constant friction
+        # only — see docstring). dataclasses.replace keeps every other knob,
+        # including orbital_integrator (Verlet) and the mass-dependent anchor β.
+        from dataclasses import replace
+        tick_config = replace(self.config, orbital_friction_age_factor=0.0)
+
+        new_disps, new_vels = update_orbital_state(
+            active, original_embs,
+            displacements, velocities,
+            masses, last_accesses, now, tick_config,
+            cache=self.cache,
+            query_anchor=None,   # no query-attraction kick during free evolution
+            query_scores=None,
+        )
+
+        for nid in new_disps:
+            self.cache.set_displacement(nid, new_disps[nid])
+            self.cache.set_velocity(nid, new_vels[nid])
 
     # --- US1: Document Indexing ---
 

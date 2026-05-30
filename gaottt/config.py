@@ -410,6 +410,24 @@ class GaOTTTConfig:
     # euler keeps production untouched.
     orbital_integrator: str = "euler"
 
+    # ---- Phase Q Stage 2: continuous orbital tick ---------------------------
+    # When enabled, the dream loop runs a lightweight ``_orbital_tick`` each
+    # cycle that advances the orbital state (displacement + velocity) of the
+    # *lively* nodes — those with ``|v| > orbital_lively_v_min`` — WITHOUT a
+    # recall (no FAISS query, no mass/temperature/last_access/co-occurrence
+    # update). This is what makes the cosmos move on its own clock instead of
+    # only when a node is recalled: recall = energy injection, tick = free
+    # orbital integration. The lively set is self-limiting — constant friction
+    # (orbital_friction) bleeds energy so a node drops below v_min ~100 ticks
+    # after its last kick — which is exactly what bounds the per-tick cost.
+    # Age-based friction is suppressed inside the tick (it keys on last_access,
+    # which is stale for an orbiting-but-not-recalled node and would otherwise
+    # kill the orbit in a few ticks); only constant friction applies. Default
+    # OFF. See docs/wiki/Plans-Phase-Q-Orbital-Mechanics.md §3.3.
+    orbital_tick_enabled: bool = False
+    orbital_lively_v_min: float = 0.001     # |v| below this → node is "cold", skipped
+    orbital_tick_max_nodes: int = 256       # per-tick cap (cost bound); excess deferred + logged
+
     # Habituation & thermal escape
     saturation_rate: float = 0.2            # How fast nodes saturate (higher = faster)
     habituation_recovery_rate: float = 0.01 # Recovery from saturation per step
