@@ -84,15 +84,24 @@ d(θ) = cos(θ)·d₀ + sin(θ)·(v₀/ω),   ω = √(orbital_anchor_strength)
 
 ## 6. 残り（別セッション・環境安定時のみ）
 
-core 実装 / 安全ガード / docs / viz は **全完了 + push**。残るのは 2 つだけ:
+core 実装 / 安全ガード / docs / viz **+ real-RURI Tier4 perf** は **全完了**。残るのは 1 つだけ:
 
 1. **本番 measurement-first tuning + env opt-in rollout** — 推奨 bundle:
    - `orbital_tangential_alpha=0.5` / `orbital_integrator="verlet"` / `orbital_friction=0.005`（0.05→1/10、e-fold ~100 分で数十周後に螺旋落下）/ `mass_anchor_extra_strength=1.0`（質量依存周期、**Kepler 第3法則ではなく** 周回 star 自身の質量がバネ定数を決める調和振動子）/ `max_displacement_norm=2.0`（**§4 より必須**）/ `orbital_tick_enabled=True`
-   - 手順: env opt-in（`GAOTTT_ORBITAL_TANGENTIAL_ALPHA=0.5` 等）→ 1–2 週観測 → `tests/perf/test_tier4_*.py` で displacement 分布を見て確定
+   - 手順: env opt-in（`GAOTTT_ORBITAL_TANGENTIAL_ALPHA=0.5` 等）→ 1–2 週観測 → `tests/perf/test_tier4_phase_q_orbital.py` + displacement 分布を見て確定
    - **投入前に DB backup + 他 MCP/REST プロセス停止**（write-behind 上書き罠 [[feedback_backend_kill_on_code_deploy]]）= 週単位の運用作業
-2. **real-RURI Tier4 perf 版**（`_helpers.get_shared_embedder()` fixture 要、安定環境必須）— 今日は環境 flakiness で deferred
 
 その後 **PR 作成** → main へ。
+
+### 追記（Tier4 perf 完了 — 後続セッション）
+
+`tests/perf/test_tier4_phase_q_orbital.py` を追加。real RURI（`_helpers.get_shared_embedder()`）+ golden corpus で連続 tick を駆動し 3 invariant を assert:
+
+1. **boundedness/stability** — full stack（接線 seed + Verlet + friction 0.005 + β=1.0 + 実 neighbor gravity、mass=5.0）の連続 tick 300 step が `max_displacement_norm=2.0` と `orbital_max_velocity=0.05` を守り、NaN/inf なし、実際に seed から動く。relax 版 `test_displacement_stays_in_physical_bounds` の orbit-mode 対応物。
+2. **closed ellipse** — `gravity_G=0` で実 anchor まわりの調和限界を分離、接線 seed の node が原点を貫かず（`r_min>0.15`）有界（`r_max<0.6`）な楕円を描く。tick path（lively filter→`faiss_index.get_vectors`→Verlet→cache write）の end-to-end。
+3. **self-limiting lively set** — §2.1 のコスト安全弁。`gravity_G=0` で減衰調和振動子に分離、friction 0.005 で seed speed 0.01 の orbit が ~955 tick で v_min を割る（実測）→ 1500 tick で lively set が空に、energy も `<0.1×` に散逸。連続 tick の `O(L²)` コストが自己有界である根拠。
+
+検証: 単体 3/3 green、perf suite 全体 71 passed（~56s、real RURI）、ruff clean。**摩擦 0.005 では seed 0.03 の cold 到達は ~1376 tick** と probe で実測（engine docstring の「~100 tick で cold」は genesis kick 級の小さな seed 前提）。
 
 ---
 

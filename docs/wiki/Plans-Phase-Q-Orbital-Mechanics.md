@@ -1,6 +1,6 @@
 # Plans — Phase Q: Orbital Mechanics (Rosette Orbits Around Own Anchor)
 
-> **Status (2026-05-30)**: **Stage 1–4c 完了・push 済み（ブランチ `feat/phase-q-orbital-mechanics`、HEAD `c3265ab`、全 default OFF）**。残るは本番 rollout（運用）と real-RURI Tier4 perf のみ。Phase I で「星が動く」を、Phase P で「重力に対抗する圧力」を入れた上に、**ノードが自分の anchor を中心に閉軌道（楕円/ロゼット）を描く**保存系レジームを足す。狙いは "宇宙の再現度" — 緩和（relax）して平衡に落ちるだけの場を、**公転し・歳差し・やがて熱力学的に井戸へ螺旋落下する**力学系に拡張する。**anchor migration はゼロ**（自分のホームを回る、他者の衛星にはしない）。引き継ぎ: [handover-2026-05-30](../maintainers/handover-2026-05-30-phase-q-orbital-mechanics.md)。
+> **Status (2026-05-30)**: **Stage 1–4 完了（core + 安全ガード + docs + viz + real-RURI Tier4 perf、ブランチ `feat/phase-q-orbital-mechanics`、全 default OFF）**。残るは本番 rollout（運用）と PR のみ。Phase I で「星が動く」を、Phase P で「重力に対抗する圧力」を入れた上に、**ノードが自分の anchor を中心に閉軌道（楕円/ロゼット）を描く**保存系レジームを足す。狙いは "宇宙の再現度" — 緩和（relax）して平衡に落ちるだけの場を、**公転し・歳差し・やがて熱力学的に井戸へ螺旋落下する**力学系に拡張する。**anchor migration はゼロ**（自分のホームを回る、他者の衛星にはしない）。引き継ぎ: [handover-2026-05-30](../maintainers/handover-2026-05-30-phase-q-orbital-mechanics.md)。
 >
 > | Stage | commit | 内容 |
 > |---|---|---|
@@ -11,10 +11,11 @@
 > | 4a | `7b50169` | config 安全ガード（`__post_init__`: orbit mode + 大 max_displacement_norm 警告） |
 > | 4b | `9a386ce` | docs — Operations-Tuning「公転・閉軌道」節 + Architecture-Overview 設計判断表 |
 > | 4c | `28c1414` / `c3265ab` | viz `--orbital-trails`（`orbital_ellipse` + `compute_orbital_trails`）+ Guides-Visualization 節 |
+> | 4d | (本セッション) | real-RURI Tier4 perf `tests/perf/test_tier4_phase_q_orbital.py` 3 件 — 連続 tick の (a) 実 geometry 下 clamp 有界・有限性、(b) 実 anchor まわり閉楕円、(c) friction による lively set 自己制限（§2.1 コスト安全弁）。perf suite 全体 green |
 >
 > **★ Stage 3 の発見（[§4 Stage 3](#stage-3--stability-test-の再定義) 参照）**: orbit mode では displacement が runaway しうる。純粋な自 anchor 公転（近傍弱）は energy だけで bound されるが、**強い近傍重力の 1/r² 近接特異点は velocity clamp では止まらない正味の外向きドリフトを生む（500 step で |d|≈26）**。→ orbit regime の runaway backstop は **`max_displacement_norm` clamp そのもの**。Phase I が `max_displacement_norm=1e6`（実質∞）にしたのは relax regime 限定の判断で、orbit mode では**有限値（例 2.0）の設定が必須**。`__post_init__` に `orbital_tick_enabled` + 大 `max_displacement_norm` の警告ガードを追加済み。
 >
-> **残り（運用）**: friction 0.005 / β=1.0 bundle の本番 measurement-first tuning + env opt-in rollout（DB backup + 他プロセス停止、1–2 週観測）、real-RURI Tier 4 perf 版、PR 作成。core / 安全ガード / docs / viz は完了。
+> **残り（運用）**: friction 0.005 / β=1.0 bundle の本番 measurement-first tuning + env opt-in rollout（DB backup + 他プロセス停止、1–2 週観測）、PR 作成。core / 安全ガード / docs / viz / real-RURI Tier 4 perf は完了。
 
 ---
 
@@ -149,7 +150,9 @@ dream loop に**軽量な軌道積分 pass を新設**（既存 synthetic recall
 
 ### Stage 3 — stability test の再定義
 
-- `tests/perf/test_tier4_*.py`: 「displacement 単調有界（緩和）」を **energy + 角運動量保存 bound** に言い直す：`E = ½|v|² + ½k|d|²`、`L = d×v` が friction≥0 で単調減少 → `|d|` は turning point で抑えられる、を assert。
+- 「displacement 単調有界（緩和）」を **boundedness（公転は振動するので単調収束ではない）** に言い直す：full force stack 下で displacement は `max_displacement_norm` を超えず velocity も clamp を守る。`E = ½|v|² + ½k|d|²` は friction>0 で trend として散逸（Verlet の `O((ω·dt)²)` 測定振動を許容）。
+- synthetic unit: `tests/unit/test_phase_q_orbital.py`（`test_orbit_regime_*` 2 件）。
+- **real-RURI Tier 4**（Stage 4d、`tests/perf/test_tier4_phase_q_orbital.py` 3 件）: (a) 実 RURI golden corpus の連続 tick が full stack 下で clamp 有界・有限・実際に動く、(b) 実 anchor まわりで閉楕円（`r_min>0` / `r_max` 有界、原点を貫く直線にならない）、(c) friction が lively set を空に収束させる（§2.1 連続 tick のコスト安全弁を実機で確認）。`_helpers.get_shared_embedder()` の real RURI を使用。
 
 ### Stage 4 — config / rollback / docs
 
