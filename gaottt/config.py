@@ -427,6 +427,23 @@ class GaOTTTConfig:
     orbital_tick_enabled: bool = False
     orbital_lively_v_min: float = 0.001     # |v| below this → node is "cold", skipped
     orbital_tick_max_nodes: int = 256       # per-tick cap (cost bound); excess deferred + logged
+    # Whether the continuous tick applies *mutual neighbor gravity* among the
+    # lively set. Default OFF → the tick runs a pure self-anchor Hooke orbit
+    # (each node orbits its own embedding x₀; β still applies). Rollout finding
+    # (2026-05-30, isolated copy of the 41K production field): the implemented
+    # tick passes the lively set itself as the N-body neighbours (NOT each
+    # node's true FAISS neighbours, cf. plan §3.3). In RURI's narrow high-cosine
+    # space those neighbour-gravity vectors point alike and sum *coherently* —
+    # measured net |a| ≈ 10 (p50) … 640 (max) at gravity_G=0.01 vs the anchor's
+    # ~0.005 — so neighbour gravity ceases to be the "mild precession
+    # perturbation" the plan assumed and instead dominates ~1000×, slamming
+    # displacement onto the max_displacement_norm clamp and killing the friction
+    # self-limiting. Pure self-anchor (this flag OFF) was measured bounded and
+    # self-limiting (displacement relaxes, lively set drains). Set True only
+    # with a tamed neighbour scheme (true per-node FAISS neighbours or a much
+    # smaller tick gravity); rosette precession is deferred future work. See
+    # docs/wiki/Plans-Phase-Q-Orbital-Mechanics.md §4 (rollout findings).
+    orbital_tick_neighbor_gravity_enabled: bool = False
 
     # Habituation & thermal escape
     saturation_rate: float = 0.2            # How fast nodes saturate (higher = faster)

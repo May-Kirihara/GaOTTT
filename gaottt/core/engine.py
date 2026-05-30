@@ -480,8 +480,25 @@ class GaOTTTEngine:
         # Suppress age friction for the free-evolution tick (constant friction
         # only — see docstring). dataclasses.replace keeps every other knob,
         # including orbital_integrator (Verlet) and the mass-dependent anchor β.
+        #
+        # Phase Q rollout finding (2026-05-30): the lively set handed to
+        # update_orbital_state is a scattered set of the fastest movers, not a
+        # true local neighbourhood. Treating it as mutual N-body neighbours
+        # makes neighbour gravity sum *coherently* in RURI's narrow high-cosine
+        # space (measured net |a|~10–640 vs the anchor's ~0.005), dominating the
+        # Hooke restoring force and slamming displacement onto the
+        # max_displacement_norm clamp instead of perturbing the orbit. So by
+        # default the tick zeroes gravity_G (→ neighbour gravity AND the
+        # G-scaled mass-BH term vanish), leaving a pure self-anchor Hooke orbit:
+        # each node orbits its own embedding x₀ — exactly Phase Q's
+        # zero-anchor-migration core, measured bounded + self-limiting.
+        # orbital_tick_neighbor_gravity_enabled=True restores the coupled
+        # behaviour for experimentation. The recall path is unaffected.
         from dataclasses import replace
-        tick_config = replace(self.config, orbital_friction_age_factor=0.0)
+        tick_overrides = {"orbital_friction_age_factor": 0.0}
+        if not self.config.orbital_tick_neighbor_gravity_enabled:
+            tick_overrides["gravity_G"] = 0.0
+        tick_config = replace(self.config, **tick_overrides)
 
         new_disps, new_vels = update_orbital_state(
             active, original_embs,

@@ -1,6 +1,8 @@
 # Plans — Phase Q: Orbital Mechanics (Rosette Orbits Around Own Anchor)
 
-> **Status (2026-05-30)**: **Stage 1–4 完了（core + 安全ガード + docs + viz + real-RURI Tier4 perf、ブランチ `feat/phase-q-orbital-mechanics`、全 default OFF）**。残るは本番 rollout（運用）と PR のみ。Phase I で「星が動く」を、Phase P で「重力に対抗する圧力」を入れた上に、**ノードが自分の anchor を中心に閉軌道（楕円/ロゼット）を描く**保存系レジームを足す。狙いは "宇宙の再現度" — 緩和（relax）して平衡に落ちるだけの場を、**公転し・歳差し・やがて熱力学的に井戸へ螺旋落下する**力学系に拡張する。**anchor migration はゼロ**（自分のホームを回る、他者の衛星にはしない）。引き継ぎ: [handover-2026-05-30](../maintainers/handover-2026-05-30-phase-q-orbital-mechanics.md)。
+> **Status (2026-05-30)**: **Stage 1–5 完了（core + 安全ガード + docs + viz + real-RURI Tier4 perf + 本番隔離コピー実測 + rework、ブランチ `feat/phase-q-orbital-mechanics`、全 default OFF）**。残りは PR のみ。Phase I で「星が動く」を、Phase P で「重力に対抗する圧力」を入れた上に、**ノードが自分の anchor を中心に閉軌道（楕円/ロゼット）を描く**保存系レジームを足す。狙いは "宇宙の再現度" — 緩和（relax）して平衡に落ちるだけの場を、**公転し・やがて熱力学的に井戸へ螺旋落下する**力学系に拡張する。**anchor migration はゼロ**（自分のホームを回る、他者の衛星にはしない）。引き継ぎ: [handover-2026-05-30](../maintainers/handover-2026-05-30-phase-q-orbital-mechanics.md)。
+>
+> **★★ 本番実測の核心発見（[§8 Rollout findings](#8-rollout-findings-2026-05-30-本番隔離コピー実測) 必読）**: 本番 41K field の隔離コピー実測で **推奨 bundle のまま投入は NG** と判明。理由は (1) 本番 velocity field が飽和（median |v|=0.05=clamp、98.8% lively）、(2) `_orbital_tick` が散在 lively set を相互近傍として扱い（plan §3.3 の per-node FAISS 近傍探索と乖離）、RURI の狭 cosine 帯では近傍重力が **coherent に加算** して anchor を ~1000倍 上回り displacement を clamp に張り付け self-limiting を殺す。**Hooke 自己公転（G=0）そのものは bounded + self-limiting で完全健全**。→ rework: tick の近傍重力を **default OFF**（`orbital_tick_neighbor_gravity_enabled`、tick で `gravity_G=0` → 純 self-anchor 楕円公転）。**rosette（要・摂動の tamed 再設計）は future work**。
 >
 > | Stage | commit | 内容 |
 > |---|---|---|
@@ -11,7 +13,8 @@
 > | 4a | `7b50169` | config 安全ガード（`__post_init__`: orbit mode + 大 max_displacement_norm 警告） |
 > | 4b | `9a386ce` | docs — Operations-Tuning「公転・閉軌道」節 + Architecture-Overview 設計判断表 |
 > | 4c | `28c1414` / `c3265ab` | viz `--orbital-trails`（`orbital_ellipse` + `compute_orbital_trails`）+ Guides-Visualization 節 |
-> | 4d | (本セッション) | real-RURI Tier4 perf `tests/perf/test_tier4_phase_q_orbital.py` 3 件 — 連続 tick の (a) 実 geometry 下 clamp 有界・有限性、(b) 実 anchor まわり閉楕円、(c) friction による lively set 自己制限（§2.1 コスト安全弁）。perf suite 全体 green |
+> | 4d | (本セッション) | real-RURI Tier4 perf `tests/perf/test_tier4_phase_q_orbital.py` 3 件 — 連続 tick の (a) 近傍重力有効時の clamp 有界・有限性、(b) 実 anchor まわり閉楕円（=default tick）、(c) friction による lively set 自己制限（§2.1 コスト安全弁）。perf suite 全体 green |
+> | 5 | (本セッション) | **本番 41K 隔離コピー実測**（`measure_orbital{1..4}.py`、本番 backend 無傷）→ [§8 findings](#8-rollout-findings-2026-05-30-本番隔離コピー実測)。**rework**: config `orbital_tick_neighbor_gravity_enabled`（default False）+ `engine._orbital_tick` が flag OFF 時 `gravity_G=0` で純 self-anchor 公転。unit+integration 693 passed / Tier4 3 passed / ruff clean（pre-existing 3 のみ） |
 >
 > **★ Stage 3 の発見（[§4 Stage 3](#stage-3--stability-test-の再定義) 参照）**: orbit mode では displacement が runaway しうる。純粋な自 anchor 公転（近傍弱）は energy だけで bound されるが、**強い近傍重力の 1/r² 近接特異点は velocity clamp では止まらない正味の外向きドリフトを生む（500 step で |d|≈26）**。→ orbit regime の runaway backstop は **`max_displacement_norm` clamp そのもの**。Phase I が `max_displacement_norm=1e6`（実質∞）にしたのは relax regime 限定の判断で、orbit mode では**有限値（例 2.0）の設定が必須**。`__post_init__` に `orbital_tick_enabled` + 大 `max_displacement_norm` の警告ガードを追加済み。
 >
@@ -174,6 +177,9 @@ orbital_tick_enabled: bool = False        # dream loop の連続積分 pass
 orbital_tick_dt: float = 1.0              # ω·dt<<2 で安定
 orbital_lively_v_min: float = ...         # M の足切り（cold cosmos 除外）
 orbital_tick_max_nodes: int = ...         # バースト時上限、超過は log
+orbital_tick_neighbor_gravity_enabled: bool = False  # ★ §8 rollout finding。
+#   False（default）= tick は純 self-anchor 公転（tick 内で gravity_G=0）。
+#   True = lively set を相互近傍とする結合（本番 field では coherent 暴走、実験用）。
 ```
 
 ---
@@ -197,3 +203,38 @@ orbital_tick_max_nodes: int = ...         # バースト時上限、超過は lo
 - [Reflections — Five-Layer Philosophy](Reflections-Five-Layer-Philosophy.md)
 - [Plans — Roadmap](Plans-Roadmap.md)
 - [Operations — Performance Testing](Operations-Performance-Testing.md)
+
+---
+
+## 8. Rollout findings (2026-05-30 本番隔離コピー実測)
+
+推奨 bundle を本番に投入する前の measurement-first ステップとして、本番 41K field を `sqlite3.backup`（read-only、consistent snapshot）+ faiss コピーで隔離（`~/.local/share/gaottt-orbital-test/`、`measure_orbital{1..4}.py`）し、連続 tick を実駆動した。**本番 backend は read-only でしか触れていない。**
+
+### 測定（隔離コピー、real RURI）
+
+| 観点 | 結果 | 判定 |
+|---|---|---|
+| cost / duty | `orbital_tick_max_nodes=256` cap が per-tick を **94–252ms / duty <1% @30s** に bound（lively がいくつでも一定） | ✅ |
+| boundedness | 既存 displacement は max **0.62**（p99 0.52）、`max_displacement_norm=2.0` 超過 **0件**。clamp は実 geometry でも load-bearing | ✅（clamp 必須） |
+| self-limiting (§2.1) | 推奨 bundle（近傍重力 ON）では lively が **drain しない**（150→150） | ❌ |
+| ellipse / 自己組織化 | 推奨 bundle では displacement が **clamp 2.0 に張り付き** ロゼットにならない | ❌ |
+
+### 想定外の核心2点
+
+1. **velocity field が飽和** — median `|v|=0.05`（= velocity clamp）、**98.8% のノードが既に lively**。relax の velocity は SQLite に永続化されるが recall top-K に入らないノードは damp されず残る。→「relax で大半 cold」前提は誤り。tick ON で即 ~40K 活性化。
+2. **mutual neighbor gravity の coherent 暴走** — `_orbital_tick` は散在 lively set を相互近傍として `update_orbital_state` に渡す（plan §3.3 の per-node FAISS 近傍探索と乖離）。決定的切り分け（clean displacement max=0.62 から）:
+
+   | | net 近傍加速度 @t=0 | displacement | lively |
+   |---|---|---|---|
+   | **G=0（純 Hooke 自己公転）** | p50 **0.005** | 0.62→0.24、clamp 到達 0 | 150→**105 drain** ✅ |
+   | **G=0.01（推奨 bundle）** | p50 **9.97 / max 640** | tick1 で **2.0 張り付き** | 150→**150** ❌ |
+
+   単一ペア最大加速度は **0.7**（最近傍 cosine 0.85、r²最小 0.15 = **1/r² 特異点ではない**）。net が ~10〜640 になるのは、RURI の狭 cosine 帯で 144 近傍の重力方向が揃い **coherent に加算** するため。anchor 復元力（~0.005）を ~1000倍 上回り、近傍重力は「mild な歳差摂動」どころか支配項になる。
+
+### 結論と rework
+
+- **Phase Q の哲学的核心＝Hooke 自己公転（G=0）は完全健全** — bounded・gentle・friction self-limiting も機能（150→105）。「公転中心=自分の anchor」は実 field でも正しい。
+- **推奨 bundle のまま本番投入は NG**。rework: **tick の近傍重力を default OFF**（`orbital_tick_neighbor_gravity_enabled=False`、`_orbital_tick` が flag OFF 時 `gravity_G=0`（→ 近傍重力 + G-scaled mass-BH 項が消える）で純 self-anchor 楕円公転）。recall path は不変。
+- **rosette precession は future work → [Phase Q2 — Gravitational Scale Matching](Plans-Phase-Q2-Gravitational-Scale.md)** — 「摂動」になる tamed な近傍重力（plan §3.3 通りの per-node 真 FAISS 近傍、or 密度適応 `G_eff`）が必要で、それ自体に measurement cycle を要する。実測で「`gravity_G` がこの密な宇宙に ~10⁴ 倍 過大」と判明したので、Phase Q2 で **重力の重みを宇宙スケールに合わせる**（+ 過去の飽和 velocity の cooldown）。純 self-anchor 楕円も「自分の articulated self を回る」という核心の完全な実現。
+- **推奨 bundle（改訂）**: `orbital_tangential_alpha=0.5` / `orbital_integrator="verlet"` / `orbital_friction=0.005` / `mass_anchor_extra_strength=1.0` / `max_displacement_norm=2.0` / `orbital_tick_enabled=True` / **`orbital_tick_neighbor_gravity_enabled=False`（純 self-anchor）**。飽和 velocity field はこの純 self-anchor 公転下では gentle に settle する（bounded、clamp 不到達）ので強制 cool-down は不要。
+- measurement-first が本番 mutate 前に blocker を捕捉した好例。

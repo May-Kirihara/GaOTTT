@@ -113,22 +113,29 @@ def _lively_count(eng, ids, v_min: float) -> int:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_orbit_tick_stays_bounded_under_real_neighbor_gravity(tmp_path):
-    """The full orbit stack, driven by the continuous tick over the real
-    RURI-embedded corpus for many steps, stays inside its physical clamps and
-    never diverges.
+async def test_orbit_tick_clamp_bounds_enabled_neighbor_gravity(tmp_path):
+    """With tick neighbor gravity EXPLICITLY enabled, the continuous tick over
+    the real RURI-embedded corpus stays inside its physical clamps and never
+    diverges — the ``max_displacement_norm`` clamp is the runaway backstop.
 
-    This is the orbit-mode counterpart of the relax-mode
-    ``test_displacement_stays_in_physical_bounds``: the runaway backstop is the
-    finite ``max_displacement_norm`` clamp (Stage 3 finding — 1/r² close
-    encounters under real neighbor gravity produce net drift the velocity clamp
-    alone does not stop). We assert the clamp + the velocity clamp hold under
-    adversarial real-geometry N-body dynamics, that no state goes non-finite,
-    and that the tick did genuine work (the lively set actually moved)."""
+    Rollout finding (2026-05-30, isolated copy of the 41K production field):
+    ``_orbital_tick`` hands the *lively set itself* to update_orbital_state as
+    the N-body neighbours. In RURI's narrow high-cosine space those neighbour-
+    gravity vectors point alike and sum *coherently* (measured net |a|~10–640 vs
+    the anchor's ~0.005), so neighbour gravity dominates and drives displacement
+    hard onto the clamp rather than gently perturbing the orbit. Because that
+    regime is unsafe for production, neighbour gravity in the tick is OFF by
+    default (pure self-anchor — see the ellipse / self-limiting tests below).
+    This test pins the *enabled* path: even under the coherent-sum blow-up the
+    finite clamp holds (no NaN/inf, displacement <= max_displacement_norm,
+    velocity <= orbital_max_velocity, and the set genuinely moves). It is the
+    orbit-mode counterpart of the relax-mode
+    ``test_displacement_stays_in_physical_bounds``."""
     eng = make_engine(
         tmp_path,
         genesis_kick_enabled=False,       # control the seed explicitly
         orbital_tick_enabled=True,
+        orbital_tick_neighbor_gravity_enabled=True,  # exercise the coupled path
         orbital_integrator="verlet",
         orbital_tangential_alpha=0.8,     # angular momentum (knob is documented)
         orbital_friction=0.005,           # recommended orbit-bundle friction
@@ -201,10 +208,14 @@ async def test_orbit_tick_traces_closed_ellipse_on_real_anchors(tmp_path):
 
     Neighbor gravity is isolated (``gravity_G=0``) so the only central force is
     the node's own Hooke anchor — the Bertrand harmonic limit — making the
-    expected ellipse analytic (same isolation as the unit suite). The value here
-    is the *end-to-end tick path* on real anchors: ``_orbital_tick`` must read
-    the right anchor per node from FAISS, integrate it with velocity-Verlet, and
-    write it back, yielding a genuine orbit (not drift, not collapse)."""
+    expected ellipse analytic (same isolation as the unit suite). This is also
+    the **production-default tick regime** post-rollout-fix: with
+    ``orbital_tick_neighbor_gravity_enabled=False`` (default) the tick zeroes
+    gravity_G internally, so a default tick on any field is exactly this pure
+    self-anchor orbit. The value here is the *end-to-end tick path* on real
+    anchors: ``_orbital_tick`` must read the right anchor per node from FAISS,
+    integrate it with velocity-Verlet, and write it back, yielding a genuine
+    orbit (not drift, not collapse)."""
     omega = math.sqrt(0.02)
     r = 0.4
     vt = 0.3 * omega          # semi-minor ≈ vt/ω = 0.3, semi-major = r = 0.4
