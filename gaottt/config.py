@@ -383,6 +383,33 @@ class GaOTTTConfig:
     orbital_max_velocity: float = 0.05      # Max L2 norm of velocity vector
     orbital_anchor_strength: float = 0.02   # Restoring force toward original position (Hooke's law)
 
+    # ---- Phase Q: Orbital Mechanics (rosette orbits around own anchor) -------
+    # The Hooke anchor (orbital_anchor_strength) is F = -k·d toward a node's
+    # own original embedding x₀. By Bertrand's theorem this isotropic-harmonic
+    # central force already produces CLOSED orbits — what was missing is
+    # angular momentum. Phase Q seeds a *tangential* velocity component at
+    # genesis / supernova so a node, instead of falling straight in and
+    # oscillating on a line through x₀, traces a closed ellipse AROUND x₀
+    # (a rosette once neighbor gravity perturbs it). The orbit centre stays
+    # the node's own anchor → zero anchor migration (Phase M single rule).
+    # See docs/wiki/Plans-Phase-Q-Orbital-Mechanics.md.
+    #
+    # ``orbital_tangential_alpha`` = magnitude of the seeded tangential
+    # velocity as a fraction of the radial (gravity-induced) kick. The seed
+    # makes displacement (∥ gravity) and velocity (gravity + tangential)
+    # non-collinear, so angular momentum L = d × v ≠ 0 and an ellipse forms.
+    # ``0.0`` = legacy radial-only kick (bit-exact rollback, L=0 line
+    # oscillation). ``~1.0`` ≈ near-circular; smaller → more eccentric.
+    orbital_tangential_alpha: float = 0.0
+    # Integration scheme for ``update_orbital_state``. ``"euler"`` = the
+    # legacy semi-implicit (symplectic) Euler (``v+=a; x+=v``), bit-exact to
+    # pre-Phase-Q. ``"verlet"`` = velocity-Verlet (two force passes per step,
+    # O(dt²) and time-reversible) which removes the O(ω·dt) artificial
+    # precession Euler adds, leaving only the physical (neighbor-perturbation)
+    # precession of the rosette. Verlet doubles per-step force cost; default
+    # euler keeps production untouched.
+    orbital_integrator: str = "euler"
+
     # Habituation & thermal escape
     saturation_rate: float = 0.2            # How fast nodes saturate (higher = faster)
     habituation_recovery_rate: float = 0.01 # Recovery from saturation per step
