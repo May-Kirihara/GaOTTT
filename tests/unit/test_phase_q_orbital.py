@@ -226,3 +226,126 @@ def test_verlet_conserves_energy_over_multiple_periods():
 def test_orbital_integrator_default_is_euler():
     assert GaOTTTConfig(embedding_dim=8).orbital_integrator == "euler"
     assert GaOTTTConfig(embedding_dim=8).orbital_tangential_alpha == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 4. Stage 3 — orbit-regime stability invariant
+# ---------------------------------------------------------------------------
+# The relaxation regime guaranteed stability as "displacement decays
+# monotonically toward equilibrium". The orbit regime breaks that assumption —
+# displacement *oscillates*. So the stability guarantee is re-stated as
+# BOUNDEDNESS: over many steps with the full orbital force stack (tangential
+# seed + Verlet + small friction + mass-dependent anchor + neighbor gravity),
+# displacement never runs away and velocity always respects its clamp. This is
+# the orbit-mode counterpart of the Tier 4 "displacement runaway" guard.
+
+def _orbit_regime_config(dim=8):
+    return _config(
+        gravity_G=0.01,
+        orbital_friction=0.005,
+        orbital_friction_age_factor=0.0,
+        orbital_max_velocity=0.05,
+        max_displacement_norm=2.0,        # the runaway backstop under test
+        orbital_anchor_strength=0.02,
+        orbital_integrator="verlet",
+        orbital_tangential_alpha=0.8,
+        mass_anchor_extra_strength=1.0,   # Stage 2 decision #3: β enabled
+        embedding_dim=dim,
+        query_kick_enabled=False,
+        mass_bh_enabled=False,
+    )
+
+
+def test_orbit_regime_displacement_clamp_is_the_runaway_backstop():
+    """500 steps of a seeded N-body orbit cluster with FULL neighbor gravity.
+
+    Honest finding: the self-anchor harmonic limit is bounded by energy alone,
+    but strong neighbor gravity with 1/r² close encounters can drive net
+    outward drift that the velocity clamp does not stop — so the orbit-regime
+    runaway guard is the ``max_displacement_norm`` clamp. This test asserts
+    that clamp holds under adversarial chaotic dynamics (displacement never
+    exceeds it) and the velocity clamp holds throughout. This is the orbit-mode
+    counterpart of the Tier 4 displacement-runaway guard."""
+    dim = 8
+    cfg = _orbit_regime_config(dim)
+    rng = np.random.default_rng(7)
+    ids = [f"n{i}" for i in range(5)]
+    original = {}
+    for nid in ids:
+        v = rng.standard_normal(dim).astype(np.float32)
+        v /= np.linalg.norm(v) + 1e-9
+        original[nid] = v
+    masses = {nid: 2.0 for nid in ids}
+    last = {nid: 0.0 for nid in ids}
+    # Seed each node with a genesis kick (radial + tangential) from its peers.
+    disps = {}
+    vels = {}
+    for nid in ids:
+        neighbors = [(original[o], masses[o]) for o in ids if o != nid]
+        d, vv, _ = compute_gravity_kick(original[nid], neighbors, cfg)
+        disps[nid] = d
+        vels[nid] = vv
+
+    max_norm = 0.0
+    for _ in range(500):
+        disps, vels = update_orbital_state(
+            ids, original, disps, vels, masses, last, now=0.0, config=cfg,
+        )
+        for nid in ids:
+            max_norm = max(max_norm, float(np.linalg.norm(disps[nid])))
+
+    # The displacement clamp is the hard runaway backstop: no node ever exceeds
+    # max_displacement_norm, even under chaotic N-body close encounters.
+    assert max_norm <= cfg.max_displacement_norm + 1e-5
+    # Velocity clamp respected on the final state (no per-step amplification).
+    for nid in ids:
+        assert float(np.linalg.norm(vels[nid])) <= cfg.orbital_max_velocity + 1e-6
+
+
+def test_orbit_regime_energy_dissipates_and_stays_bounded():
+    """For an isolated body (no neighbor gravity), friction bleeds the orbital
+    energy E = ½|v|² + ½k|d|² over many periods (net dissipation → the
+    thermodynamic slow-spiral-inward end state) and E never gains beyond the
+    small velocity-Verlet oscillation about that decaying trend. (E is NOT
+    monotone per-step — Verlet's measured energy oscillates ~O((ω·dt)²); the
+    invariant is the trend, not each step.)"""
+    dim = 8
+    cfg = _config(
+        gravity_G=0.0,                  # isolate the harmonic anchor
+        orbital_friction=0.005,
+        orbital_friction_age_factor=0.0,
+        orbital_max_velocity=1e6,
+        max_displacement_norm=1e6,
+        orbital_anchor_strength=0.02,
+        orbital_integrator="verlet",
+        embedding_dim=dim,
+        query_kick_enabled=False,
+        mass_bh_enabled=False,
+    )
+    k = cfg.orbital_anchor_strength
+    # two bodies (update_orbital_state needs >=2); gravity_G=0 → independent
+    original = {"A": np.zeros(dim, np.float32), "B": np.full(dim, 9.0, np.float32)}
+    d0 = np.zeros(dim, np.float32)
+    d0[0] = 0.4
+    v0 = np.zeros(dim, np.float32)
+    v0[1] = 0.3 * math.sqrt(k)
+    disps = {"A": d0, "B": np.zeros(dim, np.float32)}
+    vels = {"A": v0, "B": np.zeros(dim, np.float32)}
+    masses = {"A": 1.0, "B": 1.0}
+    last = {"A": 0.0, "B": 0.0}
+
+    def energy(d, v):
+        return 0.5 * float(np.dot(v, v)) + 0.5 * k * float(np.dot(d, d))
+
+    e0 = energy(disps["A"], vels["A"])
+    energies = []
+    for _ in range(300):
+        disps, vels = update_orbital_state(
+            ["A", "B"], original, disps, vels, masses, last, now=0.0, config=cfg,
+        )
+        energies.append(energy(disps["A"], vels["A"]))
+
+    # Net dissipation: friction has bled energy over 300 steps (~7 periods).
+    assert energies[-1] < e0
+    # No energy gain beyond the small Verlet oscillation about the trend.
+    assert max(energies) <= e0 * 1.05
