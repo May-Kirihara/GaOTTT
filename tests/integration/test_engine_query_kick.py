@@ -86,6 +86,12 @@ def _make_engine(
         mass_anchor_threshold=mass_anchor_threshold,
         # Phase I Stage 4 — Mass-dependent Hooke (β, default 0 = legacy).
         mass_anchor_extra_strength=mass_anchor_extra_strength,
+        # Phase Q2 governor is default-ON since 2026-05-31 but is an orthogonal,
+        # later mechanism (it caps *neighbour gravity*, not the query kick). Its
+        # |d|-dependent cap would confound this suite's isolation of the Phase I
+        # query-attraction term, so pin it OFF here. The governor itself is
+        # covered by tests/unit/test_phase_q2_governor.py.
+        gravity_neighbor_governor_enabled=False,
         # Suppress unrelated noise so the kick is the dominant signal
         genesis_kick_enabled=False,
         dream_enabled=False,

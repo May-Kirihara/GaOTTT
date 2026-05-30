@@ -120,6 +120,42 @@ async def test_reset_orbital_state_does_not_affect_edges(store):
     assert edges[0].weight == pytest.approx(3.0)
 
 
+async def test_reset_velocities_clears_velocity_keeps_displacement(store):
+    """Phase Q2 — ``reset_velocities`` zeroes velocity but PRESERVES
+    displacement (unlike ``reset_orbital_state`` which wipes both)."""
+    import numpy as np
+
+    await _seed(store, "n1", mass=1.0)
+    await _seed(store, "n2", mass=1.0)
+    d1 = np.full(8, 0.1, dtype=np.float32)
+    d2 = np.full(8, 0.2, dtype=np.float32)
+    v1 = np.full(8, 0.01, dtype=np.float32)
+    v2 = np.full(8, 0.02, dtype=np.float32)
+    await store.save_displacements({"n1": d1, "n2": d2})
+    await store.save_velocities({"n1": v1, "n2": v2})
+
+    affected = await store.reset_velocities()
+    assert affected == 2
+
+    vels = await store.load_velocities()
+    disps = await store.load_displacements()
+    assert vels == {}, f"expected all velocities cleared, got keys {list(vels)}"
+    # displacement is the learned positions — must survive the cooldown
+    assert set(disps) == {"n1", "n2"}
+    assert np.allclose(disps["n1"], d1)
+    assert np.allclose(disps["n2"], d2)
+
+    states = await store.get_node_states(["n1", "n2"])
+    assert states["n1"].mass == pytest.approx(1.0)
+    assert states["n2"].mass == pytest.approx(1.0)
+
+
+async def test_reset_velocities_idempotent_on_empty_column(store):
+    await _seed(store, "n1", mass=2.0)
+    affected = await store.reset_velocities()
+    assert affected == 1
+
+
 async def test_reset_masses_leaves_other_columns_intact(store):
     # Set non-trivial values on every non-mass column so we can confirm
     # the UPDATE statement targets only ``mass``.

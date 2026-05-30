@@ -119,6 +119,32 @@ def clamp_vector(vec: np.ndarray, max_norm: float) -> np.ndarray:
 clamp_displacement = clamp_vector
 
 
+def _perpendicular_unit(g: np.ndarray) -> np.ndarray:
+    """Deterministic unit vector perpendicular to ``g`` (Phase Q).
+
+    Used to seed a tangential velocity component for orbital motion. The
+    reference axis is the standard-basis direction *least* aligned with ``g``
+    (smallest absolute component), Gram-Schmidt-projected orthogonal to ``g``
+    and normalized. Deterministic by construction — no RNG — so tests and
+    golden-corpus runs stay reproducible (project rule: no random in
+    fixtures). Returns a zero vector in the degenerate case where the
+    projection vanishes (``g`` aligned with a basis axis to machine
+    precision, not reachable for a real embedding gradient).
+    """
+    g_norm = float(np.linalg.norm(g))
+    if g_norm == 0.0:
+        return np.zeros_like(g)
+    g_hat = g / g_norm
+    k = int(np.argmin(np.abs(g_hat)))
+    e = np.zeros_like(g_hat)
+    e[k] = 1.0
+    t = e - float(np.dot(e, g_hat)) * g_hat
+    t_norm = float(np.linalg.norm(t))
+    if t_norm < 1e-8:
+        return np.zeros_like(g)
+    return (t / t_norm).astype(np.float32)
+
+
 # -----------------------------------------------------------------------
 # Orbital mechanics (Stage 1-2-3)
 # -----------------------------------------------------------------------
@@ -247,13 +273,36 @@ def compute_acceleration(
         anchor_factor = 1.0 + config.mass_anchor_extra_strength * (
             1.0 - math.tanh(float(mass_i) / theta)
         )
-    acc = acc - config.orbital_anchor_strength * anchor_factor * displacement_i
 
-    # 3. Mass-threshold BH gravity (Phase M Stage 1).
+    # 3. Mass-threshold BH gravity (Phase M Stage 1) — computed here, but added
+    # below so the Phase Q2 governor can cap the full *attractive* neighbour
+    # force (neighbour gravity term 1 + mass-BH term 3) together.
     # node_id/cache/all_positions are unused now (they powered the old
     # co-occurrence BH centroid). Parameters kept for back-compat — call
     # sites need not change. The pull comes purely from neighbor mass.
-    acc = acc + compute_mass_bh_acceleration(pos_i, neighbors, config)
+    bh = compute_mass_bh_acceleration(pos_i, neighbors, config)
+
+    # Phase Q2 — anchor-referenced neighbour-gravity governor (per-node,
+    # density-adaptive). Caps the attractive neighbour force (term1 + term3) so
+    # its magnitude stays ≤ α × the anchor force scale; keeps direction. Dense
+    # nodes (huge coherent ``acc``) are scaled down hard; sparse nodes
+    # (|acc_neigh| ≤ ref) keep g=1 and are untouched. Anchor / query / Λ are not
+    # capped. Default OFF takes the legacy code path below, bit-exact (mass-BH
+    # added *after* the anchor, in the original order). See Plans-Phase-Q2.
+    if config.gravity_neighbor_governor_enabled:
+        acc = acc + bh  # attractive total (neighbour gravity + mass-BH)
+        k_eff = config.orbital_anchor_strength * anchor_factor
+        ref = config.gravity_neighbor_governor_alpha * k_eff * max(
+            float(np.linalg.norm(displacement_i)),
+            config.gravity_neighbor_governor_disp_floor,
+        )
+        nn = float(np.linalg.norm(acc))
+        if nn > ref and nn > 0.0:
+            acc = acc * (ref / nn)
+        acc = acc - config.orbital_anchor_strength * anchor_factor * displacement_i
+    else:
+        acc = acc - config.orbital_anchor_strength * anchor_factor * displacement_i
+        acc = acc + bh
 
     # 4. Query attraction (Phase I Stage 2 + Stage 3 mass-gating)
     if (
@@ -408,6 +457,61 @@ def update_orbital_state(
     ):
         langevin_sigma = math.sqrt(2.0 * config.langevin_temperature_t0)
 
+    # Phase Q — velocity-Verlet (symplectic, O(dt²), time-reversible). Uses
+    # two force passes: ``accelerations`` above is a_n; step positions with
+    # a_n, recompute a_{n+1} at the provisional positions, then average for the
+    # velocity update. This removes the O(ω·dt) artificial precession that
+    # semi-implicit Euler adds, leaving only the physical neighbor-perturbation
+    # precession of the rosette. Doubles per-step force cost; the default
+    # "euler" path below is bit-exact to pre-Phase-Q.
+    if config.orbital_integrator == "verlet":
+        prov_disp: dict[str, np.ndarray] = {}
+        prov_pos: dict[str, np.ndarray] = {}
+        for nid in active_ids:
+            old_vel = velocities.get(nid, np.zeros(dim, dtype=np.float32))
+            old_disp = displacements.get(nid, np.zeros(dim, dtype=np.float32))
+            # x_{n+1} = x_n + v_n·dt + ½·a_n·dt²   (dt = 1.0)
+            step_disp = old_disp + old_vel + 0.5 * accelerations[nid]
+            step_disp = clamp_vector(step_disp, config.max_displacement_norm)
+            prov_disp[nid] = step_disp
+            prov_pos[nid] = original_embeddings[nid] + step_disp
+
+        accel_next: dict[str, np.ndarray] = {}
+        for nid in active_ids:
+            neighbors = [
+                (prov_pos[other], masses.get(other, 1.0))
+                for other in active_ids
+                if other != nid
+            ]
+            q_score = query_scores.get(nid) if query_scores is not None else None
+            accel_next[nid] = compute_acceleration(
+                prov_pos[nid], original_embeddings[nid], prov_disp[nid], neighbors,
+                config, node_id=nid, cache=cache, all_positions=prov_pos,
+                mass_i=masses.get(nid, 1.0),
+                query_anchor=query_anchor, query_score=q_score,
+            )
+
+        for nid in active_ids:
+            old_vel = velocities.get(nid, np.zeros(dim, dtype=np.float32))
+            last_access = last_accesses.get(nid, now)
+            # v_{n+1} = v_n + ½(a_n + a_{n+1})·dt; update_velocity applies the
+            # ½·(sum) as its acceleration arg then folds in friction + clamp.
+            avg_acc = 0.5 * (accelerations[nid] + accel_next[nid])
+            new_vel = update_velocity(old_vel, avg_acc, last_access, now, config)
+
+            new_disp = prov_disp[nid]
+            if langevin_sigma > 0.0:
+                if rng is None:
+                    noise = np.random.randn(dim).astype(np.float32) * langevin_sigma
+                else:
+                    noise = rng.standard_normal(dim).astype(np.float32) * langevin_sigma
+                new_disp = clamp_vector(new_disp + noise, config.max_displacement_norm)
+
+            new_velocities[nid] = new_vel
+            new_displacements[nid] = new_disp
+
+        return new_displacements, new_velocities
+
     for nid in active_ids:
         old_vel = velocities.get(nid, np.zeros(dim, dtype=np.float32))
         old_disp = displacements.get(nid, np.zeros(dim, dtype=np.float32))
@@ -478,9 +582,31 @@ def compute_gravity_kick(
     # Verlet step from rest: v_new = v_old + a*dt = a*dt; d_new = d_old + v_new*dt.
     # gravity_eta scales the integration to match the existing legacy step
     # (compute_gravitational_force uses the same factor).
-    velocity = config.gravity_eta * acc
-    velocity = clamp_vector(velocity, config.orbital_max_velocity)
-    displacement = clamp_vector(velocity.copy(), config.max_displacement_norm)
+    radial = config.gravity_eta * acc
+    radial = clamp_vector(radial, config.orbital_max_velocity)
+    # Displacement is taken from the radial (gravity) step only, so it stays
+    # parallel to the gravity direction. Phase Q: keeping displacement radial
+    # while the velocity gains a tangential component makes the two
+    # non-collinear, so angular momentum L = d × v ≠ 0 and the node traces a
+    # closed ellipse around its anchor x₀ instead of a straight-line
+    # oscillation through it.
+    displacement = clamp_vector(radial.copy(), config.max_displacement_norm)
+    velocity = radial
+
+    # Phase Q — tangential velocity seeding (angular momentum). Adds a
+    # component perpendicular to the gravity direction. ``α=0`` → velocity
+    # stays exactly ``radial`` = bit-exact legacy (L=0 line oscillation).
+    if config.orbital_tangential_alpha > 0.0:
+        g_norm = float(np.linalg.norm(acc))
+        if g_norm > config.gravity_epsilon:
+            t = _perpendicular_unit(acc)
+            velocity = (
+                radial
+                + config.orbital_tangential_alpha
+                * float(np.linalg.norm(radial))
+                * t
+            )
+            velocity = clamp_vector(velocity, config.orbital_max_velocity)
 
     raw_boost = config.genesis_mass_boost_alpha * float(np.linalg.norm(acc))
     # Cap so a single kick can never make mass leap close to m_max — keeps

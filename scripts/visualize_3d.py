@@ -227,6 +227,81 @@ def tangent_geodesic(
     return out
 
 
+def orbital_ellipse(
+    anchor_3d: np.ndarray,
+    disp_3d: np.ndarray,
+    vel_3d: np.ndarray,
+    omega: float,
+    n_pts: int = 48,
+) -> np.ndarray:
+    """Closed harmonic orbit a node traces around its own anchor (Phase Q).
+
+    The Hooke anchor ``F = -k·d`` is an isotropic harmonic oscillator —
+    by Bertrand's theorem one of the only two central forces with closed
+    bound orbits. Its analytic solution about the anchor is the ellipse
+
+        d(θ) = cos(θ)·d₀ + sin(θ)·(v₀/ω),   ω = √k
+
+    so the node's position sweeps ``anchor + d(θ)`` over one period. With
+    a seeded tangential velocity (``orbital_tangential_alpha > 0``) ``d₀``
+    and ``v₀`` are non-collinear → a real ellipse; with zero angular
+    momentum it degenerates to a line through the anchor (the Bertrand
+    line-through-origin). Neighbor gravity precesses this into a rosette,
+    so the ellipse is the *osculating* orbit — the right snapshot glyph.
+
+    All three inputs are already PCA-projected to 3D (the projection is
+    linear, so projecting d₀/v₀ commutes with the harmonic solution).
+    Returns ``(n_pts, 3)`` with the loop closed (last point == first).
+    """
+    thetas = np.linspace(0.0, 2.0 * math.pi, n_pts)
+    v_over_omega = vel_3d / omega if omega > 1e-9 else np.zeros(3, dtype=np.float32)
+    out = np.empty((n_pts, 3), dtype=np.float32)
+    for k, th in enumerate(thetas):
+        out[k] = anchor_3d + math.cos(th) * disp_3d + math.sin(th) * v_over_omega
+    return out
+
+
+def compute_orbital_trails(
+    ids, vectors, displacements, velocities, pca_components, pca_mean, config,
+    use_sphere: bool, vel_thresh: float = 0.001, n_pts: int = 48,
+):
+    """Per-node osculating harmonic orbits for the *lively* set (Phase Q).
+
+    Returns a list of ``(n_pts, 3)`` polylines (sphere-wrapped if
+    ``use_sphere``), one per node whose velocity exceeds ``vel_thresh``.
+    Only meaningful with a linear projection — ``pca_components`` is the
+    PCA matrix ``(3, dim)`` and ``pca_mean`` the centering vector
+    (``pca.mean_``); the anchor is an *absolute* position so it needs the
+    mean subtracted (``transform(x) = (x-mean) @ components.T``), whereas
+    displacement/velocity are difference vectors where the mean cancels.
+    Returns ``[]`` for UMAP (no linear map) or when
+    orbital_anchor_strength is non-positive.
+    """
+    if pca_components is None or config is None:
+        return []
+    k = float(getattr(config, "orbital_anchor_strength", 0.0))
+    if k <= 0.0:
+        return []
+    omega = math.sqrt(k)
+    mean = pca_mean if pca_mean is not None else np.zeros(vectors.shape[1], dtype=np.float32)
+    trails = []
+    for i, nid in enumerate(ids):
+        vel = velocities.get(nid)
+        if vel is None or float(np.linalg.norm(vel)) < vel_thresh:
+            continue
+        disp = displacements.get(nid)
+        if disp is None:
+            disp = np.zeros(vectors.shape[1], dtype=np.float32)
+        anchor_3d = pca_components @ (vectors[i] - mean)
+        disp_3d = pca_components @ disp
+        vel_3d = pca_components @ vel
+        ell = orbital_ellipse(anchor_3d, disp_3d, vel_3d, omega, n_pts=n_pts)
+        if use_sphere:
+            ell = sphere_wrap(ell)
+        trails.append(ell)
+    return trails
+
+
 async def load_data(config: GaOTTTConfig):
     faiss_index = FaissIndex(dimension=config.embedding_dim)
     faiss_index.load(config.faiss_index_path)
@@ -448,6 +523,7 @@ def add_nodes_to_figure(
     draw_filaments: bool = False,
     filament_pts: int = 10,
     velocity_pts: int = 8,
+    orbital_trails=None,
 ):
     """Add stellar nodes, filaments, velocity arrows, gravity spheres, and BH centroids.
 
@@ -540,6 +616,29 @@ def add_nodes_to_figure(
                 x=ax, y=ay, z=az, mode="lines",
                 line=dict(color="rgba(0,255,200,0.7)", width=2.5),
                 hoverinfo="skip", name="Velocity vectors", showlegend=True,
+            ))
+
+    # Orbital trails (Phase Q) — the closed harmonic ellipse each lively
+    # node traces around its OWN anchor. Plotted as faint amber loops so
+    # the rosette structure (公転, not satellite capture) is legible
+    # without drowning the stellar layer. Each trail is a pre-closed
+    # polyline; None terminators break loops inside the single trace.
+    if orbital_trails:
+        ox, oy, oz = [], [], []
+        for trail in orbital_trails:
+            ox.extend(trail[:, 0].tolist())
+            ox.append(None)
+            oy.extend(trail[:, 1].tolist())
+            oy.append(None)
+            oz.extend(trail[:, 2].tolist())
+            oz.append(None)
+        if ox:
+            _add(go.Scatter3d(
+                x=ox, y=oy, z=oz, mode="lines",
+                line=dict(color="rgba(255,190,80,0.35)", width=1.2),
+                hoverinfo="skip",
+                name=f"Orbital trails ({len(orbital_trails)})",
+                showlegend=True,
             ))
 
     # Gravity field rings (for high-mass nodes)
@@ -652,7 +751,7 @@ def add_nodes_to_figure(
 def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
                         cooccurrence_neighbors=None, title_suffix="",
                         wireframe: bool = True, curves: bool = True,
-                        draw_filaments: bool = False):
+                        draw_filaments: bool = False, orbital_trails=None):
     masses, temperatures, decays, disp_norms, vel_norms, hover_texts, sources = props
 
     fig = go.Figure()
@@ -660,7 +759,7 @@ def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
         fig, coords_3d, ids, masses, temperatures, decays, disp_norms, vel_norms,
         hover_texts, sources, edges, velocities_3d=velocities_3d, config=config,
         cooccurrence_neighbors=cooccurrence_neighbors, wireframe=wireframe,
-        curves=curves, draw_filaments=draw_filaments,
+        curves=curves, draw_filaments=draw_filaments, orbital_trails=orbital_trails,
     )
 
     displaced = sum(1 for d in disp_norms if d > 0.001)
@@ -702,7 +801,7 @@ def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
 def build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, velocities_3d, config,
                             cooccurrence_neighbors=None,
                             wireframe: bool = True, curves: bool = True,
-                            draw_filaments: bool = False):
+                            draw_filaments: bool = False, orbital_trails=None):
     masses, temperatures, decays, disp_norms, vel_norms, hover_texts, sources = props
 
     fig = make_subplots(
@@ -724,6 +823,7 @@ def build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, velocities_3
         hover_texts, sources, edges, velocities_3d=velocities_3d, config=config,
         cooccurrence_neighbors=cooccurrence_neighbors, row=1, col=2,
         wireframe=wireframe, curves=curves, draw_filaments=draw_filaments,
+        orbital_trails=orbital_trails,
     )
 
     displaced = sum(1 for d in disp_norms if d > 0.001)
@@ -826,6 +926,13 @@ def main():
              "which crash Chrome's renderer and obscure the stellar "
              "layout. The edge count still appears in the title bar.",
     )
+    parser.add_argument(
+        "--orbital-trails", action="store_true",
+        help="Phase Q — draw the closed harmonic ellipse each lively node "
+             "(|v|>0.001) traces around its OWN anchor. Faint amber loops; "
+             "PCA only (needs a linear projection). Shows 公転/rosette "
+             "structure, not satellite capture (anchor migration stays 0).",
+    )
     args = parser.parse_args()
 
     if args.compare:
@@ -910,15 +1017,24 @@ def main():
             pca = PCA(n_components=3)
             combined_3d = pca.fit_transform(combined)
             pca_components = pca.components_  # (3, dim)
+            pca_mean = pca.mean_
         else:
             combined_3d = reduce_to_3d(combined, method=args.method)
             pca_components = None
+            pca_mean = None
 
         n = len(ids)
         orig_3d = combined_3d[:n]
         virtual_3d = combined_3d[n:]
 
         vel_3d = project_velocities_to_3d(ids, velocities, vectors, args.method, pca_components)
+
+        trails = None
+        if args.orbital_trails:
+            trails = compute_orbital_trails(
+                ids, vectors, displacements, velocities,
+                pca_components, pca_mean, config, use_sphere)
+            print(f"  Orbital trails: {len(trails)} lively nodes")
 
         if use_sphere:
             orig_3d = sphere_wrap(orig_3d)
@@ -928,7 +1044,8 @@ def main():
         fig = build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, vel_3d, config,
                                       cooccurrence_neighbors=cooc_neighbors,
                                       wireframe=use_sphere, curves=use_curves,
-                                      draw_filaments=args.filaments)
+                                      draw_filaments=args.filaments,
+                                      orbital_trails=trails)
 
     elif args.position_space == "raw":
         print(f"Reducing raw embedding to 3D ({args.method.upper()})...")
@@ -937,11 +1054,20 @@ def main():
             pca = PCA(n_components=3)
             coords_3d = pca.fit_transform(vectors)
             pca_components = pca.components_
+            pca_mean = pca.mean_
         else:
             coords_3d = reduce_to_3d(vectors, method=args.method)
             pca_components = None
+            pca_mean = None
 
         vel_3d = project_velocities_to_3d(ids, velocities, vectors, args.method, pca_components)
+
+        trails = None
+        if args.orbital_trails:
+            trails = compute_orbital_trails(
+                ids, vectors, displacements, velocities,
+                pca_components, pca_mean, config, use_sphere)
+            print(f"  Orbital trails: {len(trails)} lively nodes")
 
         if use_sphere:
             coords_3d = sphere_wrap(coords_3d)
@@ -951,7 +1077,8 @@ def main():
                                   cooccurrence_neighbors=cooc_neighbors,
                                   title_suffix="— Raw Space",
                                   wireframe=use_sphere, curves=use_curves,
-                                  draw_filaments=args.filaments)
+                                  draw_filaments=args.filaments,
+                                  orbital_trails=trails)
 
     else:  # virtual
         virtual_vectors, vsrc = _build_virtual()
@@ -962,11 +1089,20 @@ def main():
             pca = PCA(n_components=3)
             coords_3d = pca.fit_transform(virtual_vectors)
             pca_components = pca.components_
+            pca_mean = pca.mean_
         else:
             coords_3d = reduce_to_3d(virtual_vectors, method=args.method)
             pca_components = None
+            pca_mean = None
 
         vel_3d = project_velocities_to_3d(ids, velocities, vectors, args.method, pca_components)
+
+        trails = None
+        if args.orbital_trails:
+            trails = compute_orbital_trails(
+                ids, vectors, displacements, velocities,
+                pca_components, pca_mean, config, use_sphere)
+            print(f"  Orbital trails: {len(trails)} lively nodes")
 
         if use_sphere:
             coords_3d = sphere_wrap(coords_3d)
@@ -977,7 +1113,8 @@ def main():
                                   cooccurrence_neighbors=cooc_neighbors,
                                   title_suffix=suffix,
                                   wireframe=use_sphere, curves=use_curves,
-                                  draw_filaments=args.filaments)
+                                  draw_filaments=args.filaments,
+                                  orbital_trails=trails)
 
     print(f"Saving to {args.output}...")
     fig.write_html(args.output, include_plotlyjs=True)

@@ -10,6 +10,21 @@
 
 ---
 
+<!-- TEMP-NOTICE-PHASE-Q2 START — 観測期間（約2週間、≈2026-06-14）後に削除 -->
+> [!IMPORTANT]
+> **2026-05-31 · 大規模変更 — Phase Q2「重力スケール governor」を本番投入。** 既存の GaOTTT インスタンスを運用している場合、更新後に一度だけ migration が必要です。詳細: [Operations — Migration](docs/wiki/Operations-Migration.md)。
+>
+> 1. このバージョンに**更新**し、**backend を停止**（proxy mode: `pkill -f "gaottt.server.mcp_server"`）。
+> 2. **velocity cooldown を実行** — data dir を自動 backup、velocity だけリセットし学習済み displacement は保全。M006 は velocity field が実際に飽和している場合のみ発火:
+>    ```bash
+>    .venv/bin/python scripts/migrate.py --apply        # M006「phase-q2-velocity-cooldown」を適用
+>    ```
+> 3. governor は本バージョンで **default ON** — env 追加は不要。（per-node cap を調整するなら MCP env に `GAOTTT_GRAVITY_NEIGHBOR_GOVERNOR_ALPHA` を設定、既定 `0.2`。無効化するなら `GAOTTT_GRAVITY_NEIGHBOR_GOVERNOR_ENABLED=false`。）
+> 4. MCP クライアントを**再起動**し、新しい backend が新コードで立ち上がるようにする。（proxy mode は `:7878` に既存 backend がいれば relay するので、先に古い backend を kill する＝手順1。）
+>
+> なぜ: 密な corpus では近傍重力項が ~10⁴–10⁵ 倍 過大で velocity field を飽和させる。governor はこれを per-node（anchor 基準）で cap し、**ranking 中立**（検索結果は変わらず、効果は velocity の有界化と query 引力ドリフトの un-mask が時間をかけて現れる）。*この告知は一時的なもので、観測期間後に削除します。*
+<!-- TEMP-NOTICE-PHASE-Q2 END -->
+
 ## 概要
 
 GaOTTT は **AI エージェントの長期外部記憶** であり、構造上は **推論時に走るオンライン最適化器** でもある。ドキュメントは質量・温度・重力変位を持つノードになり、共起した文書は互いに接近し、知識空間がクエリのたびに自己組織化していく。使い込むほど表現そのものが変わっていく — これは **単なるキャッシングではなく、retrieval geometry のパラメータ学習に近い**。

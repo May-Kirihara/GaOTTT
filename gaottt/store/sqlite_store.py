@@ -528,6 +528,26 @@ class SqliteStore(StoreBase):
         await self._conn.commit()
         return row[0] if row else 0
 
+    async def reset_velocities(self) -> int:
+        """Phase Q2 — clear the ``velocity`` column for every node, keeping
+        ``displacement`` (the learned positions / query-attraction integral)
+        intact.
+
+        The one-time cooldown of the degenerate, clamp-saturated momentum
+        field that the pre-Q2 over-scaled neighbour gravity baked in (median
+        |v| = the velocity clamp). Velocity is a regenerable derivative of the
+        field — pass-6 measured the stored direction at ~0.87 cosine with the
+        current neighbour gravity, so zeroing it loses nothing the (rescaled)
+        gravity will not re-derive. Idempotent — re-running on already-NULL
+        columns is a no-op. Returns the row count touched.
+        """
+        assert self._conn is not None
+        await self._conn.execute("UPDATE nodes SET velocity = NULL")
+        cursor = await self._conn.execute("SELECT COUNT(*) FROM nodes")
+        row = await cursor.fetchone()
+        await self._conn.commit()
+        return row[0] if row else 0
+
     async def reset_masses(self, value: float = 1.0) -> int:
         """Phase M Stage 1 — reset every node's mass without disturbing the
         rest of the dynamic state.

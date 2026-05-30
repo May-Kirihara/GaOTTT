@@ -383,6 +383,89 @@ class GaOTTTConfig:
     orbital_max_velocity: float = 0.05      # Max L2 norm of velocity vector
     orbital_anchor_strength: float = 0.02   # Restoring force toward original position (Hooke's law)
 
+    # ---- Phase Q2: anchor-referenced neighbour-gravity governor --------------
+    # Density-adaptive cap on the *attractive* neighbour force (neighbour gravity
+    # + mass-BH) so it stays a perturbation rather than dominating the anchor.
+    # Phase Q rollout + Phase Q2 pass-5 (2026-05-30, isolated copy of the 41K
+    # field): in RURI's narrow high-cosine space the neighbour-gravity vectors
+    # sum *coherently* (coherence ~0.8-1.0, net ∝ N), so the net pull runs
+    # ~10⁴-10⁵× the anchor restoring force (~0.005) and has a heavy tail
+    # (ratio p90 ~10⁵). A single small global gravity_G cannot tame that tail,
+    # so we cap per node: scale the attractive force by
+    #   g_i = min(1, α · k_eff(m_i) · max(|d_i|, d_floor) / |acc_neigh|)
+    # which holds neighbour gravity at ≤ α × the anchor force scale, adapting to
+    # each node's local density (dense → smaller g_i; sparse → g_i=1, untouched).
+    # The direction is preserved; anchor / query-attraction / Λ are NOT capped.
+    # Source-blind (mass + geometry only). Set False for bit-exact pre-Q2 legacy.
+    # Default ON since 2026-05-31 — promoted from opt-in after the Phase Q2
+    # rollout (段階4 acceptance: per-query ranking-neutral; production live +
+    # healthy, velocity field bounded). See Plans-Phase-Q2-Gravitational-Scale.md §4.
+    gravity_neighbor_governor_enabled: bool = True
+    gravity_neighbor_governor_alpha: float = 0.2    # target net ≈ α × anchor force
+    gravity_neighbor_governor_disp_floor: float = 0.1  # |d| floor so d≈0 isn't fully suppressed
+
+    # ---- Phase Q: Orbital Mechanics (rosette orbits around own anchor) -------
+    # The Hooke anchor (orbital_anchor_strength) is F = -k·d toward a node's
+    # own original embedding x₀. By Bertrand's theorem this isotropic-harmonic
+    # central force already produces CLOSED orbits — what was missing is
+    # angular momentum. Phase Q seeds a *tangential* velocity component at
+    # genesis / supernova so a node, instead of falling straight in and
+    # oscillating on a line through x₀, traces a closed ellipse AROUND x₀
+    # (a rosette once neighbor gravity perturbs it). The orbit centre stays
+    # the node's own anchor → zero anchor migration (Phase M single rule).
+    # See docs/wiki/Plans-Phase-Q-Orbital-Mechanics.md.
+    #
+    # ``orbital_tangential_alpha`` = magnitude of the seeded tangential
+    # velocity as a fraction of the radial (gravity-induced) kick. The seed
+    # makes displacement (∥ gravity) and velocity (gravity + tangential)
+    # non-collinear, so angular momentum L = d × v ≠ 0 and an ellipse forms.
+    # ``0.0`` = legacy radial-only kick (bit-exact rollback, L=0 line
+    # oscillation). ``~1.0`` ≈ near-circular; smaller → more eccentric.
+    orbital_tangential_alpha: float = 0.0
+    # Integration scheme for ``update_orbital_state``. ``"euler"`` = the
+    # legacy semi-implicit (symplectic) Euler (``v+=a; x+=v``), bit-exact to
+    # pre-Phase-Q. ``"verlet"`` = velocity-Verlet (two force passes per step,
+    # O(dt²) and time-reversible) which removes the O(ω·dt) artificial
+    # precession Euler adds, leaving only the physical (neighbor-perturbation)
+    # precession of the rosette. Verlet doubles per-step force cost; default
+    # euler keeps production untouched.
+    orbital_integrator: str = "euler"
+
+    # ---- Phase Q Stage 2: continuous orbital tick ---------------------------
+    # When enabled, the dream loop runs a lightweight ``_orbital_tick`` each
+    # cycle that advances the orbital state (displacement + velocity) of the
+    # *lively* nodes — those with ``|v| > orbital_lively_v_min`` — WITHOUT a
+    # recall (no FAISS query, no mass/temperature/last_access/co-occurrence
+    # update). This is what makes the cosmos move on its own clock instead of
+    # only when a node is recalled: recall = energy injection, tick = free
+    # orbital integration. The lively set is self-limiting — constant friction
+    # (orbital_friction) bleeds energy so a node drops below v_min ~100 ticks
+    # after its last kick — which is exactly what bounds the per-tick cost.
+    # Age-based friction is suppressed inside the tick (it keys on last_access,
+    # which is stale for an orbiting-but-not-recalled node and would otherwise
+    # kill the orbit in a few ticks); only constant friction applies. Default
+    # OFF. See docs/wiki/Plans-Phase-Q-Orbital-Mechanics.md §3.3.
+    orbital_tick_enabled: bool = False
+    orbital_lively_v_min: float = 0.001     # |v| below this → node is "cold", skipped
+    orbital_tick_max_nodes: int = 256       # per-tick cap (cost bound); excess deferred + logged
+    # Whether the continuous tick applies *mutual neighbor gravity* among the
+    # lively set. Default OFF → the tick runs a pure self-anchor Hooke orbit
+    # (each node orbits its own embedding x₀; β still applies). Rollout finding
+    # (2026-05-30, isolated copy of the 41K production field): the implemented
+    # tick passes the lively set itself as the N-body neighbours (NOT each
+    # node's true FAISS neighbours, cf. plan §3.3). In RURI's narrow high-cosine
+    # space those neighbour-gravity vectors point alike and sum *coherently* —
+    # measured net |a| ≈ 10 (p50) … 640 (max) at gravity_G=0.01 vs the anchor's
+    # ~0.005 — so neighbour gravity ceases to be the "mild precession
+    # perturbation" the plan assumed and instead dominates ~1000×, slamming
+    # displacement onto the max_displacement_norm clamp and killing the friction
+    # self-limiting. Pure self-anchor (this flag OFF) was measured bounded and
+    # self-limiting (displacement relaxes, lively set drains). Set True only
+    # with a tamed neighbour scheme (true per-node FAISS neighbours or a much
+    # smaller tick gravity); rosette precession is deferred future work. See
+    # docs/wiki/Plans-Phase-Q-Orbital-Mechanics.md §4 (rollout findings).
+    orbital_tick_neighbor_gravity_enabled: bool = False
+
     # Habituation & thermal escape
     saturation_rate: float = 0.2            # How fast nodes saturate (higher = faster)
     habituation_recovery_rate: float = 0.01 # Recovery from saturation per step
@@ -880,6 +963,26 @@ class GaOTTTConfig:
                     "(see gravity.update_velocity M6 guard).",
                     name, val,
                 )
+
+        # Phase Q — orbit mode needs a finite displacement clamp. The
+        # relaxation regime left ``max_displacement_norm`` effectively infinite
+        # (1e6) because Hooke + friction settle to a natural equilibrium. But
+        # with the continuous orbital tick, tangential seeding + neighbor
+        # gravity 1/r² close encounters can drive a net outward drift the
+        # velocity clamp does NOT stop (Stage 3 finding — displacement reached
+        # |d|≈26 over 500 steps in test). The only backstop in that regime is
+        # ``max_displacement_norm`` itself, so warn if it is left ~infinite
+        # while the tick is on. (Warning, not error — a deliberately large cap
+        # is a valid choice for someone who knows what they are doing.)
+        if self.orbital_tick_enabled and self.max_displacement_norm > 100.0:
+            logger.warning(
+                "GaOTTTConfig: orbital_tick_enabled=True with "
+                "max_displacement_norm=%r (effectively unbounded). Orbit mode "
+                "can drift without a finite displacement clamp; set "
+                "max_displacement_norm to a finite value (e.g. 2.0). See "
+                "docs/wiki/Plans-Phase-Q-Orbital-Mechanics.md Stage 3.",
+                self.max_displacement_norm,
+            )
 
     @staticmethod
     def _coerce_env(raw: str, target: type):

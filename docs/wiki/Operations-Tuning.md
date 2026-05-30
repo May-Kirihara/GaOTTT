@@ -34,7 +34,7 @@
 | gravity_G | 0.01 | 万有引力定数 | 急速に引き寄せ合う（創発的） | 穏やかな変位（安定） |
 | gravity_eta | 0.005 | 変位の学習率 | 1 回のクエリでの変位↑ | 段階的に変位 |
 | displacement_decay | 0.995 | 変位の定期減衰 | 変位が長く維持 | 早く元に戻る |
-| max_displacement_norm | 1e6 | 変位の上限 (Phase I で実質 ∞ 化) | n/a (cap が事実上 off) | 小さい値で疑似的なハードキャップに戻せる（緊急ノブ） |
+| max_displacement_norm | 1e6 | 変位の上限 (Phase I で実質 ∞ 化) | n/a (cap が事実上 off) | 小さい値で疑似的なハードキャップに戻せる（緊急ノブ）。**Phase Q orbit mode (`orbital_tick_enabled=True`) では `2.0` 程度の有限値が必須** — 近傍 1/r² 近接特異点の runaway backstop（下記「公転・閉軌道」節） |
 | candidate_multiplier | 3 | FAISS 候補倍率 | 広い候補から選べる | 高速だが候補が狭い |
 
 ## 軌道力学
@@ -42,8 +42,40 @@
 | パラメータ | 既定 | 影響 |
 |---|---|---|
 | orbital_friction | 0.05 | 速度の摩擦（毎ステップ） |
+| orbital_friction_age_factor | 0.1 | 未アクセスノードへの追加摩擦（軌道 tick では強制 0） |
 | orbital_max_velocity | 0.05 | 速度の上限ノルム |
 | orbital_anchor_strength | 0.02 | アンカー復元力（Hooke's k） |
+
+## 公転・閉軌道（Phase Q — Orbital Mechanics、2026-05-30）
+
+ノードを **自分の anchor（原始 embedding）を中心に閉軌道（ロゼット）で公転** させる保存系レジーム。核心の発見: Hooke アンカー `F = -k·d` は **Bertrand の定理で閉軌道を生む 2 つの中心力の 1 つ（等方調和振動子）** なので、軌道化に足りないのは新しい力ではなく **接線速度（角運動量）だけ**。公転中心 = 自分の articulated self なので **anchor migration ゼロ**（衛星化・彗星脱出は公転中心が他者 = 線の外で、Phase Q は内側に留まる）。詳細: [Plans — Phase Q](Plans-Phase-Q-Orbital-Mechanics.md)。
+
+| パラメータ | 既定 | 影響 | 上げると | 下げると |
+|---|---|---|---|---|
+| **orbital_tangential_alpha (α_t)** | **`0.0`** | seed 時に付与する接線速度の大きさ（radial 速度ノルムに対する倍率）。`compute_gravity_kick` と supernova seed で displacement（∥ gravity radial）と非共線な velocity を作り `L = d × v ≠ 0` にする | `0.5–1.0` で楕円〜円に近づく（角運動量 ↑、軌道が太る） | `0.0` で完全 no-op（直線往復、legacy bit-for-bit） |
+| **orbital_integrator** | **`"euler"`** | `update_orbital_state` の積分法。`"verlet"` で velocity-Verlet（symplectic、O(dt²)、力 2 回評価）に切り替え、長時間の軌道安定性が向上 | — | `"euler"` で legacy semi-implicit Euler（production 不変） |
+| **orbital_tick_enabled** | **`False`** | dream loop が毎サイクル軽量 `_orbital_tick` を回し、**lively なノード**（`\|v\| > orbital_lively_v_min`）だけを recall 抜きで積分（recall = エネルギー注入 / tick = 自由発展、の役割分離） | `True` で連続時計（自走公転・歳差・螺旋落下） | `False` で従来どおり recall 駆動のみ |
+| orbital_lively_v_min | 0.001 | これ未満の `\|v\|` は "cold" として tick から除外 | 上げると tick 対象が減りコスト ↓（早く cold 化） | 下げると微速ノードも回り続ける |
+| orbital_tick_max_nodes | 256 | tick 1 回あたりの処理上限（コスト bound）。超過分は次 tick へ繰り越し + ログ | 上げると 1 tick の網羅性 ↑（CPU 負荷 ↑） | 下げると安全側（大規模 lively set でも tick が軽い） |
+| **orbital_tick_neighbor_gravity_enabled** | **`False`** | tick が **lively set を相互近傍として** 近傍重力を効かせるか。`False`（既定）= tick 内で `gravity_G=0` → **純 self-anchor 楕円公転**（各ノードが自分の x₀ を周回、β は有効） | `True` で結合（**本番 field では coherent 暴走、実験専用** — 下記★★） | `False` が安全側（推奨）。本番実測で確定した既定 |
+
+> **★★ tick の近傍重力は既定 OFF（2026-05-30 本番実測の rollout finding）**: 本番 41K field の隔離コピー実測で、`_orbital_tick` が散在 lively set を相互近傍として渡す実装（plan §3.3 の per-node FAISS 近傍探索と乖離）は、RURI の狭 cosine 帯で近傍重力が **coherent に加算** し net `|a|` p50≈10/max≈640（単一ペア最大 0.7、1/r² 特異点ではない）vs anchor 0.005 → ~1000倍、displacement を clamp に張り付け self-limiting を殺すと判明。**純 self-anchor（G=0）は bounded + self-limiting で健全**。よって既定で tick 近傍重力を切る。`True` は tamed 近傍重力（per-node 真 FAISS 近傍 or 大幅減 G）の再設計（= rosette、future work）の実験用。詳細: [Plans — Phase Q §8](Plans-Phase-Q-Orbital-Mechanics.md#8-rollout-findings-2026-05-30-本番隔離コピー実測)。
+
+> **★ orbit mode では `max_displacement_norm` を有限値に必須**: Phase I が `max_displacement_norm=1e6`（実質 ∞）にしたのは「Hooke + friction + velocity cap が自然均衡を作るから cap 不要」だったが、これは **近傍重力が穏やかな relax regime 限定**。接線速度入り orbit + 近傍の 1/r² 近接特異点は velocity clamp(0.05) では止まらない正味の外向きドリフトを生み、500 step で `\|d\|=26` まで発散する（Stage 3 で実測・特性化）。orbit regime の runaway backstop は **`max_displacement_norm` clamp そのもの** なので、`orbital_tick_enabled=True` のときは `2.0` 程度の有限値を設定する（`config.__post_init__` が `max_displacement_norm > 100.0` のとき警告を出す）。
+
+> **チューニング助言 (Phase Q bundle、2026-05-30 本番実測で改訂)**: 公転を本番で有効化する推奨束は `orbital_tangential_alpha=0.5–1.0` / `orbital_integrator="verlet"` / `orbital_friction=0.005`（0.05 → 1/10、e-fold ~100 分で数十周後に井戸へ螺旋落下 = 熱力学的終末）/ `mass_anchor_extra_strength=1.0`（質量依存周期 — 重い星ほど緩い anchor・長周期・広い軌道、**Kepler 第3法則ではなく** 周回 star 自身の質量がバネ定数を決める調和振動子）/ `max_displacement_norm=2.0`（上記必須）/ `orbital_tick_enabled=True` / **`orbital_tick_neighbor_gravity_enabled=False`（上記★★ より必須 — 純 self-anchor 公転）**。すべて default OFF（`α_t=0` で bit-for-bit rollback）なので、**measurement-first** で env opt-in（`GAOTTT_ORBITAL_TANGENTIAL_ALPHA=0.5` 等）→ 1–2 週観測 → `tests/perf/test_tier4_phase_q_orbital.py` で displacement 分布を見て確定、の運用 pattern を踏む。本番投入前に DB backup + 他 MCP/REST プロセス停止（write-behind 上書き罠）。本番 velocity field は飽和（median `|v|=0.05`）だが、純 self-anchor 公転下では gentle に settle する（bounded、clamp 不到達）ので強制 cool-down は不要。
+
+## 重力スケール — 近傍重力 governor（Phase Q2 — Gravitational Scale、2026-05-31）
+
+密な corpus では近傍重力ベクトルが RURI の狭 cosine 帯で **coherent に加算**（coherence ~0.8-1.0、net∝N）し、anchor 復元力の ~10⁴-10⁵倍・重い裾（ratio p90~10⁵）になる。単一の大域 `gravity_G` ではこの裾を飼えないので、per-node で attractive 近傍力（近傍重力 + mass-BH）を `g_i = min(1, α · k_eff(m_i) · max(‖d_i‖, d_floor) / ‖acc_neigh‖)` で cap する（密度適応オートゲイン、方向は保存、anchor / query 引力 / Λ は cap しない、source 分岐ゼロ）。詳細: [Plans — Phase Q2](Plans-Phase-Q2-Gravitational-Scale.md)。
+
+| パラメータ | 既定 | 説明 |
+|---|---|---|
+| **gravity_neighbor_governor_enabled** | **`True`** | 近傍重力 governor。**2026-05-31 に default ON へ昇格**（段階4 acceptance + 本番 live healthy を承けた owner 判断、規約「新 field は default OFF」からの意図的 promotion）。`False` で bit-exact pre-Q2 legacy |
+| gravity_neighbor_governor_alpha (α) | 0.2 | cap 目標 = α × anchor 力スケール。query 引力の effective 学習率を実質決める（governor が近傍重力を抑えると query 引力項が un-mask される） |
+| gravity_neighbor_governor_disp_floor | 0.1 | `‖d‖` の床。anchor 直近（d≈0）でも cap ref が 0 にならないようにする |
+
+> **チューニング助言**: `α` が肝。**上げる**と近傍重力の許容量が増え（cluster 結合が強まる）query 引力の effective 学習率は相対的に下がる、**下げる**と近傍重力をより強く抑え query 引力ドリフトが効く（段階4 実測: ranking は単一クエリで中立だが、recall を重ねた drift が α 依存で OFF 0.018 → ON 0.832）。`0.2` は保守的初期値。**measurement-first**: 1-2 週観測して「query 方向ドリフトが relevance を改善するか / しすぎないか」を見て調整、env `GAOTTT_GRAVITY_NEIGHBOR_GOVERNOR_ALPHA=0.3` 等で JSON 編集なしに動かせる。velocity 飽和が起きている既存 DB は M006 cooldown（[Operations — Migration](Operations-Migration.md) §Phase Q2）とセットで投入。pre-Q2 挙動が要るときだけ `GAOTTT_GRAVITY_NEIGHBOR_GOVERNOR_ENABLED=false`。
 
 ## Query 引力（Phase I — Stage 2 + Stage 3 + Stage 4）
 

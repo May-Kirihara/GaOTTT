@@ -10,6 +10,21 @@
 
 ---
 
+<!-- TEMP-NOTICE-PHASE-Q2 START — remove after the ~2-week observation window (≈2026-06-14) -->
+> [!IMPORTANT]
+> **2026-05-31 · Large change — the Phase Q2 gravitational-scale governor is live.** If you run an existing GaOTTT instance, do a one-time migration after updating. Full details: [Operations — Migration](docs/wiki/Operations-Migration.md).
+>
+> 1. **Update** to this version, then **stop the backend** (proxy mode: `pkill -f "gaottt.server.mcp_server"`).
+> 2. **Run the velocity cooldown** — auto-backs up your data dir; velocity-only reset, learned displacement preserved. M006 only fires if your velocity field is actually saturated:
+>    ```bash
+>    .venv/bin/python scripts/migrate.py --apply        # applies M006 "phase-q2-velocity-cooldown"
+>    ```
+> 3. The governor is **ON by default** in this version — no env needed. (To tune the per-node cap, set `GAOTTT_GRAVITY_NEIGHBOR_GOVERNOR_ALPHA` in your MCP server env, default `0.2`; to opt out, set `GAOTTT_GRAVITY_NEIGHBOR_GOVERNOR_ENABLED=false`.)
+> 4. **Restart** your MCP client so a fresh backend spawns with the new code. (Proxy mode relays to any backend already on `:7878` — kill the old one first, hence step 1.)
+>
+> Why: on a dense corpus the neighbour-gravity term is ~10⁴–10⁵× over-scaled and saturates the velocity field. The governor caps it per node (anchor-referenced) and is **ranking-neutral** — your search results don't change; the effect is bounded velocity + query-attraction drift un-masked over time. *This notice is temporary and will be removed after the observation window.*
+<!-- TEMP-NOTICE-PHASE-Q2 END -->
+
 ## Overview
 
 GaOTTT is **long-term external memory for AI agents** — and, structurally, an online optimizer that runs at inference time. Documents become nodes with mass, temperature, and gravitational displacement; co-retrieved documents drift closer together; the knowledge space self-organizes with every query. The more you use it, the more its representations change — closer to **online learning of the retrieval geometry than to plain caching**.
