@@ -926,6 +926,26 @@ class GaOTTTConfig:
                     name, val,
                 )
 
+        # Phase Q — orbit mode needs a finite displacement clamp. The
+        # relaxation regime left ``max_displacement_norm`` effectively infinite
+        # (1e6) because Hooke + friction settle to a natural equilibrium. But
+        # with the continuous orbital tick, tangential seeding + neighbor
+        # gravity 1/r² close encounters can drive a net outward drift the
+        # velocity clamp does NOT stop (Stage 3 finding — displacement reached
+        # |d|≈26 over 500 steps in test). The only backstop in that regime is
+        # ``max_displacement_norm`` itself, so warn if it is left ~infinite
+        # while the tick is on. (Warning, not error — a deliberately large cap
+        # is a valid choice for someone who knows what they are doing.)
+        if self.orbital_tick_enabled and self.max_displacement_norm > 100.0:
+            logger.warning(
+                "GaOTTTConfig: orbital_tick_enabled=True with "
+                "max_displacement_norm=%r (effectively unbounded). Orbit mode "
+                "can drift without a finite displacement clamp; set "
+                "max_displacement_norm to a finite value (e.g. 2.0). See "
+                "docs/wiki/Plans-Phase-Q-Orbital-Mechanics.md Stage 3.",
+                self.max_displacement_norm,
+            )
+
     @staticmethod
     def _coerce_env(raw: str, target: type):
         """Coerce an env-var string to a scalar field's type.

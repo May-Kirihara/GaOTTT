@@ -1,6 +1,17 @@
 # Plans — Phase Q: Orbital Mechanics (Rosette Orbits Around Own Anchor)
 
-> **Status (2026-05-30)**: 起草。Phase I で「星が動く」を、Phase P で「重力に対抗する圧力」を入れた上に、**ノードが自分の anchor を中心に閉軌道（楕円/ロゼット）を描く**保存系レジームを足す。狙いは "宇宙の再現度" — 緩和（relax）して平衡に落ちるだけの場を、**公転し・歳差し・やがて熱力学的に井戸へ螺旋落下する**力学系に拡張する。**anchor migration はゼロ**（自分のホームを回る、他者の衛星にはしない）。**この計画はまだ実装されていない。default OFF。**
+> **Status (2026-05-30)**: **Stage 1–3 実装完了・コミット済み（ブランチ `feat/phase-q-orbital-mechanics`、未 push、全 default OFF）**。Phase I で「星が動く」を、Phase P で「重力に対抗する圧力」を入れた上に、**ノードが自分の anchor を中心に閉軌道（楕円/ロゼット）を描く**保存系レジームを足す。狙いは "宇宙の再現度" — 緩和（relax）して平衡に落ちるだけの場を、**公転し・歳差し・やがて熱力学的に井戸へ螺旋落下する**力学系に拡張する。**anchor migration はゼロ**（自分のホームを回る、他者の衛星にはしない）。
+>
+> | Stage | commit | 内容 |
+> |---|---|---|
+> | 計画 | `dac2686` | 本計画書 |
+> | 1 | `ebade88` | 接線速度 seeding (`_perpendicular_unit` + `compute_gravity_kick`/supernova) + velocity-Verlet (`update_orbital_state`) + config `orbital_tangential_alpha`/`orbital_integrator`。unit 9 |
+> | 2 | `8aa4150` | `engine._orbital_tick()` を dream loop に（lively set だけ recall なしで積分、age friction を tick で抑制） + config `orbital_tick_enabled`/`orbital_lively_v_min`/`orbital_tick_max_nodes`。integration 4 |
+> | 3 | `65c8a1d` | orbit-regime 安定性 unit 2（displacement clamp backstop + energy 散逸）+ config 安全ガード |
+>
+> **★ Stage 3 の発見（[§4 Stage 3](#stage-3--stability-test-の再定義) 参照）**: orbit mode では displacement が runaway しうる。純粋な自 anchor 公転（近傍弱）は energy だけで bound されるが、**強い近傍重力の 1/r² 近接特異点は velocity clamp では止まらない正味の外向きドリフトを生む（500 step で |d|≈26）**。→ orbit regime の runaway backstop は **`max_displacement_norm` clamp そのもの**。Phase I が `max_displacement_norm=1e6`（実質∞）にしたのは relax regime 限定の判断で、orbit mode では**有限値（例 2.0）の設定が必須**。`__post_init__` に `orbital_tick_enabled` + 大 `max_displacement_norm` の警告ガードを追加済み。
+>
+> **残り Stage 4**: friction 0.005 / β=1.0 bundle の本番 measurement-first tuning、env opt-in rollout、[Operations — Tuning](Operations-Tuning.md) / [Architecture — Overview](Architecture-Overview.md) 設計判断表の更新、viz 軌道トレイル、real-RURI Tier 4 perf 版、push。
 
 ---
 
