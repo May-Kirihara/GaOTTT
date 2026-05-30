@@ -257,3 +257,39 @@ async def test_tick_neighbor_gravity_off_by_default(tmp_path):
     # Default (OFF) path stays finite and clamp-bounded (pure self-anchor).
     assert np.all(np.isfinite(d_off))
     assert float(np.linalg.norm(d_off)) <= 2.0 + 1e-6
+
+
+@pytest.mark.asyncio
+async def test_reset_velocities_clears_velocity_keeps_displacement(tmp_path):
+    """Phase Q2 — engine.reset_velocities() is the velocity-only cooldown:
+    velocity (cache + store) is cleared, displacement (the learned positions)
+    is preserved. Mirror of the store-level test, through the engine path
+    (flush → SQL → clear velocity cache)."""
+    engine = _make_engine(tmp_path)
+    await engine.startup()
+    try:
+        ids = await _index(engine, 3)
+        dim = engine.config.embedding_dim
+        for nid in ids:
+            disp = np.zeros(dim, dtype=np.float32)
+            disp[0] = 0.25
+            engine.cache.set_displacement(nid, disp)
+            _set_velocity(engine, nid, 0.02)
+        disp_before = {nid: engine.cache.get_displacement(nid).copy() for nid in ids}
+
+        affected = await engine.reset_velocities()
+        assert affected == 3
+
+        for nid in ids:
+            # velocity cleared from the cache
+            assert engine.cache.get_velocity(nid) is None
+            # displacement preserved
+            assert np.allclose(engine.cache.get_displacement(nid), disp_before[nid])
+
+        # and persisted: store has NULL velocity, displacement intact
+        vels = await engine.store.load_velocities()
+        disps = await engine.store.load_displacements()
+        assert vels == {}
+        assert set(disps) == set(ids)
+    finally:
+        await engine.shutdown()

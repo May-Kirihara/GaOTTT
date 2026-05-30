@@ -739,6 +739,105 @@ M005 = Migration(
 
 
 # ---------------------------------------------------------------------
+# M006 — Phase Q2: velocity cooldown
+# ---------------------------------------------------------------------
+# The pre-Q2 over-scaled neighbour gravity pushed ~99% of nodes' velocity to
+# the clamp during recalls (a degenerate, saturated momentum field — pass-6:
+# median |v| = the clamp, cos(v, current gravity) ≈ 0.87 so the direction is a
+# regenerable shadow of the gravity, not stored learning). M006 zeroes velocity
+# once, keeping displacement (the learned positions). Run alongside enabling the
+# Phase Q2 governor — otherwise the (still over-scaled) recall path re-saturates.
+
+M006_TRIGGER_FRACTION = 0.5     # ≥X% of active nodes near the velocity clamp → cooldown
+M006_VERIFY_FRACTION = 0.01
+
+
+def _saturated_velocity_stats(engine, config) -> tuple[int, int, float]:
+    """Return (active_count, near-clamp count, mean |v|).
+
+    A node counts as saturated when ``|v| > 0.5 · orbital_max_velocity``."""
+    thresh = 0.5 * config.orbital_max_velocity
+    total = 0
+    sat = 0
+    total_norm = 0.0
+    for state in engine.cache.get_all_nodes():
+        if state.is_archived:
+            continue
+        total += 1
+        v = engine.cache.get_velocity(state.id)
+        n = float(np.linalg.norm(v)) if v is not None else 0.0
+        total_norm += n
+        if n > thresh:
+            sat += 1
+    return total, sat, (total_norm / total if total else 0.0)
+
+
+async def _m006_needs_apply(engine, config):
+    total, sat, mean_norm = _saturated_velocity_stats(engine, config)
+    if total == 0:
+        return False, "DB has no active nodes — nothing to cool down"
+    frac = sat / total
+    msg = (
+        f"{sat}/{total} ({frac:.0%}) active nodes have |v| > "
+        f"{0.5 * config.orbital_max_velocity:.3f} (near the velocity clamp); "
+        f"mean |v| = {mean_norm:.4f}"
+    )
+    if frac > M006_TRIGGER_FRACTION:
+        return True, msg + " — momentum field saturated (Phase Q2 cooldown)"
+    return False, msg + " — below threshold"
+
+
+async def _m006_apply(engine, config):
+    t0 = time.time()
+    affected = await engine.reset_velocities()
+    elapsed = time.time() - t0
+    return (
+        f"cleared velocity on {affected} node rows (displacement preserved) "
+        f"in {elapsed:.1f}s"
+    )
+
+
+async def _m006_verify(engine, config):
+    total, sat, mean_norm = _saturated_velocity_stats(engine, config)
+    frac = sat / total if total else 0.0
+    if frac <= M006_VERIFY_FRACTION:
+        return True, (
+            f"{sat}/{total} ({frac:.0%}) saturated-velocity nodes remain; "
+            f"mean |v| = {mean_norm:.4f} — cooldown took effect"
+        )
+    return False, (
+        f"{sat}/{total} ({frac:.0%}) saturated-velocity nodes remain "
+        f"(> {M006_VERIFY_FRACTION:.0%}) — cooldown did not take effect"
+    )
+
+
+M006 = Migration(
+    version="M006",
+    name="phase-q2-velocity-cooldown",
+    description=(
+        "Zero the velocity column on every active node, keeping displacement. "
+        "One-time cooldown of the degenerate, clamp-saturated momentum field "
+        "that the pre-Q2 over-scaled neighbour gravity baked in. Velocity is a "
+        "regenerable derivative (pass-6: stored direction ≈ shadow of current "
+        "gravity); displacement (learned positions / query-attraction) is kept."
+    ),
+    critical=True,
+    warning=(
+        "DESTRUCTIVE — clears the stored velocity (momentum) on every node.\n"
+        "  Run as part of the Phase Q2 rollout, AFTER enabling the governor\n"
+        "  (gravity_neighbor_governor_enabled=True) — otherwise the still\n"
+        "  over-scaled recall path re-saturates velocity. Displacement is kept,\n"
+        "  so rankings are unaffected; velocity re-derives from the (governed)\n"
+        "  gravity as nodes are recalled. STOP other MCP/REST processes first\n"
+        "  (write-behind would otherwise re-flush the old saturated velocity)."
+    ),
+    needs_apply=_m006_needs_apply,
+    apply=_m006_apply,
+    verify=_m006_verify,
+)
+
+
+# ---------------------------------------------------------------------
 # Registry (add new migrations here, in order)
 # ---------------------------------------------------------------------
 
@@ -748,6 +847,7 @@ MIGRATIONS: list[Migration] = [
     M003,
     M004,
     M005,
+    M006,
 ]
 
 

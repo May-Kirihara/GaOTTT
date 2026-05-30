@@ -1947,6 +1947,34 @@ class GaOTTTEngine:
         )
         return affected
 
+    # --- Phase Q2: velocity-only cooldown ---
+
+    async def reset_velocities(self) -> int:
+        """Clear every node's velocity, keeping displacement intact.
+
+        Phase Q2 one-time cooldown of the degenerate, clamp-saturated momentum
+        field (the pre-Q2 over-scaled neighbour gravity pushed ~99% of nodes'
+        velocity to the clamp during recalls; that momentum lost its EMA
+        meaning). Displacement — the learned positions / query-attraction
+        integral — is preserved, unlike ``reset_orbital_state`` which wipes
+        both. Velocity is a regenerable derivative of the field, so the
+        (rescaled) gravity re-derives a correct, small velocity the next time
+        a node participates in dynamics.
+
+        Does NOT invalidate the prefetch cache or mark virtual FAISS dirty:
+        velocity affects only future mutation, never the current ranking
+        (which reads displacement) or the virtual-FAISS positions.
+
+        Flushes pending cache writes first, performs the SQL update, then
+        clears the in-memory velocity cache + dirty set.
+        """
+        await self.cache.flush_to_store(self.store)
+        affected = await self.store.reset_velocities()
+        self.cache.velocity_cache.clear()
+        self.cache.dirty_velocities.clear()
+        logger.info("Velocity cooldown: %d nodes cleared (velocity only)", affected)
+        return affected
+
     # --- Phase M Stage 1: Mass-only reset ---
 
     async def reset_masses(self, value: float = 1.0) -> int:
