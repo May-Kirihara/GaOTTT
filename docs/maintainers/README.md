@@ -16,6 +16,7 @@
 | [REST × MCP Unification Plan](rest-mcp-unification-plan.md) | REST API を MCP parity まで引き上げ、共有サービス層に集約するリファクタ計画（Phase S0-S6） |
 | [Dogfooding Usage Feel — 2026-05-26](handover-2026-05-26-dogfooding-usage-feel.md) | Claude/Codex が GaOTTT を実際に使った主観的な使用感、連想・固定観念・柔軟性、改善要望の引き継ぎ |
 | [Dogfooding External Perspective — 2026-05-26](handover-2026-05-26-dogfooding-external-perspective.md) | 新規 Claude セッションが 26k 記憶宇宙を初めて探索した「使う側」視点の正直な記録 — 3 つの発見と 3 つの失望 |
+| [Phase Q: Orbital Mechanics — 2026-05-30](handover-2026-05-30-phase-q-orbital-mechanics.md) | 公転・閉軌道（Bertrand / Hooke = 既に軌道力 / anchor migration ゼロ）の core 実装・検証・push 完了の引き継ぎ。Stage 3 runaway 発見、残りは本番 rollout のみ |
 
 ## 将来追加されうる項目
 
