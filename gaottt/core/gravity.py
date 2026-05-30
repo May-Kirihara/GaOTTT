@@ -273,13 +273,36 @@ def compute_acceleration(
         anchor_factor = 1.0 + config.mass_anchor_extra_strength * (
             1.0 - math.tanh(float(mass_i) / theta)
         )
-    acc = acc - config.orbital_anchor_strength * anchor_factor * displacement_i
 
-    # 3. Mass-threshold BH gravity (Phase M Stage 1).
+    # 3. Mass-threshold BH gravity (Phase M Stage 1) — computed here, but added
+    # below so the Phase Q2 governor can cap the full *attractive* neighbour
+    # force (neighbour gravity term 1 + mass-BH term 3) together.
     # node_id/cache/all_positions are unused now (they powered the old
     # co-occurrence BH centroid). Parameters kept for back-compat — call
     # sites need not change. The pull comes purely from neighbor mass.
-    acc = acc + compute_mass_bh_acceleration(pos_i, neighbors, config)
+    bh = compute_mass_bh_acceleration(pos_i, neighbors, config)
+
+    # Phase Q2 — anchor-referenced neighbour-gravity governor (per-node,
+    # density-adaptive). Caps the attractive neighbour force (term1 + term3) so
+    # its magnitude stays ≤ α × the anchor force scale; keeps direction. Dense
+    # nodes (huge coherent ``acc``) are scaled down hard; sparse nodes
+    # (|acc_neigh| ≤ ref) keep g=1 and are untouched. Anchor / query / Λ are not
+    # capped. Default OFF takes the legacy code path below, bit-exact (mass-BH
+    # added *after* the anchor, in the original order). See Plans-Phase-Q2.
+    if config.gravity_neighbor_governor_enabled:
+        acc = acc + bh  # attractive total (neighbour gravity + mass-BH)
+        k_eff = config.orbital_anchor_strength * anchor_factor
+        ref = config.gravity_neighbor_governor_alpha * k_eff * max(
+            float(np.linalg.norm(displacement_i)),
+            config.gravity_neighbor_governor_disp_floor,
+        )
+        nn = float(np.linalg.norm(acc))
+        if nn > ref and nn > 0.0:
+            acc = acc * (ref / nn)
+        acc = acc - config.orbital_anchor_strength * anchor_factor * displacement_i
+    else:
+        acc = acc - config.orbital_anchor_strength * anchor_factor * displacement_i
+        acc = acc + bh
 
     # 4. Query attraction (Phase I Stage 2 + Stage 3 mass-gating)
     if (

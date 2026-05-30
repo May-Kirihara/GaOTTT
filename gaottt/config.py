@@ -383,6 +383,25 @@ class GaOTTTConfig:
     orbital_max_velocity: float = 0.05      # Max L2 norm of velocity vector
     orbital_anchor_strength: float = 0.02   # Restoring force toward original position (Hooke's law)
 
+    # ---- Phase Q2: anchor-referenced neighbour-gravity governor --------------
+    # Density-adaptive cap on the *attractive* neighbour force (neighbour gravity
+    # + mass-BH) so it stays a perturbation rather than dominating the anchor.
+    # Phase Q rollout + Phase Q2 pass-5 (2026-05-30, isolated copy of the 41K
+    # field): in RURI's narrow high-cosine space the neighbour-gravity vectors
+    # sum *coherently* (coherence ~0.8-1.0, net ∝ N), so the net pull runs
+    # ~10⁴-10⁵× the anchor restoring force (~0.005) and has a heavy tail
+    # (ratio p90 ~10⁵). A single small global gravity_G cannot tame that tail,
+    # so we cap per node: scale the attractive force by
+    #   g_i = min(1, α · k_eff(m_i) · max(|d_i|, d_floor) / |acc_neigh|)
+    # which holds neighbour gravity at ≤ α × the anchor force scale, adapting to
+    # each node's local density (dense → smaller g_i; sparse → g_i=1, untouched).
+    # The direction is preserved; anchor / query-attraction / Λ are NOT capped.
+    # Source-blind (mass + geometry only). Default OFF = bit-exact legacy.
+    # See docs/wiki/Plans-Phase-Q2-Gravitational-Scale.md §4.
+    gravity_neighbor_governor_enabled: bool = False
+    gravity_neighbor_governor_alpha: float = 0.2    # target net ≈ α × anchor force
+    gravity_neighbor_governor_disp_floor: float = 0.1  # |d| floor so d≈0 isn't fully suppressed
+
     # ---- Phase Q: Orbital Mechanics (rosette orbits around own anchor) -------
     # The Hooke anchor (orbital_anchor_strength) is F = -k·d toward a node's
     # own original embedding x₀. By Bertrand's theorem this isotropic-harmonic
