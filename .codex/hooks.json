@@ -12,7 +12,7 @@
           {
             "type": "command",
             "command": "sh -c '\"$HOME/GaOTTT/.venv/bin/python\" \"$HOME/GaOTTT/scripts/hooks/save_candidates_inject.py\" --codex'",
-            "timeout": 5,
+            "timeout": 2,
             "statusMessage": "gaottt: surface save candidates"
           }
         ]

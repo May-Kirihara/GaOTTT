@@ -114,6 +114,17 @@ class GaOTTTEngine:
         self._faiss_dirty: bool = False
         self._faiss_save_task: asyncio.Task | None = None
         self._faiss_save_stop: asyncio.Event | None = None
+        # Reverse-overwrite guard. Latched True by startup diagnostics when
+        # this process loaded a FAISS index severely undersized vs the SQLite
+        # active-node count: the index is untrustworthy, so this process must
+        # never persist it back to disk (it would clobber a good index written
+        # by a healthy sibling). Stays latched for the life of the process —
+        # recover by running scripts/rebuild_faiss_from_db.py with all other
+        # gaottt processes stopped, then restart.
+        self._faiss_persist_blocked: bool = False
+        # One-shot latch so the persist-skip path logs at most once per
+        # process instead of every save tick.
+        self._faiss_persist_guard_warned: bool = False
         # Virtual FAISS write-behind. Same multi-process visibility
         # problem as raw FAISS but driven by cache.displacement edits
         # (Phase I/J query attraction, genesis kicks, dream loop). The
@@ -247,18 +258,72 @@ class GaOTTTEngine:
         await self.cache.stop_write_behind()
         await self.cache.flush_to_store(self.store)
         # Final synchronous save guarantees durability even if the loop
-        # was disabled or skipped a final tick.
-        await asyncio.to_thread(
-            self.faiss_index.save, self.config.faiss_index_path,
-        )
-        if self.virtual_faiss_index is not None:
+        # was disabled or skipped a final tick — but still honour the
+        # reverse-overwrite guard so a broken-index process doesn't clobber a
+        # good on-disk index on its way out.
+        ok, reason = self._faiss_safe_to_persist()
+        if ok:
             await asyncio.to_thread(
-                self.virtual_faiss_index.save,
-                self.config.virtual_faiss_index_path,
+                self.faiss_index.save, self.config.faiss_index_path,
             )
+            if self.virtual_faiss_index is not None:
+                await asyncio.to_thread(
+                    self.virtual_faiss_index.save,
+                    self.config.virtual_faiss_index_path,
+                )
+        else:
+            self._log_persist_skip(reason)
         self._faiss_dirty = False
         await self.store.close()
         logger.info("Engine shut down, state persisted")
+
+    def _faiss_safe_to_persist(self) -> tuple[bool, str]:
+        """Reverse-overwrite guard: may this process write FAISS to disk?
+
+        Returns ``(ok, reason)``. ``ok=False`` means the in-memory index is
+        untrustworthy and persisting it would risk clobbering a good on-disk
+        index written by a healthy sibling process.
+
+        Two gates:
+          * ``_faiss_persist_blocked`` — a hard latch set by startup
+            diagnostics when the loaded index was severely undersized.
+          * dynamic ratio — ``faiss.size`` has fallen far below the SQLite
+            active-node count *right now*. Inert below ``faiss_persist_floor``
+            (small/reset DBs) and when the guard is disabled by config.
+
+        Legitimate bulk shrink (forget/compact) evicts from cache too, so the
+        active count falls in lockstep and ``size/active`` stays healthy — the
+        guard does not misfire on intentional deletion.
+        """
+        if self._faiss_persist_blocked:
+            return False, "persist blocked (startup severe-undersize latch)"
+        if not self.config.faiss_persist_guard_enabled:
+            return True, ""
+        active = sum(
+            1 for s in self.cache.get_all_nodes() if not s.is_archived
+        )
+        if active < self.config.faiss_persist_floor:
+            return True, ""
+        size = self.faiss_index.size
+        if size < active * self.config.faiss_persist_min_ratio:
+            return (
+                False,
+                f"faiss.size={size} << SQLite active={active} "
+                f"(ratio<{self.config.faiss_persist_min_ratio}); refusing to "
+                f"overwrite a healthy on-disk index",
+            )
+        return True, ""
+
+    def _log_persist_skip(self, reason: str) -> None:
+        """Log a guard-triggered persist skip at most once per process."""
+        if not self._faiss_persist_guard_warned:
+            self._faiss_persist_guard_warned = True
+            logger.error(
+                "FAISS persist BLOCKED — %s. This process will not write FAISS "
+                "to disk. Recover: stop all gaottt processes, run "
+                "`scripts/rebuild_faiss_from_db.py --apply`, then restart.",
+                reason,
+            )
 
     async def _faiss_save_loop(self) -> None:
         """Background FAISS save: persists in-memory FAISS additions on a
@@ -276,6 +341,12 @@ class GaOTTTEngine:
             except asyncio.TimeoutError:
                 pass  # interval elapsed, try a save tick
             if self._faiss_dirty:
+                ok, reason = self._faiss_safe_to_persist()
+                if not ok:
+                    # Keep dirty=True so a later healthy state still flushes,
+                    # but never overwrite a good on-disk index from here.
+                    self._log_persist_skip(reason)
+                    continue
                 # Claim before save so any add() during the save itself
                 # leaves dirty=True for the next tick to handle.
                 self._faiss_dirty = False
@@ -309,6 +380,13 @@ class GaOTTTEngine:
             except asyncio.TimeoutError:
                 pass  # interval elapsed, try a rebuild tick
             if self.cache.virtual_faiss_dirty:
+                # The virtual index is derived from the raw index; if the raw
+                # index is untrustworthy (reverse-overwrite guard tripped),
+                # the virtual one is too — do not persist either.
+                ok, reason = self._faiss_safe_to_persist()
+                if not ok:
+                    self._log_persist_skip(reason)
+                    continue
                 # Claim before rebuild so any set_displacement during the
                 # rebuild itself leaves dirty=True for the next tick.
                 self.cache.virtual_faiss_dirty = False

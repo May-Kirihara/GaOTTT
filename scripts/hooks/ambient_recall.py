@@ -79,6 +79,11 @@ Tunables (environment variables):
                             after a backend (re)start can be ~3-4s while
                             virtual FAISS / caches warm up.
   GAOTTT_AMBIENT_MIN_CHARS  skip prompts shorter than this (default 12)
+  GAOTTT_HOOK_ANTI_RESTACK  "0"/"false"/"no" disables the anti-restack marker
+                            guard (default on). When on, prompts containing the
+                            ambient block's distinctive marker string are
+                            silently skipped — prevents re-injection when a
+                            frontend re-submits an already-augmented prompt.
   GAOTTT_AMBIENT_EXCLUDE_TAGS  comma-separated tag substrings to drop from
                             direct / lensing / persona candidates (default
                             "smoke-test,test"). Keeps test artifacts out of
@@ -179,6 +184,10 @@ _SHOW_COMPOSED_QUERY = os.environ.get(
 
 _BLOCK_TAG = "<gaottt-ambient-recall>"
 _CLOSE_TAG = "</gaottt-ambient-recall>"
+# Same distinctive marker the opencode plugin uses (opencode-ambient-recall.ts:90)
+# to detect a prior injection. A user would never type this literally, so
+# detecting it means the prompt is a re-submitted already-augmented prompt.
+INJECTED_MARKER = "GaOTTT 長期記憶から自動取得した関連知識"
 # ``<!-- ambient-ids direct=id1,id2 lensing=id3 persona=id4 -->`` —
 # emitted by ``services.formatters.format_ambient`` at the bottom of every
 # successful ambient block. Tolerant: missing keys are simply absent.
@@ -371,6 +380,12 @@ def _disabled() -> bool:
     )
 
 
+def _anti_restack() -> bool:
+    return os.environ.get("GAOTTT_HOOK_ANTI_RESTACK", "1").strip().lower() not in (
+        "0", "false", "no", "off", "",
+    )
+
+
 async def _ambient_recall(
     prompt: str, recently_surfaced: dict[str, int] | None = None,
 ) -> str | None:
@@ -457,6 +472,8 @@ def main() -> int:
         return 0
     prompt = str(payload.get("prompt") or "").strip()
     if len(prompt) < _MIN_CHARS:
+        return 0
+    if _anti_restack() and INJECTED_MARKER in prompt:
         return 0
     # Frontend parity (2026-05-25, Lateral Association follow-up): the hook
     # accepts ``history`` and ``recently_surfaced`` directly in the payload.

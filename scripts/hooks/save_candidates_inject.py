@@ -21,6 +21,11 @@ hook's raw stdout; it reads a JSON envelope and pulls
 ``GAOTTT_HOOK_OUTPUT=codex``) switches the emit path to that envelope. The
 state-file handoff written by the Stop hook is identical across frontends.
 
+Codex passes ``session_id`` in both the Stop and the next UserPromptSubmit
+events; the state-file bridge relies on Codex providing the **same**
+``session_id`` across both. If ``session_id`` changes between events the
+read will find no state file and silently skip (fail-safe no-op, never blocks).
+
 Tunables (environment variables):
   GAOTTT_SAVE_CANDIDATES_ENABLED      "0"/"false"/"off" disables (default on).
                                       Shared switch with the Stop side so a

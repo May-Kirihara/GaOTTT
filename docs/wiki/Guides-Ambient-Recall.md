@@ -192,6 +192,7 @@ Claude Code は `.claude/settings.json` の `command` か shell 環境で、open
 | `GAOTTT_AMBIENT_MIN_SCORE` | (未設定) | Python フック | **フォールバック** virtual_score gate のしきい値上書き。主たる gate は BM25（後述、`config.ambient_bm25_min_score`）で、これは BM25 不在時のみ効く |
 | `GAOTTT_AMBIENT_TIMEOUT` | `6.0` | 両方 | recall のハードタイムアウト（秒）。steady-state ~0.5s だが backend 再起動直後の数分は virtual FAISS 等の warmup で ~3-4s。opencode プラグインは子プロセスにこれ + 3 秒の余裕を与える |
 | `GAOTTT_AMBIENT_MIN_CHARS` | `12` | 両方 | この文字数未満のプロンプトはスキップ |
+| `GAOTTT_HOOK_ANTI_RESTACK` | `1` | Python フック | `0`/`false`/`no` で再注入 marker ガードを無効化 (default on)。プロンプトに既注入 marker が含まれている場合、バックエンド呼び出しをスキップし二重注入を防止する (opencode plugin と parity) |
 | `GAOTTT_AMBIENT_EXCLUDE_TAGS` | `smoke-test,test` | Python フック | substring マッチで direct / lensing / persona 候補から除外する tag リスト（CSV）。MCP/REST smoke 用 memory を corpus に残しつつ ambient 注入だけ silent にする（[Plans — Ambient Recall Refinement](Plans-Ambient-Recall-Refinement.md) Stage 2）。空文字列で除外無効化 |
 | `GAOTTT_AMBIENT_EXPOSE_BREAKDOWN` | (未設定) | Python フック | `1`/`true`/`on` で各 slot 行末に ` [raw=.. virt=.. bm25 mass=..]` を追記し、なぜその memory が surface したかを caller に露出する（[Plans — Ambient Recall Refinement](Plans-Ambient-Recall-Refinement.md) Stage 3）。default off — 本番では token budget 優先、debug session / measurement (Stage 5) で opt-in |
 | `GAOTTT_AMBIENT_HISTORY_TURNS` | `2` | 両方 | 当該プロンプトの前に concat する **直前 N 件のユーザープロンプト**（[Plans — Ambient Recall Refinement](Plans-Ambient-Recall-Refinement.md) Stage 4）。Claude Code は `transcript_path` を tolerant に解析、opencode は `client.session.messages()` (SDK) を呼んで取得 — どちらも Python フック stdin の `history` payload に乗せる。`0` で legacy（当該プロンプトのみ）。短い接続的 prompt（"次のステップに進みましょう" 等）で context が落ちる失敗を補正。取得失敗時は silent に legacy 動作にフォールバック |
@@ -228,6 +229,8 @@ gate の信号源は **語単位（Sudachi）BM25 の「強一致」gate**。cor
 ## fail-safe 設計
 
 フックは構造上 fail-safe — **ユーザーのプロンプトを絶対にブロックしない**。backend が落ちている / 遅い / プロトコルエラー、stdin が壊れている、いずれの場合も無出力で exit 0。`GAOTTT_AMBIENT_TIMEOUT` 秒を超えたら諦める。GaOTTT が動いていなくてもエージェントの利用は一切妨げない。opencode プラグインも同じ — `chat.message` フック全体が try/catch で囲まれ、いかなる例外もメッセージをブロックも摂動もしない。挙動を確認したいときは `GAOTTT_AMBIENT_DEBUG` でログを出す。
+
+Python hook は **anti-restack guard** (`GAOTTT_HOOK_ANTI_RESTACK`、default on) を持ち、prompt に既注入 ambient block の marker 文字列が含まれている場合は backend を呼ばず即座に return 0 する — フロントエンドが既注入プロンプトを再投入した際の二重スタックを構造的に防止する (opencode plugin と parity、backend 非依存)。
 
 ## 既知の性質 — ambient-only な記憶は decay する
 

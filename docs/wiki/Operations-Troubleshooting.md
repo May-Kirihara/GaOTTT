@@ -219,6 +219,57 @@ mcp__gaottt__ambient_recall(query="...", direct_k=2, expose_breakdown=true)
 - 言語ギャップを越えたいときは `tag_filter` / `source_filter` でターゲットを明示注入する（語彙・言語が違っても seed pool に強制投入される）
 - 英語コーパスを本格運用する / 英語で横断検索したい場合は multilingual モデル（multilingual-e5-large, BGE-M3 等）への移行が必要。移行は FAISS index 全再構築（`compact(rebuild_faiss=True)`）を伴い、displacement 蓄積もリセットされる破壊的操作。異なる embedder のベクトルを同一 index に混在させると比較不能なので「日本語 RURI のまま」か「多言語移行」かは二者択一。
 
+## 問題5.5: FAISS が2件などに激減（逆方向上書き罠）
+
+**症状**: `recall` がほぼ空、`scripts/visualize_3d.py` が「2 stars」で UMAP が
+`zero-size array to reduction operation maximum` で落ちる。`gaottt.faiss` が
+数KB（正常時は数十〜百MB）。DB (`gaottt.db`) は通常サイズのまま。
+
+**原因**: 「逆方向上書き罠」。stdio で多数の MCP プロセスが並走しているとき、
+ほぼ空の in-memory FAISS を持つプロセスが write-behind save ループ（既定5秒）で
+ディスク上の**正常なインデックスを空のもので上書き**し続ける。DB は無傷なので
+完全復旧できる（RURI は決定論的、`documents.content` から再エンベッドすれば raw
+ベクトルはビット単位で元通り。mass/displacement/velocity は SQLite に保持）。
+
+> **注意**: 本番データは XDG パス `~/.local/share/gaottt/` に置かれる
+> （リポジトリ内の `./data` ではない）。解決先の確認は
+> `scripts/rebuild_faiss_from_db.py --check`。
+
+**診断（read-only）**:
+```bash
+.venv/bin/python scripts/rebuild_faiss_from_db.py --check
+# raw FAISS vectors が SQLite documents より桁違いに少なければ desync
+```
+
+**復旧**（順序が重要 — プロセスを止めてから rebuild）:
+```bash
+# 1. バックアップ
+cp ~/.local/share/gaottt/gaottt.faiss ~/.local/share/gaottt/gaottt.faiss.broken-$(date +%Y%m%d-%H%M%S)
+cp ~/.local/share/gaottt/gaottt.db    ~/.local/share/gaottt/gaottt.db.before-rebuild-$(date +%Y%m%d-%H%M%S)
+# 2. 全 gaottt プロセス停止（これをやらないと逆方向上書きが続く）
+ps -ef | grep 'gaottt.server.mcp_server' | grep -v grep
+pkill -f 'gaottt.server.mcp_server'   # :7878 backend も含む
+# 3. DB から再構築（RURI で再エンベッド、規模により数分〜十数分）
+.venv/bin/python scripts/rebuild_faiss_from_db.py --apply
+# 4. 検証
+.venv/bin/python scripts/rebuild_faiss_from_db.py --check
+.venv/bin/python scripts/verify_faiss_recovery.py
+```
+
+**再発防止（自動）**: 2026-05-31 に **逆方向上書きガード** を追加。`faiss.size`
+が SQLite active ノード数の `faiss_persist_min_ratio`（既定 0.5）未満で
+`active >= faiss_persist_floor`（既定 100）のとき、全 FAISS 永続経路（save
+ループ + shutdown 最終 save）が**書き込みを拒否**する。起動時診断（Tier B）は
+severe undersize を WARN→ERROR に昇格し、そのプロセスの永続を恒久 block + 復旧
+手順をログ出力する（rebuild storm 回避のため自動 rebuild はしない）。正当な大量
+`forget`/`compact` は cache active 数も同時に減るので誤発動しない。
+`GAOTTT_FAISS_PERSIST_GUARD_ENABLED=0` で無効化可。詳細パラメータは
+[Operations — Tuning](Operations-Tuning.md)。
+
+**根本対策**: stdio での複数 agent 同時起動が構造的原因。ガードは*上書き*を
+止めるが、複数 stdio engine の並走自体は止めない。proxy mode への統一が運用上の
+follow-up（[Operations — Server Setup](Operations-Server-Setup.md)）。
+
 ## FAISS と SQLite のカウントが合わない
 
 **症状**: `recall` で存在するはずの node が surface しない、または `compact(rebuild_faiss=True)` を実行しても FAISS count が SQLite count より少ないまま。

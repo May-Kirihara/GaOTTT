@@ -85,6 +85,17 @@ def format_revalidate(result: RevalidateResponse) -> str:
 _COMPACT_LIMIT = 300
 
 
+def _truncate(content: str, limit: int) -> str:
+    """Truncate *content* at *limit* chars with a length marker.
+
+    ``limit <= 0`` means unlimited (content returned unchanged). The marker
+    follows the ``compact`` mode convention: ``…(N chars)``.
+    """
+    if limit <= 0 or len(content) <= limit:
+        return content
+    return content[:limit] + f"…({len(content)} chars)"
+
+
 def _format_breakdown(b) -> str:
     """Phase O Stage 1 — one-line additive breakdown of final_score.
 
@@ -182,13 +193,18 @@ def _format_routing_hint(h) -> str:
     )
 
 
-def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
+def format_recall(result: RecallResponse, output_mode: str = "full", *, verbose: bool = True) -> str:
     """Format recall results for MCP output.
 
     output_mode:
       "full"    — full content (default, backward-compatible)
       "compact" — content truncated at 300 chars with length indicator
       "ids"     — header line only, no content
+    verbose:
+      When True (default) per-result breakdown lines and the 訓練差分
+      trailer are emitted — Phase O observability preserved. When False
+      (lightweight triage: ids / compact / list) they are suppressed to
+      save tokens.
     """
     if not result.items:
         # Even with no memories, surface the auto-routed reflect summary so
@@ -206,7 +222,7 @@ def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
             f"source={item.source}{tag_str}, "
             f"displacement={item.displacement_norm:.4f})"
         )
-        breakdown_line = _format_breakdown(item.score_breakdown)
+        breakdown_line = _format_breakdown(item.score_breakdown) if verbose else ""
         if output_mode == "ids":
             block = header
             if breakdown_line:
@@ -228,7 +244,7 @@ def format_recall(result: RecallResponse, output_mode: str = "full") -> str:
             block += f"\n{item.content}"
             lines.append(block)
     body = "\n\n---\n\n".join(lines)
-    trailer = _format_training_delta(result.training_delta)
+    trailer = _format_training_delta(result.training_delta) if verbose else ""
     routing_trailer = _format_routing_hint(result.routing_hint)
     return body + trailer + routing_trailer
 
@@ -325,14 +341,21 @@ def _ambient_breakdown(b) -> str:
     return suffix
 
 
-def format_ambient(result: AmbientRecallResponse) -> str:
+def format_ambient(result: AmbientRecallResponse, *, config=None) -> str:
     """Ambient Recall Enrichment — the ``<gaottt-ambient-recall>`` block.
 
     Returns the full block when there is something to inject. When the
     relevance gate suppressed injection (``count == 0``) it returns a short
     non-block sentinel — the UserPromptSubmit hook keys on the leading
     ``<gaottt-ambient-recall>`` tag to decide whether to emit.
+
+    *config* is an optional GaOTTTConfig; when provided (and non-None) its
+    ``ambient_direct_max_chars`` / ``ambient_lensing_max_chars`` fields are
+    used to truncate slot content. When ``None`` (legacy callers) no
+    truncation is applied — backward-compatible.
     """
+    d_limit = getattr(config, "ambient_direct_max_chars", 0) if config else 0
+    l_limit = getattr(config, "ambient_lensing_max_chars", 0) if config else 0
     if result.count == 0:
         return "(関連する記憶なし)"
     lines = [
@@ -345,7 +368,7 @@ def format_ambient(result: AmbientRecallResponse) -> str:
         lines.append("▼ 直接ヒット")
         for i, m in enumerate(result.direct, 1):
             lines.append(
-                f" {i}. [{_ambient_meta(m)}] {m.content}"
+                f" {i}. [{_ambient_meta(m)}] {_truncate(m.content, d_limit)}"
                 f"{_ambient_breakdown(m.breakdown)}"
             )
             if m.because:
@@ -366,7 +389,7 @@ def format_ambient(result: AmbientRecallResponse) -> str:
             )
         for m in result.lensing:
             lines.append(
-                f" · [{_ambient_meta(m)}] {m.content}"
+                f" · [{_ambient_meta(m)}] {_truncate(m.content, l_limit)}"
                 f"{_ambient_breakdown(m.breakdown)}"
             )
             if m.because:
@@ -381,7 +404,7 @@ def format_ambient(result: AmbientRecallResponse) -> str:
         lines.append("▼ ささやき（場が手放していたが、語が触れた）")
         for m in result.dormant:
             lines.append(
-                f" · [{_ambient_meta(m)}] {m.content}"
+                f" · [{_ambient_meta(m)}] {_truncate(m.content, l_limit)}"
                 f"{_ambient_breakdown(m.breakdown)}"
             )
     if result.tensions:
