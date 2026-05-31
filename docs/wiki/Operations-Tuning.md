@@ -357,6 +357,7 @@ quiet node を idle 時間に synthetic recall で再活性化し、co-occurrenc
 | `GAOTTT_SAVE_CANDIDATES_STATE_DIR` | `~/.gaottt/save_candidates` | Stop → UserPromptSubmit bridge の per-session state file ディレクトリ |
 | `GAOTTT_SAVE_CANDIDATES_INCLUDE_PERSONA` | `1` | `0` で persona slot 省略 (ambient_recall persona slot との重複回避) |
 | `GAOTTT_SAVE_CANDIDATES_EMIT` | `state` | 出力モード。`state` = state file 書き込み (Claude Code Stop+Inject bridge)、`stdout` = block を直接 stdout に出力 (opencode plugin パス、`opencode-save-candidates.ts` が設定) |
+| `GAOTTT_HOOK_ANTI_RESTACK` | `1` | `0`/`false`/`no` で ambient_recall Python hook の再注入 marker ガードを無効化 (default on)。ガードは prompt に既注入 marker が含まれている場合にバックエンド呼び出しをスキップする (frontend parity: opencode plugin と同じ marker 文字列をチェック) |
 
 opencode plugin (`scripts/hooks/opencode-save-candidates.ts`) 専用の追加 env:
 

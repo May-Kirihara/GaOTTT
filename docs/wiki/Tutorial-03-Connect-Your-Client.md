@@ -341,16 +341,21 @@ Claude Code / OpenCode と同じ **ambient recall（読み側）+ save candidate
 
 > 💡 **Codex と Claude Code の唯一の差** は出力形式です。Claude Code は hook の raw stdout をそのまま文脈に注入しますが、Codex は **JSON エンベロープ**（`{"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ...}}`）を読みます。`--codex` フラグ（または `GAOTTT_HOOK_OUTPUT=codex`）がこのエンベロープ形式に切り替えます。transcript の読み取りも Codex の rollout JSONL（`event_msg` / `user_message`）に対応済みなので、マルチターン履歴もそのまま効きます。
 
-同梱の `.codex/hooks.json` は README と同じ `$HOME/GaOTTT` 規約（GaOTTT を**ホーム直下に clone**: `git clone … && cd GaOTTT`）でパスを書いてあるので、**書き換えなしでそのまま使えます**。Codex は command を shlex で分解するだけで `$HOME` を展開しないため、各 hook は `sh -c '…'` 経由で起動してシェルに展開させています（だから machine 非依存）。
+同梱の `.codex/hooks.json` は README と同じ `$HOME/GaOTTT` 規約（GaOTTT を**ホーム直下に clone**: `git clone … && cd GaOTTT`）でパスを書いてあります。**この規約に従えば書き換えなしでそのまま使えます**。別パスに clone した場合は、雛形内の 2 つの `$HOME/GaOTTT` を実際の repo パスに置換してから `~/.codex/hooks.json` にコピーしてください（下記 `sed` 例）。Codex は command を shlex で分解するだけで `$HOME` を展開しないため、各 hook は `sh -c '…'` 経由で起動してシェルに展開させています。
 
 **インストール（グローバル、全プロジェクトで有効）**:
 
 ```bash
 mkdir -p ~/.codex
 cp "$HOME/GaOTTT/.codex/hooks.json" ~/.codex/hooks.json
-# ホーム以外に clone した場合だけ、$HOME/GaOTTT を実際のパスに置換:
-#   sed -i 's#\$HOME/GaOTTT#/your/path/to/GaOTTT#g' ~/.codex/hooks.json
 ```
+
+> ⚠️ **`$HOME/GaOTTT` 以外に clone した場合**: 雛形内のパスを置換してからコピーしてください:
+> ```bash
+> sed 's#\$HOME/GaOTTT#/your/actual/path/to/GaOTTT#g' .codex/hooks.json > ~/.codex/hooks.json
+> ```
+
+**inject hook の推奨 timeout は 2s**（state file を 1 回 read するだけなので 5s は過大です。同梱雛形は既に 2s に設定済み）。
 
 **プロジェクト単位だけで良い場合** は、GaOTTT を呼ぶプロジェクトの直下に同じ `.codex/hooks.json` を置くだけ（GaOTTT repo 内で codex を動かすなら同梱の雛形がそのまま効きます）。
 
