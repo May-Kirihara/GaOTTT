@@ -241,7 +241,7 @@ async def recall(
     instantly. Pass `force_refresh=True` to bypass the prefetch cache and
     re-run the full wave simulation.
 
-    **Phase J Stage 2 — explicit pool injection** (`persona_context` /
+    **Explicit pool injection** (`persona_context` /
     `tag_filter`): the seed step pulls FAISS top-K *and* unions in every
     node matching the caller's explicit filters, bypassing
     `source_filter` restrictions. Use this when you need to surface a
@@ -262,15 +262,15 @@ async def recall(
         query: Search query
         top_k: Number of results (default 5)
         source_filter: Restrictive — only ``metadata.source`` matches survive
-                       the seed pool (Phase H Stage 2). Use for sparse class
+                       the seed pool. Use for sparse class
                        carve-out like ``["agent"]``.
         wave_depth: Override recursion depth (default from config)
         wave_k: Override initial seed count (default from config)
         force_refresh: Bypass prefetch cache (default False)
         persona_context: Explicit list of declared value/intention/commitment
-                         IDs. Overrides Stage 1 auto-detect for proximity
+                         IDs. Overrides the auto-detect for proximity
                          calculation *and* additively injects these IDs into
-                         the seed pool (Phase J Stage 2).
+                         the seed pool (explicit pool injection).
         tag_filter: Substring list (OR match) of ``metadata.tags`` entries.
                     Every matching node is additively injected into the seed
                     pool, even if it is distant in embedding space. Bypasses
@@ -282,14 +282,14 @@ async def recall(
                      read in full. Saves significant tokens on large recalls.
                      "ids" — header line only (id, scores, tags), no content;
                      use when you only need to know which memories exist.
-        auto_route: Phase O Stage 3 — when True (default), the service
+        auto_route: when True (default), the service
                     detects queries phrased as structured aspect questions
                     (e.g. "現在 active な commitment", "持っている value") and
                     runs the matching ``reflect`` aspect in parallel. The
                     summary is appended to the response so you do not have to
                     switch to ``reflect`` manually. Pass False to suppress for
                     this call (debugging, or you want pure free-form recall).
-        mode: Phase O Stage 4 — content economy.
+        mode: content economy.
               "detail" (default) — full content per result.
               "list" — content truncated to 80 chars (newline-stripped) so 20
               results fit in the budget one full result would consume. Pair
@@ -361,14 +361,14 @@ async def ambient_recall(
                    ``GAOTTT_AMBIENT_EXCLUDE_TAGS``).
         expose_breakdown: When True, append ``[raw=.. virt=.. bm25 mass=..]``
                    per slot row so the caller can see *why* each memory
-                   surfaced (Refinement Stage 3 — Phase O Stage 1 ScoreBreakdown
+                   surfaced (per-result ScoreBreakdown
                    at ambient granularity). Default off to preserve the
                    ambient block's token budget.
         recently_surfaced: Optional ``{node_id: count}`` map of memories
                    surfaced on recent ambient turns. Each slot's ranking score
                    is multiplied by ``config.ambient_novelty_decay ** count``
                    for matching ids, rotating recently-seen memos out of slot
-                   1-2 turns (Lateral Association Stage 1 — the "〇〇といえば〜
+                   1-2 turns (the "〇〇といえば〜
                    だったよな" controlled session-novelty channel). The
                    UserPromptSubmit hook builds this from past N turns of the
                    transcript; programmatic callers can pass {} or omit for
@@ -398,7 +398,7 @@ async def explore(
     Higher diversity increases wave depth and temperature noise,
     bringing unexpected cross-domain connections through deeper gravitational propagation.
 
-    Phase J Stage 3: parity with ``recall`` — explicit pool injection works
+    Parity with ``recall`` — explicit pool injection works
     here too. ``tag_filter`` forces the matched tagged memos into the result
     set even on a wide exploratory wave, useful for "explore within this
     intention's neighbourhood".
@@ -407,12 +407,12 @@ async def explore(
         query: Starting point for exploration
         diversity: 0.0 = normal search, 1.0 = maximum exploration
         top_k: Number of results
-        persona_context: Explicit persona ids (Phase J Stage 2 semantics)
+        persona_context: Explicit persona ids (explicit pool injection semantics)
         tag_filter: Tag substring list (OR match) for additive injection
-        auto_route: Phase O Stage 3 — auto-attach a matching ``reflect``
+        auto_route: auto-attach a matching ``reflect``
                     summary when the query phrasing maps to a structured
                     aspect. Same semantics as ``recall.auto_route``.
-        mode: Phase O Stage 5 — exploration intent.
+        mode: exploration intent.
               "serendipity" (default) — diversity-amplified semantic explore.
               "dormant" — counter-importance sampling: returns random
               self-authored memos (agent/value/intention/commitment/note/
@@ -466,7 +466,7 @@ async def _reflect_dispatch(engine, aspect: str, limit: int) -> str:
 
     The actual aspect → service-fn + formatter mapping lives in
     ``gaottt.services.reflection.dispatch_aspect`` so the recall auto-router
-    (Phase O Stage 3) can reuse the same table without re-importing the
+    can reuse the same table without re-importing the
     server layer.
     """
     return await reflection_service.dispatch_aspect(engine, aspect, limit=limit)
@@ -492,7 +492,7 @@ async def prefetch(
     Subsequent `recall(query, top_k)` calls within the cache TTL (default 90s)
     are served from the cache without re-running the wave simulation.
 
-    Phase J Stage 3: ``persona_context`` / ``tag_filter`` are forwarded so
+    ``persona_context`` / ``tag_filter`` are forwarded so
     the pre-warmed result matches what a subsequent ``recall`` with the
     same injection arguments would compute. Pre-fire the precise context
     you expect to recall.
@@ -502,7 +502,7 @@ async def prefetch(
         top_k: number of results to cache (must match the eventual recall)
         wave_depth: optional override
         wave_k: optional override
-        persona_context: Explicit persona ids (Phase J Stage 2 semantics)
+        persona_context: Explicit persona ids (explicit pool injection semantics)
         tag_filter: Tag substring list (OR match) for additive injection
     """
     engine = await get_engine()
