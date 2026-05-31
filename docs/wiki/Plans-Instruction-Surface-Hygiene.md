@@ -1,7 +1,7 @@
 # Plans — Instruction Surface Hygiene (指示表層と hook harness の衛生)
 
 > 注: これは physics Phase ではなく、**observation ロジックですらない** — caller (LLM) が読む指示テキスト (MCP instructions / tool docstring / SKILL.md) と、それを運ぶ hook harness (登録 / timeout / fail-safe / frontend parity) という **interface 層** だけを整える計画。Phase レター非消費。[Plans — Lens Hygiene](Plans-Lens-Hygiene.md) の姉妹 — あちらが「lens が映す中身の衛生」なら、本計画は「**lens のラベル・取説・配管の衛生**」。
-> 状態: **起案 2026-05-31** — Stage 0 (token baseline) と Stage 1 (版ラベル除去) が最小労力・最大効果の入口。Stage 2-4 は段階的。
+> 状態: **Stage 0 / 1 / 3 実装済 (2026-05-31, branch `feat/instruction-surface-hygiene`, commit `f594352`+`a8526a4`)** — caller 向けテキスト系の低リスクバッチを GLM-5.1 委託 + Opus 検証で完了 (token 総量は 12104 で不変 = signal-to-noise 改善、全 suite 786 passed + mcp_smoke green)。**Stage 2 (formatter token budget) と Stage 4 (hook harness) は高リスク別 PR で未着手** (§10 の分離方針通り、owner go 待ち)。
 > 関連: [Plans — SKILL.md Improvement](Plans-SKILL-MD-Improvement.md), [Plans — Observation Apparatus Refinement](Plans-Observation-Apparatus-Refinement.md), [Plans — Lens Hygiene](Plans-Lens-Hygiene.md), [Plans — Phase O (TTT Observability)](Plans-Phase-O-TTT-Observability.md)
 > トリガー: 2026-05-31 に hook / MCP / skill の **指示テキストを context engineering・harness engineering の 2 軸で監査**。3 フロントエンド (Claude Code / opencode / Codex) の hook、MCP server の instructions + 27 docstring、SKILL.md、そして実際に context へ注入される `formatters.py` の出力を精読。地力は高い (fail-safe の徹底・relevance gate による silent 注入・単一 source-of-truth) が、**「実装者向けの版管理語彙」が「caller 向け API リファレンス」に漏れている**点と、**毎ターン / 毎 recall に注入されるテキストの token 予算が一貫していない**点が signal-to-noise を確実に削っている。
 
