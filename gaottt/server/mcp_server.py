@@ -319,7 +319,9 @@ async def recall(
         persona_context=persona_context, tag_filter=tag_filter,
         auto_route=auto_route, mode=mode, passive=passive,
     )
-    return formatters.format_recall(result, output_mode=output_mode)
+    verbose_modes = engine.config.recall_trailer_verbose_modes.split(",")
+    verbose = (output_mode in verbose_modes) and (mode != "list")
+    return formatters.format_recall(result, output_mode=output_mode, verbose=verbose)
 
 
 @mcp.tool()
@@ -389,7 +391,7 @@ async def ambient_recall(
         exclude_tags=exclude_tags, expose_breakdown=expose_breakdown,
         recently_surfaced=recently_surfaced,
     )
-    return formatters.format_ambient(result)
+    return formatters.format_ambient(result, config=engine.config)
 
 
 @mcp.tool()

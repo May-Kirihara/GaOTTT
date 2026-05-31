@@ -669,6 +669,23 @@ class GaOTTTConfig:
     # docs/wiki/Plans-Ambient-Recall-Lateral-Association.md Stage 1.
     ambient_novelty_decay: float = 0.7
 
+    # Instruction Surface Hygiene Stage 2a (C2) — per-slot content budget for
+    # the MCP formatter's rendered ambient block. The service layer already
+    # truncates at ``ambient_excerpt_chars`` (240) when building AmbientMemory,
+    # but even 240 chars per slot × 4 slots = ~960 chars of ambient noise per
+    # turn. These knobs let the formatter trim further without touching the
+    # Pydantic model (REST output stays full). 0 = unlimited (legacy).
+    ambient_direct_max_chars: int = 0       # 0 = unlimited (backward-compatible default)
+    ambient_lensing_max_chars: int = 300    # lensing / dormant (ささやき) slot budget
+
+    # Instruction Surface Hygiene Stage 2b (C3) — recall trailer suppression.
+    # The breakdown line and 訓練差分 trailer are only emitted when the
+    # effective verbosity matches one of these modes. Stored as a comma-
+    # separated string so the generic env-override loop picks it up; callers
+    # split on "," to get the set. Default "detail,full" = no change from
+    # pre-Stage-2 behaviour (Phase O observability preserved in default path).
+    recall_trailer_verbose_modes: str = "detail,full"
+
     # Lateral Association Stage 7.1 (2026-05-26) — direct-hit anti-hub.
     # Greedy MMR-style penalty on top-k composition: for each subsequent slot,
     # candidate ``final_score`` is reduced by
