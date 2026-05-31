@@ -275,7 +275,34 @@ async def _check_size_consistency(
     # FAISS raw
     faiss_size = engine.faiss_index.size
     faiss_drift = _drift_fraction(faiss_size, active)
-    if faiss_drift > WARN_DRIFT_FRACTION:
+    # Severe undersize: the loaded index holds far fewer vectors than the DB
+    # has active nodes. This is the "reverse overwrite trap" signature — the
+    # process is running on a corrupt/truncated index. Escalate to ERROR and
+    # latch the engine's persist guard so this process never writes its broken
+    # index back to disk (it would clobber a good index from a healthy
+    # sibling). Recovery is manual: stop everything, run the rebuild script.
+    floor = getattr(engine.config, "faiss_persist_floor", 100)
+    ratio = getattr(engine.config, "faiss_persist_min_ratio", 0.5)
+    guard_on = getattr(engine.config, "faiss_persist_guard_enabled", True)
+    severe = active >= floor and faiss_size < active * ratio
+    if severe:
+        latched = ""
+        if guard_on:
+            engine._faiss_persist_blocked = True  # noqa: SLF001
+            latched = (
+                "Persist guard LATCHED: this process will not overwrite the "
+                "on-disk index. "
+            )
+        report.add(
+            "tier_b_faiss_severe_undersize",
+            DiagnosticLevel.ERROR,
+            f"faiss.size={faiss_size} vs SQLite active={active} "
+            f"(<{ratio:.0%} of active) — index is corrupt/truncated. "
+            f"{latched}"
+            f"Recover: stop all gaottt processes, run "
+            f"`scripts/rebuild_faiss_from_db.py --apply`, then restart.",
+        )
+    elif faiss_drift > WARN_DRIFT_FRACTION:
         report.add(
             "tier_b_faiss_size_drift",
             DiagnosticLevel.WARN,

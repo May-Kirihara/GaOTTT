@@ -954,6 +954,25 @@ def main():
           f"{displaced_count} displaced, {moving_count} moving, "
           f"{bh_nodes} mass-BH nodes (mass>{bh_cutoff:.1f})")
 
+    # The star count is driven by the FAISS index, NOT the SQLite tables. When
+    # FAISS desyncs from the DB (e.g. a truncated/half-rebuilt index) you get a
+    # near-empty `ids` list even though edges/displacements still show large
+    # counts. A 3D projection then dies deep inside UMAP ("zero-size array to
+    # reduction operation maximum") or PCA (n_components=3 needs >=3 samples).
+    # Fail early with a message that points at the real cause instead.
+    if len(ids) < 4:
+        raise SystemExit(
+            f"ERROR: FAISS index at {config.faiss_index_path} holds only "
+            f"{len(ids)} vector(s), but the DB has many more nodes "
+            f"({displaced_count} displaced / {len(edges)} edges shown above are "
+            f"live rows pointing at vectors that are missing from FAISS).\n"
+            f"  This is a FAISS<->SQLite desync, not a visualization bug. Rebuild "
+            f"the index (compact with rebuild_faiss=True) with no other gaottt "
+            f"process running, then re-run this script.\n"
+            f"  To inspect a different store instead: "
+            f"GAOTTT_DATA_DIR=<dir> .venv/bin/python scripts/visualize_3d.py ..."
+        )
+
     if args.sample > 0 and args.sample < len(ids):
         print(f"  Sampling {args.sample} stars...")
         rng = np.random.default_rng(42)

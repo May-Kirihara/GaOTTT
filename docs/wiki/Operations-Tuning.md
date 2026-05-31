@@ -393,6 +393,9 @@ opencode plugin (`scripts/hooks/opencode-save-candidates.ts`) 専用の追加 en
 | flush_interval_seconds | 5.0 | キャッシュ → DB の flush 間隔 |
 | flush_threshold | 100 | dirty 件数による即時 flush 閾値 |
 | faiss_save_interval_seconds | 5.0 | in-memory FAISS → `.faiss` ファイル保存間隔。`0` で無効化（shutdown 時のみ save、レガシー挙動）。**MCP サーバーのような長期常駐プロセスでは必ず非ゼロ**にしないと他プロセスから新規 remember が見えなくなる |
+| faiss_persist_guard_enabled | True | 逆方向上書きガード。in-memory FAISS が DB active 数に対し過小なとき全 FAISS 永続を拒否し、壊れた index で正常な on-disk index を上書きするのを防ぐ（[問題5.5](Operations-Troubleshooting.md)）。`GAOTTT_FAISS_PERSIST_GUARD_ENABLED=0` で無効化 |
+| faiss_persist_floor | 100 | ガードが効き始める最小 active ノード数。これ未満は守るべき index が無いので不活性（小規模 / reset 直後の DB で誤発動しない） |
+| faiss_persist_min_ratio | 0.5 | `faiss.size >= active × この比` のときのみ永続。下回ると corrupt とみなし書き込み拒否。正当な bulk forget/compact は cache active も同時に減るので誤発動しない |
 
 ## Embedding
 

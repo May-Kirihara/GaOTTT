@@ -887,6 +887,26 @@ class GaOTTTConfig:
     # FAISS's 5s because rebuild is O(N) over all active nodes; tune
     # down on small DBs, up on large ones. Set to 0 to disable.
     virtual_faiss_save_interval_seconds: float = 60.0
+
+    # ── Reverse-overwrite guard ─────────────────────────────────────
+    # A process whose in-memory FAISS is far smaller than the SQLite active
+    # node count is almost certainly running on a corrupt/empty index. Its
+    # write-behind save loop would then overwrite a *good* on-disk index with
+    # its broken one — the "reverse overwrite trap" (CLAUDE.md). When this
+    # guard is enabled, every FAISS persist path (save loops + final shutdown
+    # save) refuses to write whenever ``faiss.size < active *
+    # faiss_persist_min_ratio`` and ``active >= faiss_persist_floor``.
+    # Legitimate bulk shrink (forget/compact) evicts from cache too, so active
+    # falls in lockstep and the guard never misfires. source-branch-free I/O
+    # safety layer; physics untouched. Env-settable via the generic
+    # GAOTTT_<FIELD> loop (GAOTTT_FAISS_PERSIST_GUARD_ENABLED=0 to disable).
+    faiss_persist_guard_enabled: bool = True
+    # Below this active-node count the guard is inert — a small or freshly
+    # reset DB legitimately has few vectors and there is no good index to
+    # protect yet.
+    faiss_persist_floor: int = 100
+    # Persist only if in-memory faiss.size >= active * this ratio.
+    faiss_persist_min_ratio: float = 0.5
     # Phase H Stage 5 — Wave neighbor uses virtual FAISS:
     # Previously the seed pool unioned raw+virtual, but the wave's per-
     # frontier `search_by_id` only queried raw FAISS. That breaks the
