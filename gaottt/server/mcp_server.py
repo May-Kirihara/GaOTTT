@@ -105,10 +105,19 @@ mcp = FastMCP(
         "reflect aspects: tasks_todo/tasks_doing/tasks_completed/"
         "tasks_abandoned/commitments/values/intentions/relationships/persona), "
         "and 'ingest' to bulk-load files. "
-        "Note: embeddings (RURI) are Japanese-specialized and not "
-        "cross-lingual — a recall query mostly surfaces memories in the "
-        "same language as the query, so query in the language of the "
-        "target memories (use tag_filter to bridge a language gap)."
+        "Note: RURI embeddings are not cross-lingual — query in the same "
+        "language as the target memories, and bridge a language gap with "
+        "tag_filter. "
+        "\nDecision tree: "
+        "recall — explicit recall (training step, perturbs the field); "
+        "recall(passive=true) — read-only recall (does not perturb; for "
+        "automatic/repeated queries); "
+        "ambient_recall — structured multi-slot block (for hooks; always "
+        "passive); "
+        "explore — serendipity / mode='dormant' to break fixation; "
+        "prefetch — read-ahead warmup. "
+        "remember=save, reflect=inspect state, Phase D=persona & task "
+        "layer."
     ),
 )
 
