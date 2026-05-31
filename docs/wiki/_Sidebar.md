@@ -74,6 +74,7 @@
 - [Ambient Recall Lateral Association (〇〇といえば〜)](Plans-Ambient-Recall-Lateral-Association.md)
 - [Save Candidates Hook (ambient-recall の write-side 対称)](Plans-Save-Candidates-Hook.md)
 - [Lens Hygiene (ambient block の漏れ防止)](Plans-Lens-Hygiene.md)
+- [Instruction Surface Hygiene (指示表層と hook harness)](Plans-Instruction-Surface-Hygiene.md)
 - [Query as Mass Distribution](Plans-Query-Mass-Distribution.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
 - [Embedder Comparison (RURI vs RikkaBotan)](Plans-Embedder-Comparison.md)
