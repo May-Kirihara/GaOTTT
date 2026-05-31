@@ -21,6 +21,9 @@
 |---|---|---|
 | **Claude Code** | `UserPromptSubmit` hook | `scripts/hooks/ambient_recall.py` |
 | **opencode** | `chat.message` プラグイン | `scripts/hooks/opencode-ambient-recall.ts` |
+| **Codex CLI** | `UserPromptSubmit` hook (`--codex`) | `scripts/hooks/ambient_recall.py` (同一スクリプト) |
+
+Codex CLI は Claude Code と**ほぼ同じ hook イベント体系**（[Codex hooks](https://developers.openai.com/codex/hooks)）を持つので、opencode のように別スクリプトを書かず **同じ Python フックを `--codex` フラグ付きで再利用**する。唯一の差は出力形式: Claude Code は hook の raw stdout をそのまま注入するが、Codex は JSON エンベロープ (`{"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ...}}`) を読む。`--codex`（or `GAOTTT_HOOK_OUTPUT=codex`）がこのエンベロープに切替えるだけで、relevance gate・スロット組み立て・`GAOTTT_AMBIENT_*` env・fail-safe は全フロントエンド共通。transcript reader も Codex の rollout JSONL（`event_msg`/`user_message`）を解釈するので、Claude Code が `transcript_path` を scan するのと同じ downstream 変数（`history` / `recently_surfaced`）に集約され、multi-turn・novelty も parity が成立する（Claude-only の `hook_success` attachment 走査は Codex transcript では no-op に degrade）。**source 分岐ゼロ**: フロントエンド判定は出力アダプタ層に閉じ込められ、physics（relevance/gravity）には一切触れない。
 
 opencode プラグインは独自に MCP を叩かない — Claude Code 版の Python フック (`scripts/hooks/ambient_recall.py`) をそのまま子プロセスとして呼ぶ。relevance gate・スロット組み立て・`GAOTTT_AMBIENT_*` 環境変数・fail-safe はすべて **1 箇所（Python フック）に集約**され、`ambient_recall` プロトコルが変われば両フロントエンドが同時に追従する。opencode プラグインは「メッセージのテキストを取り出し Python フックに渡し、ブロックが返ってきたら追記する」薄い shim だが、**transcript file を持たない** opencode のために 1 つだけ追加責務を持つ: `client.session.messages()` (OpenCode SDK) で過去の user message を取得 → 過去 N turn の text を `history` (Refinement Stage 4 multi-turn 連結用) として、過去 N turn の `<!-- ambient-ids ... -->` manifest から id 出現回数を `recently_surfaced` (Lateral Association Stage 1 novelty decay 用) として、Python フック stdin の payload に直接乗せる。Claude Code は `transcript_path` を渡してフック側で scan、opencode は同じデータを SDK 経由で組み立てて直接渡す — どちらの経路も Python フック側で同じ downstream 変数に集約され、機構として完全に parity が成立する。
 
@@ -147,6 +150,26 @@ source ~/.bashrc
 
 > **opencode サブエージェントにも効く** — secondopinion-MCP 経由で起動される opencode サブエージェントを含め、`chat.message` を持つすべての opencode セッションに注入される。グローバルインストールなら、どのディレクトリで起動した opencode エージェントも同じ長期記憶を共有する（「opencode エージェントにも同じ記憶を」という目的どおり）。ただし subprocess の env に `GAOTTT_REPO` が継承されている必要があるので、shell rc に書くのが確実。
 
+## セットアップ — Codex CLI
+
+Codex は `~/.codex/hooks.json`（グローバル）または `<repo>/.codex/hooks.json`（プロジェクト単位）で hook を登録する。リポジトリに雛形 `.codex/hooks.json` を同梱済み — `UserPromptSubmit` に ambient（`ambient_recall.py --codex`）+ save-candidates inject（`save_candidates_inject.py --codex`）、`Stop` に save-candidates 抽出（`save_candidates.py`）を配線してある。パスは README 規約の `$HOME/GaOTTT`（ホーム直下に clone）で書いてあるので **書き換え不要**。
+
+```bash
+mkdir -p ~/.codex
+cp "$HOME/GaOTTT/.codex/hooks.json" ~/.codex/hooks.json
+# ホーム以外に clone した場合だけ $HOME/GaOTTT を実パスに置換:
+#   sed -i 's#\$HOME/GaOTTT#/your/path/to/GaOTTT#g' ~/.codex/hooks.json
+```
+
+保存後、Codex CLI 内で **`/hooks` を実行して各定義を review → trust**（Codex は未信頼の command hook を実行しない）。`[features]` で hooks を無効化していなければ default で有効。MCP backend（proxy mode port 7878）は **gaottt を MCP server 登録済みなら自動起動**するので追加作業は不要 — backend が落ちている/遅いときは fail-safe で無出力（発話は決してブロックしない）。
+
+- **パスの可搬性**: Codex は command を **shlex で分解するだけで `$HOME` を展開しない**（Rust 実装は `shellexpand` 等を持たず shlex tokenizer のみ）。そこで各 hook を `sh -c '…'` 経由で起動し、シェルに `$HOME/GaOTTT` を展開させている。これで雛形が machine 非依存になり、`~/.codex/hooks.json` をそのままコピーで配れる。Codex の hooks.json は **strict JSON**（コメント不可・unknown field を弾く可能性があるので `_comment` も付けない）— 説明はこのドキュメント側に置く。Windows は `sh -c` が無いので絶対パス形式に置換。
+- **出力アダプタ**: `--codex` フラグ（`~/.codex/hooks.json` が渡す）か `GAOTTT_HOOK_OUTPUT=codex` env で、raw stdout → JSON エンベロープに切替。それ以外は全フロントエンド共通の Python フック。
+- **save-candidates bridge**: Claude Code と同型の 2-script bridge（`Stop` で state file 書き込み → 次 `UserPromptSubmit` で読み出し + inject）。`session_id` で per-session に紐付くので Codex でもそのまま機能する。
+- **無効化**: `GAOTTT_AMBIENT_RECALL=0` / `GAOTTT_SAVE_CANDIDATES_ENABLED=0`、または `~/.codex/hooks.json` から該当エントリを削除。
+
+ステップ別の導入手順は [Tutorial 03 — クライアント接続 §E](Tutorial-03-Connect-Your-Client.md) を参照。
+
 ## backend の再起動が必要なとき
 
 > `passive` 引数・`ambient_recall` ツールは新規追加。proxy mode の HTTP backend は `git push` だけでは更新されない（[CLAUDE.md / Operations — Server Setup](Operations-Server-Setup.md) の「backend kill on code deploy」）。ambient recall を有効化する前に、古い backend を kill して新コードを乗せる:
@@ -158,11 +181,12 @@ source ~/.bashrc
 
 ## 設定（環境変数）
 
-Claude Code は `.claude/settings.json` の `command` か shell 環境で、opencode は opencode を起動するシェル環境で渡せる。
+Claude Code は `.claude/settings.json` の `command` か shell 環境で、opencode は opencode を起動するシェル環境で、Codex は `~/.codex/hooks.json` の `command` か shell 環境で渡せる。
 
 | 環境変数 | 既定 | 適用 | 説明 |
 |---|---|---|---|
 | `GAOTTT_AMBIENT_RECALL` | `1` | 両方 | `0`/`false`/`off` でフック全体を無効化 |
+| `GAOTTT_HOOK_OUTPUT` | (未設定) | Python フック | 出力形式。未設定 / `text` で raw stdout ブロック（Claude Code / opencode）、`codex` で JSON エンベロープ（Codex CLI）。Codex の `~/.codex/hooks.json` は `--codex` フラグで同じ切替を行う |
 | `GAOTTT_AMBIENT_URL` | `http://127.0.0.1:7878/mcp` | Python フック | MCP backend の URL |
 | `GAOTTT_AMBIENT_DIRECT_K` | `2` | Python フック | 直接ヒットスロットの件数（`ambient_recall` の `direct_k`） |
 | `GAOTTT_AMBIENT_MIN_SCORE` | (未設定) | Python フック | **フォールバック** virtual_score gate のしきい値上書き。主たる gate は BM25（後述、`config.ambient_bm25_min_score`）で、これは BM25 不在時のみ効く |

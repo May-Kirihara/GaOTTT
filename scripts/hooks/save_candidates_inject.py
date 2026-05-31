@@ -14,6 +14,13 @@ next prompt; the state file is the durable handoff.
 stdin payload (JSON, Claude Code UserPromptSubmit shape):
   session_id  (str)  session UUID matching the Stop hook's write.
 
+Codex CLI: registered alongside the ambient hook on ``UserPromptSubmit`` in
+~/.codex/hooks.json and invoked with ``--codex``. Codex does not inject a
+hook's raw stdout; it reads a JSON envelope and pulls
+``hookSpecificOutput.additionalContext`` from it. ``--codex`` (or
+``GAOTTT_HOOK_OUTPUT=codex``) switches the emit path to that envelope. The
+state-file handoff written by the Stop hook is identical across frontends.
+
 Tunables (environment variables):
   GAOTTT_SAVE_CANDIDATES_ENABLED      "0"/"false"/"off" disables (default on).
                                       Shared switch with the Stop side so a
@@ -21,6 +28,10 @@ Tunables (environment variables):
   GAOTTT_SAVE_CANDIDATES_STATE_DIR    per-session state-file directory
                                       (default ~/.gaottt/save_candidates).
                                       Must match the Stop side.
+  GAOTTT_HOOK_OUTPUT                  output format. unset / "text" → raw
+                                      stdout block (Claude Code / opencode).
+                                      "codex" → JSON envelope (Codex CLI).
+                                      The ``--codex`` CLI flag forces "codex".
 """
 from __future__ import annotations
 
@@ -58,6 +69,28 @@ def _emit(text: str) -> None:
         data = data[os.write(fd, data):]
 
 
+def _codex_output_mode() -> bool:
+    """Whether to emit the Codex JSON envelope instead of raw stdout. Mirrors
+    ``ambient_recall._codex_output_mode`` — ``--codex`` (passed by
+    ~/.codex/hooks.json) or ``GAOTTT_HOOK_OUTPUT=codex``."""
+    if "--codex" in sys.argv[1:]:
+        return True
+    return os.environ.get("GAOTTT_HOOK_OUTPUT", "").strip().lower() in (
+        "codex", "codex-json",
+    )
+
+
+def _emit_codex(block: str, event_name: str = "UserPromptSubmit") -> None:
+    """Emit the Codex ``hookSpecificOutput.additionalContext`` envelope."""
+    payload = {
+        "hookSpecificOutput": {
+            "hookEventName": event_name,
+            "additionalContext": block,
+        },
+    }
+    _emit(json.dumps(payload, ensure_ascii=False))
+
+
 def main() -> int:
     if _disabled():
         return 0
@@ -82,7 +115,10 @@ def main() -> int:
         pass
     if not block:
         return 0
-    _emit(block if block.endswith("\n") else block + "\n")
+    if _codex_output_mode():
+        _emit_codex(block)
+    else:
+        _emit(block if block.endswith("\n") else block + "\n")
     return 0
 
 

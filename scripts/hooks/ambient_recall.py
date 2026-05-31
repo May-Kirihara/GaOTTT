@@ -46,8 +46,27 @@ list. The two paths converge at the same downstream variables, so Stage 1
 novelty + Refinement Stage 4 multi-turn behave identically across both
 frontends with no per-frontend branching in the hook.
 
+Codex CLI (third frontend): registered in ``~/.codex/hooks.json`` as a
+``UserPromptSubmit`` command hook invoked with ``--codex``. Codex passes
+``{prompt, transcript_path}`` like Claude Code, but — unlike Claude Code —
+it does NOT inject a hook's raw stdout. It reads a JSON envelope:
+``{"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+"additionalContext": "<block>"}}``. ``--codex`` (or
+``GAOTTT_HOOK_OUTPUT=codex``) switches the emit path to that envelope;
+everything upstream (query composition, novelty, relevance gate) is shared.
+The transcript readers also understand Codex's rollout JSONL
+(``event_msg`` / ``user_message`` carry the clean human prompts), so the
+Stage 4 multi-turn history works there too; the Claude-only
+attachment-based novelty scan simply degrades to a no-op (fail-safe) on a
+Codex transcript.
+
 Tunables (environment variables):
   GAOTTT_AMBIENT_RECALL     "0"/"false"/"off" disables the hook (default on)
+  GAOTTT_HOOK_OUTPUT        output format. unset / "text" → raw stdout block
+                            (Claude Code / opencode). "codex" → JSON envelope
+                            (Codex CLI). The ``--codex`` CLI flag forces the
+                            "codex" envelope and is what ~/.codex/hooks.json
+                            passes — env var is the global-default equivalent.
   GAOTTT_AMBIENT_URL        MCP backend URL (default http://127.0.0.1:7878/mcp)
   GAOTTT_AMBIENT_DIRECT_K   number of direct-hit results (default 2)
   GAOTTT_AMBIENT_MIN_SCORE  *fallback* virtual_score-gate threshold. The
@@ -213,6 +232,18 @@ def _recent_user_prompts(transcript_path: str | None, n: int) -> list[str]:
                     text = _extract_user_text(rec)
                     if text:
                         prompts.append(text)
+                    continue
+                # Codex rollout JSONL: the clean human prompts live in
+                # ``event_msg`` / ``user_message`` (the parallel
+                # ``response_item`` user messages also carry synthetic
+                # ``<environment_context>`` / permission blocks, so we read
+                # only the event_msg stream here).
+                if rec.get("type") == "event_msg":
+                    p = rec.get("payload")
+                    if isinstance(p, dict) and p.get("type") == "user_message":
+                        t = p.get("message")
+                        if isinstance(t, str) and t.strip():
+                            prompts.append(t.strip())
         return prompts[-n:] if prompts else []
     except Exception:
         return []
@@ -303,15 +334,25 @@ def _recently_surfaced(transcript_path: str | None, n: int) -> dict[str, int]:
                 except Exception:
                     continue
                 att = rec.get("attachment")
-                if not isinstance(att, dict):
+                if isinstance(att, dict):
+                    # Claude Code stores this hook's stdout as an
+                    # ``attachment.hook_success`` record.
+                    if (
+                        att.get("type") == "hook_success"
+                        and att.get("hookName") == "UserPromptSubmit"
+                    ):
+                        text = att.get("content") or att.get("stdout") or ""
+                        if isinstance(text, str) and _BLOCK_TAG in text:
+                            ambient_texts.append(text)
                     continue
-                if att.get("type") != "hook_success":
-                    continue
-                if att.get("hookName") != "UserPromptSubmit":
-                    continue
-                text = att.get("content") or att.get("stdout") or ""
-                if isinstance(text, str) and _BLOCK_TAG in text:
-                    ambient_texts.append(text)
+                # Codex rollout (no ``attachment`` records): the injected
+                # additionalContext, if it round-trips into the rollout, shows
+                # up as a serialized line carrying our manifest. The
+                # ``ambient-ids`` regex matches inside JSON-escaped text, so
+                # scanning the raw line is enough. Guarded by the ``continue``
+                # above so a Claude transcript never reaches this branch.
+                if _BLOCK_TAG in line and "ambient-ids" in line:
+                    ambient_texts.append(line)
         if not ambient_texts:
             return {}
         recent = ambient_texts[-n:]
@@ -376,6 +417,37 @@ def _emit(text: str) -> None:
         data = data[os.write(fd, data):]
 
 
+def _codex_output_mode() -> bool:
+    """Whether to emit the Codex JSON envelope instead of raw stdout.
+
+    Claude Code / opencode inject a ``UserPromptSubmit`` hook's raw stdout as
+    context; Codex CLI instead reads a JSON object on stdout and pulls
+    ``hookSpecificOutput.additionalContext`` from it. ``--codex`` (what
+    ~/.codex/hooks.json passes) or ``GAOTTT_HOOK_OUTPUT=codex`` selects the
+    envelope path. Everything else in this hook is frontend-agnostic.
+    """
+    if "--codex" in sys.argv[1:]:
+        return True
+    return os.environ.get("GAOTTT_HOOK_OUTPUT", "").strip().lower() in (
+        "codex", "codex-json",
+    )
+
+
+def _emit_codex(block: str, event_name: str = "UserPromptSubmit") -> None:
+    """Emit the Codex ``hookSpecificOutput.additionalContext`` envelope.
+
+    Reuses ``_emit``'s direct ``os.write`` so the same asyncio-teardown
+    buffer-drop pitfall is avoided for the JSON payload too.
+    """
+    payload = {
+        "hookSpecificOutput": {
+            "hookEventName": event_name,
+            "additionalContext": block,
+        },
+    }
+    _emit(json.dumps(payload, ensure_ascii=False))
+
+
 def main() -> int:
     if _disabled():
         return 0
@@ -428,7 +500,10 @@ def main() -> int:
         # exactly what was sent to the server (vs the bare user input).
         if _SHOW_COMPOSED_QUERY:
             block = _inject_composed_query_debug(block, prompt, query)
-        _emit(block if block.endswith("\n") else block + "\n")
+        if _codex_output_mode():
+            _emit_codex(block)
+        else:
+            _emit(block if block.endswith("\n") else block + "\n")
     return 0
 
 

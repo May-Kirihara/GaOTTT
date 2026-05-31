@@ -50,7 +50,7 @@
 | 候補 | 採否 | 理由 |
 |---|---|---|
 | `core/extractor.py` の `_NOISE_PATTERNS` 拡張 | ❌ | extractor は dependency-free / transport-blind の純粋関数を保つべき。gaottt 固有 block format を知ってはいけない |
-| 各 hook script (`save_candidates.py` / `opencode-save-candidates.ts`) | ❌ | DRY 違反、2 frontend に重複実装、将来 codex v3 で 3 重実装 |
+| 各 hook script (`save_candidates.py` / `opencode-save-candidates.ts`) | ❌ | DRY 違反、2 frontend に重複実装、将来 codex v3 で 3 重実装 ← **2026-05-31: 回避済み**。Codex は同じ Python script を `--codex` フラグで再利用 (出力アダプタのみ分岐)、3 重実装にならず |
 | **`services/memory.auto_remember()` の入口** | ✅ | service 層は transport artifact を知って良い (`format_save_candidates` が gaottt-save-candidates タグを書くのと対称)。1 箇所修正で Claude Code / opencode 両方に伝播。MCP tool 経由の任意の呼び出しも防御 |
 
 **判断 2: strip 対象は generic な `<gaottt-*>` パターン**

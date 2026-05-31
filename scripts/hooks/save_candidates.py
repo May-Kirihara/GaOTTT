@@ -22,6 +22,14 @@ Architecture mirrors ``scripts/hooks/ambient_recall.py``:
     scanned here; opencode plugins (future v2) will pre-extract
     ``transcript`` and pass it directly.
 
+Codex CLI: registered as a ``Stop`` command hook in ~/.codex/hooks.json.
+The Stop side needs no output-format change (it writes the per-session
+state file in ``state`` mode regardless of frontend); the only Codex
+adaptation is that ``_build_transcript_from_path`` also understands Codex's
+rollout JSONL (``event_msg`` / ``user_message`` + ``agent_message``). The
+paired ``save_candidates_inject.py`` UserPromptSubmit hook is what carries
+the ``--codex`` JSON-envelope output the next turn.
+
 stdin payload (JSON, Claude Code Stop hook shape):
   session_id        (str)  Claude Code's session UUID, used for the
                            state-file name (per-session bridge).
@@ -150,6 +158,24 @@ def _build_transcript_from_path(path: str, turns: int) -> str:
                 try:
                     rec = json.loads(line)
                 except Exception:
+                    continue
+                # Codex rollout JSONL: the clean per-turn user / assistant
+                # text lives in ``event_msg`` (``user_message`` /
+                # ``agent_message``). The parallel ``response_item`` messages
+                # also carry synthetic env/permission/tool blocks, so we read
+                # only the event_msg stream — same reasoning as the ambient
+                # hook. A Claude transcript has no ``event_msg`` records, so
+                # this branch is inert there.
+                if rec.get("type") == "event_msg":
+                    p = rec.get("payload")
+                    if isinstance(p, dict):
+                        pt = p.get("type")
+                        t = p.get("message")
+                        if isinstance(t, str) and t.strip():
+                            if pt == "user_message":
+                                exchanges.append(("user", t.strip()))
+                            elif pt == "agent_message":
+                                exchanges.append(("assistant", t.strip()))
                     continue
                 role = rec.get("type") or rec.get("role")
                 if role not in ("user", "assistant"):

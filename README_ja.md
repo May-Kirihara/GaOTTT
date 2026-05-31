@@ -138,6 +138,15 @@ source ~/.bashrc
 
 > ⚠️ **`GAOTTT_REPO` は必ず設定する**。TS plugin の内部 fallback (`process.env.GAOTTT_REPO ?? "/mnt/holyland/Project/GaOTTT"`) は **本リポジトリ作者の machine path がたまたま hard-coded されているだけ**。env を set しないと plugin が wrong path で Python interpreter を探して silent fail する — error も出さず block も injection されない（hook が fail-safe 設計なので一切静かに止まる）。`export` を shell rc に書いておけば opencode 子プロセスにも継承される。
 
+**OpenAI Codex CLI** — Codex は Claude Code とほぼ同じイベント体系の [hooks](https://developers.openai.com/codex/hooks) を持つので、別プラグインを書かず **同じ Python フックを `--codex` フラグ付きで再利用** する。リポジトリに read 側 (ambient) と write 側 (save-candidates) を両方配線済みの `.codex/hooks.json` を同梱しているので、global の Codex 設定にコピーするだけ:
+
+```bash
+mkdir -p ~/.codex
+cp "$HOME/GaOTTT/.codex/hooks.json" ~/.codex/hooks.json   # パスは $HOME/GaOTTT 規約（ホーム直下に clone）
+```
+
+その後 **Codex 内で `/hooks` を 1 回実行して定義を review → trust**（Codex は未信頼の command hook を実行しない）。差分 2 点はこちらで吸収済み: Codex は raw stdout ではなく JSON エンベロープ (`hookSpecificOutput.additionalContext`) を読む / command を `shlex` で分解するだけで `$HOME` を展開しない — だから各 hook を `sh -c '…'` 経由で起動してシェルに `$HOME/GaOTTT` を展開させ、machine 非依存にしてある。ホーム以外に clone した場合だけ `$HOME/GaOTTT` を実パスに置換（Windows は `sh -c '…'` を絶対パス形式に置換）。
+
 → 詳しい設定・relevance gate・観察者効果: [Guides — Ambient Recall](docs/wiki/Guides-Ambient-Recall.md)
 
 ### Save Candidates Hook — write-side 対称機能
@@ -181,7 +190,9 @@ mkdir -p ~/.config/opencode/plugin
 cp scripts/hooks/opencode-save-candidates.ts ~/.config/opencode/plugin/gaottt-save-candidates.ts
 ```
 
-codex CLI 対応 (v3) は codex が同等の plugin hook を公開した時点で。すべてのフックは fail-silent — GaOTTT が落ちていたり timeout してもエージェント側の動作は妨げない。
+**OpenAI Codex CLI** — 配線済み。Ambient Recall でコピーした同じ `.codex/hooks.json` が `Stop` → `UserPromptSubmit` ブリッジも登録する（`save_candidates.py` がターン終了時に per-session state file を書き、`save_candidates_inject.py --codex` が次ターンで読んで注入）。`/hooks` で trust する以外の追加作業は不要。
+
+すべてのフックは fail-silent — GaOTTT が落ちていたり timeout してもエージェント側の動作は妨げない。
 
 → 完全な計画・設計判断・two-script bridge: [Plans — Save Candidates Hook](docs/wiki/Plans-Save-Candidates-Hook.md) · env 一覧: [Operations — Tuning](docs/wiki/Operations-Tuning.md#save_candidates-hookplans-save-candidates-hookmd)
 

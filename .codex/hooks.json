@@ -1,0 +1,34 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c '\"$HOME/GaOTTT/.venv/bin/python\" \"$HOME/GaOTTT/scripts/hooks/ambient_recall.py\" --codex'",
+            "timeout": 10,
+            "statusMessage": "gaottt: ambient recall"
+          },
+          {
+            "type": "command",
+            "command": "sh -c '\"$HOME/GaOTTT/.venv/bin/python\" \"$HOME/GaOTTT/scripts/hooks/save_candidates_inject.py\" --codex'",
+            "timeout": 5,
+            "statusMessage": "gaottt: surface save candidates"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c '\"$HOME/GaOTTT/.venv/bin/python\" \"$HOME/GaOTTT/scripts/hooks/save_candidates.py\"'",
+            "timeout": 10,
+            "statusMessage": "gaottt: scan save candidates"
+          }
+        ]
+      }
+    ]
+  }
+}

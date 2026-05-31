@@ -428,3 +428,108 @@ def test_recently_surfaced_ignores_non_ambient_hook_records(tmp_path):
     )
     counts = hook._recently_surfaced(str(f), 5)
     assert counts == {"good": 1}
+
+
+# --------------------------------------------------------------------------- #
+# Codex CLI (third frontend): rollout-JSONL parsing + --codex JSON envelope.
+# --------------------------------------------------------------------------- #
+
+
+def test_recent_user_prompts_parses_codex_event_msg(tmp_path):
+    """Codex rollout: clean human prompts live in ``event_msg`` /
+    ``user_message`` — the hook reads those for multi-turn history."""
+    f = tmp_path / "rollout.jsonl"
+    lines = [
+        {"type": "session_meta", "payload": {"id": "abc"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "codex turn 1"}},
+        {"type": "event_msg", "payload": {"type": "agent_message", "message": "asst 1"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "codex turn 2"}},
+    ]
+    f.write_text("\n".join(json.dumps(x) for x in lines), encoding="utf-8")
+    assert hook._recent_user_prompts(str(f), 5) == ["codex turn 1", "codex turn 2"]
+    assert hook._recent_user_prompts(str(f), 1) == ["codex turn 2"]
+
+
+def test_recent_user_prompts_skips_codex_synthetic_response_item(tmp_path):
+    """The parallel ``response_item`` user messages carry synthetic
+    ``<environment_context>`` / permission blocks — the hook must NOT treat
+    those as human prompts (it reads only the event_msg stream)."""
+    f = tmp_path / "rollout.jsonl"
+    lines = [
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "<environment_context>noise</environment_context>"}],
+            },
+        },
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "real prompt"}},
+    ]
+    f.write_text("\n".join(json.dumps(x) for x in lines), encoding="utf-8")
+    assert hook._recent_user_prompts(str(f), 5) == ["real prompt"]
+
+
+def test_recently_surfaced_parses_codex_rollout_line(tmp_path):
+    """A Codex rollout has no ``attachment`` records; the manifest is matched
+    from the raw serialized line (the ``ambient-ids`` comment survives JSON
+    escaping). A Claude transcript never reaches that branch."""
+    f = tmp_path / "rollout.jsonl"
+    block = _ambient_block(["cx1", "cx2"], lensing="cx3")
+    rec = {"type": "response_item", "payload": {"type": "message", "role": "user",
+                                                "content": [{"type": "input_text", "text": block}]}}
+    f.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    assert hook._recently_surfaced(str(f), 5) == {"cx1": 1, "cx2": 1, "cx3": 1}
+
+
+def test_codex_output_mode_detects_flag(monkeypatch):
+    monkeypatch.setattr(hook.sys, "argv", ["ambient_recall.py", "--codex"])
+    monkeypatch.delenv("GAOTTT_HOOK_OUTPUT", raising=False)
+    assert hook._codex_output_mode() is True
+
+
+def test_codex_output_mode_detects_env(monkeypatch):
+    monkeypatch.setattr(hook.sys, "argv", ["ambient_recall.py"])
+    monkeypatch.setenv("GAOTTT_HOOK_OUTPUT", "codex")
+    assert hook._codex_output_mode() is True
+
+
+def test_codex_output_mode_default_off(monkeypatch):
+    monkeypatch.setattr(hook.sys, "argv", ["ambient_recall.py"])
+    monkeypatch.delenv("GAOTTT_HOOK_OUTPUT", raising=False)
+    assert hook._codex_output_mode() is False
+
+
+def test_emit_codex_wraps_block_in_envelope(monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr(hook, "_emit", lambda s: captured.__setitem__("out", s))
+    block = "<gaottt-ambient-recall>\nbody\n</gaottt-ambient-recall>"
+    hook._emit_codex(block)
+    obj = json.loads(captured["out"])
+    assert obj["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert obj["hookSpecificOutput"]["additionalContext"] == block
+
+
+def test_main_codex_mode_emits_json_envelope(monkeypatch, capsys):
+    """End-to-end: in Codex mode ``main()`` emits the JSON envelope, not the
+    raw block (the Claude Code / opencode path)."""
+    block = "<gaottt-ambient-recall>\nhello\n</gaottt-ambient-recall>"
+    monkeypatch.setattr(hook, "_codex_output_mode", lambda: True)
+    args = _run_hook_main(
+        _make_stdin_payload(prompt="a prompt long enough to pass"),
+        monkeypatch, capsys, returned_block=block,
+    )
+    assert args["rc"] == 0
+    obj = json.loads(args["emitted"])
+    assert obj["hookSpecificOutput"]["additionalContext"] == block
+
+
+def test_main_default_mode_emits_raw_block(monkeypatch, capsys):
+    """Non-Codex default stays unchanged: raw block on stdout, no envelope."""
+    block = "<gaottt-ambient-recall>\nhello\n</gaottt-ambient-recall>"
+    monkeypatch.setattr(hook, "_codex_output_mode", lambda: False)
+    args = _run_hook_main(
+        _make_stdin_payload(prompt="a prompt long enough to pass"),
+        monkeypatch, capsys, returned_block=block,
+    )
+    assert args["emitted"].lstrip().startswith("<gaottt-ambient-recall>")
