@@ -7,6 +7,8 @@ shape.
 """
 from __future__ import annotations
 
+import json
+
 from gaottt.core.types import (
     AmbientPersona,
     AutoRememberCandidate,
@@ -516,3 +518,78 @@ def test_auto_remember_does_not_leak_prior_block_content():
         "the actual assistant decision should still be extracted after strip; "
         f"got {[c.content[:50] for c in candidates]}"
     )
+
+
+# --- Codex CLI (third frontend): rollout-JSONL transcript parsing -------------
+
+def _load_build_transcript():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "save_candidates_hook_codex",
+        Path(__file__).resolve().parents[2]
+        / "scripts" / "hooks" / "save_candidates.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod._build_transcript_from_path
+
+
+def test_build_transcript_parses_codex_event_msg(tmp_path):
+    """Codex rollout: ``event_msg`` ``user_message`` / ``agent_message`` carry
+    the clean per-turn text the heuristic needs; both roles are captured."""
+    build = _load_build_transcript()
+    f = tmp_path / "rollout.jsonl"
+    lines = [
+        {"type": "session_meta", "payload": {"id": "abc"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "別の API を採用したい"}},
+        {"type": "event_msg", "payload": {"type": "agent_message", "message": "了解、置き換えます"}},
+        # tool / token noise that must be ignored.
+        {"type": "event_msg", "payload": {"type": "token_count", "total": 1234}},
+        {"type": "response_item", "payload": {"type": "function_call", "name": "Bash"}},
+    ]
+    f.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in lines), encoding="utf-8")
+    out = build(str(f), 3)
+    assert "[user] 別の API を採用したい" in out
+    assert "[assistant] 了解、置き換えます" in out
+    assert "token_count" not in out and "function_call" not in out
+
+
+def test_build_transcript_codex_failsafe_on_missing_file(tmp_path):
+    build = _load_build_transcript()
+    assert build(str(tmp_path / "nope.jsonl"), 3) == ""
+
+
+# --- inject hook: Codex --codex JSON envelope --------------------------------
+
+def _load_inject_module():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "save_candidates_inject_hook",
+        Path(__file__).resolve().parents[2]
+        / "scripts" / "hooks" / "save_candidates_inject.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_inject_emit_codex_wraps_block_in_envelope():
+    mod = _load_inject_module()
+    captured: dict = {}
+    mod._emit = lambda s: captured.__setitem__("out", s)
+    block = "<gaottt-save-candidates>\nbody\n</gaottt-save-candidates>"
+    mod._emit_codex(block)
+    obj = json.loads(captured["out"])
+    assert obj["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert obj["hookSpecificOutput"]["additionalContext"] == block
+
+
+def test_inject_codex_output_mode_detects_flag(monkeypatch):
+    mod = _load_inject_module()
+    monkeypatch.setattr(mod.sys, "argv", ["save_candidates_inject.py", "--codex"])
+    monkeypatch.delenv("GAOTTT_HOOK_OUTPUT", raising=False)
+    assert mod._codex_output_mode() is True
+    monkeypatch.setattr(mod.sys, "argv", ["save_candidates_inject.py"])
+    assert mod._codex_output_mode() is False

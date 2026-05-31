@@ -111,7 +111,7 @@ GaOTTT が直前ターンから抽出した save 候補です。
 | 1 | backend (`save_candidates()` service + MCP/REST tool + formatter) | 中 | なし |
 | 2 | Claude Code stop hook (`scripts/hooks/save_candidates.py` + `.claude/hooks/stop.sh`) | 小 | Stage 1 |
 | 3 | opencode plugin (`scripts/hooks/opencode-save-candidates.ts`) | 小 | Stage 1, opencode plugin API 調査 |
-| 4 | codex 対応 | TBD | codex hook 仕様待ち |
+| 4 | codex 対応 ✅ (2026-05-31) | 小 | 完了 — Codex hooks (`UserPromptSubmit`/`Stop`) で同じ Python script を `--codex` 再利用、`.codex/hooks.json` 同梱 |
 | 5 | 候補抽出 heuristic 精緻化 (emotion 語彙 / 訂正 pattern / 絶対表現 boost) | 小 | Stage 2 dogfooding |
 
 v1 = Stage 1 + Stage 2 (1 PR)。Stage 3-5 は別 PR。

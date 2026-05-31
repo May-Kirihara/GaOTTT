@@ -331,9 +331,42 @@ EOF
 
 > 💡 `AGENTS.override.md` を使うとオリジナルの `AGENTS.md` を残したまま上書きできます。Codex CLI は global → project ルート → cwd の順に concatenate するので、project の AGENTS.md は global を補強する形で書けます。
 
+### 4. Ambient Recall / 自動保存フック（任意・推奨）
+
+Claude Code / OpenCode と同じ **ambient recall（読み側）+ save candidates（書き側）の自動ループ** を Codex CLI でも使えます。Codex は [hooks](https://developers.openai.com/codex/hooks) という仕組み（Claude Code とほぼ同じイベント体系）を持っていて、`~/.codex/hooks.json`（グローバル）または `<repo>/.codex/hooks.json`（プロジェクト単位）で登録します。
+
+- **`UserPromptSubmit`** → `ambient_recall.py --codex`：毎ターンの発話を見て、関連する長期記憶を `<gaottt-ambient-recall>` ブロックとして文脈に自動注入（passive・非破壊）。
+- **`UserPromptSubmit`** → `save_candidates_inject.py --codex`：前ターンに抽出した保存候補を `<gaottt-save-candidates>` ブロックとして提示。
+- **`Stop`** → `save_candidates.py`：ターン終了時に直近のやりとりを heuristic で走査し、保存候補を per-session state file に書く（次ターンの inject 側が読む）。
+
+> 💡 **Codex と Claude Code の唯一の差** は出力形式です。Claude Code は hook の raw stdout をそのまま文脈に注入しますが、Codex は **JSON エンベロープ**（`{"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ...}}`）を読みます。`--codex` フラグ（または `GAOTTT_HOOK_OUTPUT=codex`）がこのエンベロープ形式に切り替えます。transcript の読み取りも Codex の rollout JSONL（`event_msg` / `user_message`）に対応済みなので、マルチターン履歴もそのまま効きます。
+
+同梱の `.codex/hooks.json` は README と同じ `$HOME/GaOTTT` 規約（GaOTTT を**ホーム直下に clone**: `git clone … && cd GaOTTT`）でパスを書いてあるので、**書き換えなしでそのまま使えます**。Codex は command を shlex で分解するだけで `$HOME` を展開しないため、各 hook は `sh -c '…'` 経由で起動してシェルに展開させています（だから machine 非依存）。
+
+**インストール（グローバル、全プロジェクトで有効）**:
+
+```bash
+mkdir -p ~/.codex
+cp "$HOME/GaOTTT/.codex/hooks.json" ~/.codex/hooks.json
+# ホーム以外に clone した場合だけ、$HOME/GaOTTT を実際のパスに置換:
+#   sed -i 's#\$HOME/GaOTTT#/your/path/to/GaOTTT#g' ~/.codex/hooks.json
+```
+
+**プロジェクト単位だけで良い場合** は、GaOTTT を呼ぶプロジェクトの直下に同じ `.codex/hooks.json` を置くだけ（GaOTTT repo 内で codex を動かすなら同梱の雛形がそのまま効きます）。
+
+> 💡 **Windows**: `sh -c '…'` が使えないので、各 `command` を絶対パス形式（`"C:\Users\<name>\GaOTTT\.venv\Scripts\python.exe" "C:\Users\<name>\GaOTTT\scripts\hooks\ambient_recall.py" --codex`、TOML なら `commandWindows` フィールド）に置き換えてください。
+
+保存したら **Codex CLI 内で `/hooks` を実行して、各 hook 定義を確認 → trust** してください（Codex は未信頼の command hook を実行しません）。`[features]` で hooks を無効化していなければ（default 有効）これで動きます。
+
+> ⚠️ hooks は MCP backend（proxy mode の port 7878）に接続して動きます。上の **1./2. で gaottt を MCP server として登録済み**であれば、最初の Codex セッションで backend が自動起動するので追加作業は不要です。backend が落ちている/遅いときは hook は黙って何も注入せず、発話をブロックすることは決してありません（fail-safe）。
+
+**無効化**: `GAOTTT_AMBIENT_RECALL=0`（読み側）/ `GAOTTT_SAVE_CANDIDATES_ENABLED=0`（書き側）を hook の `command` に付けるか、`~/.codex/hooks.json` から該当エントリを消すだけ。チューニング用 env は [Operations — Tuning](Operations-Tuning.md) と各 hook スクリプト冒頭の docstring を参照。
+
 ### 成功の目印 ✅
 
 Codex CLI のセッション内で MCP ツール一覧（`/tools` 等）を見たとき、`gaottt` の 27 個のツール（`remember`, `recall`, ...）が見えていれば成功。あるいは「gaottt の `reflect` を aspect=summary で呼んで」と頼んで結果が返ればOK。
+
+フックを入れた場合は、**12 文字以上の発話を 1 回送って**みて、関連記憶があれば `<gaottt-ambient-recall>` ブロックが文脈に乗る（Codex の UI 上は developer context として現れる）こと、ターンを終えると次の発話で `<gaottt-save-candidates>` が出ることを確認できれば OK。
 
 > 💡 **proxy mode について**: GaOTTT の MCP サーバーは default で proxy mode（軽量 stdio shim → HTTP backend）で動くので、Claude Code / OpenCode 等と **同じ backend プロセス（port 7878）を共有** します。N 個のエージェントで合計 ~3-4 GB の RAM が 1 backend で済む仕組み。詳細は [Operations — Server Setup](Operations-Server-Setup.md) 「起動モード」節。
 

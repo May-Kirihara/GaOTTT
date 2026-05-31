@@ -137,6 +137,15 @@ source ~/.bashrc
 
 > ⚠️ **`GAOTTT_REPO` MUST be set.** The TS plugin's internal fallback (`process.env.GAOTTT_REPO ?? "/mnt/holyland/Project/GaOTTT"`) just happens to hard-code this repository author's path. Without the env var, the plugin will look for the Python interpreter at the wrong path and silently fail — no error message, the block simply never injects (hook is fail-safe by design, so it stays quiet). Put the `export` in your shell rc so every opencode subprocess inherits it.
 
+**OpenAI Codex CLI** — Codex has a [hooks](https://developers.openai.com/codex/hooks) system with nearly the same events as Claude Code, so it reuses the *same* Python hooks (via a `--codex` flag) — no separate plugin. The repo ships a ready `.codex/hooks.json` that wires both the read-side (ambient) and write-side (save-candidates) loop; copy it to your global Codex config:
+
+```bash
+mkdir -p ~/.codex
+cp "$HOME/GaOTTT/.codex/hooks.json" ~/.codex/hooks.json   # paths use $HOME/GaOTTT (clone into home)
+```
+
+Then run **`/hooks` inside Codex once to review + trust** the definitions (Codex won't run untrusted command hooks). Two differences are handled for you: Codex injects context via a JSON envelope (`hookSpecificOutput.additionalContext`) rather than raw stdout, and it parses the hook command with `shlex` (no `$HOME` expansion) — so each hook runs through `sh -c '…'` to let the shell expand `$HOME/GaOTTT`, keeping the file machine-independent. Cloned outside your home dir? Replace `$HOME/GaOTTT` with your path. (Windows: swap each `sh -c '…'` for the absolute-path form.)
+
 → Full setup, relevance gate, observer effect: [Guides — Ambient Recall](docs/wiki/Guides-Ambient-Recall.md)
 
 ### Save Candidates Hook — write-side symmetric
@@ -180,7 +189,9 @@ mkdir -p ~/.config/opencode/plugin
 cp scripts/hooks/opencode-save-candidates.ts ~/.config/opencode/plugin/gaottt-save-candidates.ts
 ```
 
-codex CLI support is planned (v3) once codex publishes an equivalent plugin hook. All hooks are fail-silent — if GaOTTT is down or times out, your agent is never blocked.
+**OpenAI Codex CLI** — already wired. The same `.codex/hooks.json` you copied for Ambient Recall registers the `Stop` → `UserPromptSubmit` bridge too (`save_candidates.py` writes a per-session state file at turn end, `save_candidates_inject.py --codex` reads + injects it next turn). No extra step beyond trusting it via `/hooks`.
+
+All hooks are fail-silent — if GaOTTT is down or times out, your agent is never blocked.
 
 → Full plan, design rationale, two-script bridge: [Plans — Save Candidates Hook](docs/wiki/Plans-Save-Candidates-Hook.md) · env knobs: [Operations — Tuning](docs/wiki/Operations-Tuning.md#save_candidates-hookplans-save-candidates-hookmd)
 
