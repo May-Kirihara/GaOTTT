@@ -396,6 +396,9 @@ opencode plugin (`scripts/hooks/opencode-save-candidates.ts`) 専用の追加 en
 | faiss_persist_guard_enabled | True | 逆方向上書きガード。in-memory FAISS が DB active 数に対し過小なとき全 FAISS 永続を拒否し、壊れた index で正常な on-disk index を上書きするのを防ぐ（[問題5.5](Operations-Troubleshooting.md)）。`GAOTTT_FAISS_PERSIST_GUARD_ENABLED=0` で無効化 |
 | faiss_persist_floor | 100 | ガードが効き始める最小 active ノード数。これ未満は守るべき index が無いので不活性（小規模 / reset 直後の DB で誤発動しない） |
 | faiss_persist_min_ratio | 0.5 | `faiss.size >= active × この比` のときのみ永続。下回ると corrupt とみなし書き込み拒否。正当な bulk forget/compact は cache active も同時に減るので誤発動しない |
+| proxy_serialize_requests_enabled | True | **並列 recall ハードニング (2026-06-01)**。proxy mode で単一 upstream `ClientSession` への全 forwarder + ping を `asyncio.Lock` で 1 in-flight に直列化。同一ターンの 2 並列 recall が streamable-http session を壊す「`MCP error 32600: Session terminated`」を防ぐ（[Troubleshooting](Operations-Troubleshooting.md)）。`GAOTTT_PROXY_SERIALIZE_REQUESTS_ENABLED=0` で legacy 無ロック挙動に rollback（auto-reconnect も無効化 — rebuild に lock が要るため） |
+| proxy_auto_reconnect_enabled | True | proxy が session 終了系の例外で upstream session を rebuild し 1 回 retry。`_ensure_backend` 再利用で backend 死 / idle watchdog / cold-start も自己修復。正常な tool error (`isError=True`) は素通し。serialize が ON のときのみ有効。`GAOTTT_PROXY_AUTO_RECONNECT_ENABLED=0` で無効化 |
+| faiss_index_lock_enabled | True | `FaissIndex` の add/save/search/reset/get_vectors を `threading.Lock` で保護。背景の `to_thread` save（実ワーカースレッド）が event-loop の `add()` と競合するクロススレッド race を封じる（asyncio lock では防げない）。recall hot path への影響は p50 +1.9% / p95 +0.1% / p99 +7.4%（予算内）。`GAOTTT_FAISS_INDEX_LOCK_ENABLED=0` で無効化 |
 
 ## Embedding
 

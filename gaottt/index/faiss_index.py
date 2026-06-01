@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import threading
 
 import faiss
 import numpy as np
@@ -10,10 +12,22 @@ logger = logging.getLogger(__name__)
 
 
 class FaissIndex:
-    def __init__(self, dimension: int = 768):
+    def __init__(self, dimension: int = 768, *, lock_enabled: bool = True):
         self._dimension = dimension
         self._index = faiss.IndexFlatIP(dimension)
         self._id_map: list[str] = []
+        # Guards every method that touches ``self._index`` directly so the
+        # background ``to_thread`` save (real worker thread) cannot race a
+        # synchronous ``add()`` / ``search()`` on the event loop. faiss may
+        # release the GIL inside ``write_index`` / ``search``, so the GIL alone
+        # does not serialize them — an explicit lock is required. ``threading``
+        # (not ``asyncio``) because the contention is genuinely cross-thread.
+        # ``search_by_id`` is intentionally NOT locked: it only composes
+        # ``get_vectors`` + ``search`` (each self-locking), and the non-
+        # reentrant lock would deadlock if it held it across those calls.
+        self._lock: threading.Lock | contextlib.AbstractContextManager = (
+            threading.Lock() if lock_enabled else contextlib.nullcontext()
+        )
 
     @property
     def size(self) -> int:
@@ -22,24 +36,26 @@ class FaissIndex:
     def add(self, vectors: np.ndarray, ids: list[str]) -> None:
         assert vectors.shape[0] == len(ids)
         assert vectors.shape[1] == self._dimension
-        self._index.add(vectors.astype(np.float32))
-        self._id_map.extend(ids)
+        with self._lock:
+            self._index.add(vectors.astype(np.float32))
+            self._id_map.extend(ids)
 
     def search(self, query_vector: np.ndarray, top_k: int) -> list[tuple[str, float]]:
-        if self._index.ntotal == 0:
-            return []
-        k = min(top_k, self._index.ntotal)
-        scores, indices = self._index.search(query_vector.astype(np.float32), k)
-        results = []
-        id_map_len = len(self._id_map)
-        for score, idx in zip(scores[0], indices[0]):
-            if idx < 0 or idx >= id_map_len:
-                # Defensive: ntotal can briefly outpace _id_map under
-                # multi-process write contention (corrupted .ids file or
-                # mid-save interruption). Skip rather than IndexError.
-                continue
-            results.append((self._id_map[idx], float(score)))
-        return results
+        with self._lock:
+            if self._index.ntotal == 0:
+                return []
+            k = min(top_k, self._index.ntotal)
+            scores, indices = self._index.search(query_vector.astype(np.float32), k)
+            results = []
+            id_map_len = len(self._id_map)
+            for score, idx in zip(scores[0], indices[0]):
+                if idx < 0 or idx >= id_map_len:
+                    # Defensive: ntotal can briefly outpace _id_map under
+                    # multi-process write contention (corrupted .ids file or
+                    # mid-save interruption). Skip rather than IndexError.
+                    continue
+                results.append((self._id_map[idx], float(score)))
+            return results
 
     def save(self, path: str) -> None:
         """Atomically persist the FAISS index + id map.
@@ -69,18 +85,23 @@ class FaissIndex:
         # name means no cleanup can target a live writer's file, and two
         # processes saving concurrently never collide. ``<pid>`` also lets
         # the cleanup tell a dead-process orphan from a live in-flight one.
-        tmp = f"{path}.{os.getpid()}.tmp"
-        faiss.write_index(self._index, tmp)
-        os.replace(tmp, path)
+        # Hold the lock across the whole write so a concurrent add() on the
+        # event loop cannot grow ``self._index`` / ``self._id_map`` while
+        # ``write_index`` reads the index in this (``to_thread``) worker
+        # thread — the cross-thread race that an asyncio lock cannot cover.
+        with self._lock:
+            tmp = f"{path}.{os.getpid()}.tmp"
+            faiss.write_index(self._index, tmp)
+            os.replace(tmp, path)
 
-        id_map_path = path + ".ids"
-        id_map_tmp = f"{id_map_path}.{os.getpid()}.tmp"
-        with open(id_map_tmp, "w") as f:
-            for node_id in self._id_map:
-                f.write(node_id + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(id_map_tmp, id_map_path)
+            id_map_path = path + ".ids"
+            id_map_tmp = f"{id_map_path}.{os.getpid()}.tmp"
+            with open(id_map_tmp, "w") as f:
+                for node_id in self._id_map:
+                    f.write(node_id + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(id_map_tmp, id_map_path)
 
     def load(self, path: str) -> None:
         if not os.path.exists(path):
@@ -129,19 +150,21 @@ class FaissIndex:
 
     def get_vectors(self, ids: list[str]) -> dict[str, np.ndarray]:
         """Retrieve original embedding vectors by IDs."""
-        if self._index.ntotal == 0:
-            return {}
-        id_to_idx = {nid: i for i, nid in enumerate(self._id_map)}
-        indices_needed = [(node_id, id_to_idx[node_id]) for node_id in ids if node_id in id_to_idx]
-        if not indices_needed:
-            return {}
-        # Read full matrix once
-        all_vecs = faiss.rev_swig_ptr(
-            self._index.get_xb(), self._index.ntotal * self._dimension
-        )
-        all_vecs = np.array(all_vecs).reshape(self._index.ntotal, self._dimension)
-        return {node_id: all_vecs[idx].copy().astype(np.float32) for node_id, idx in indices_needed}
+        with self._lock:
+            if self._index.ntotal == 0:
+                return {}
+            id_to_idx = {nid: i for i, nid in enumerate(self._id_map)}
+            indices_needed = [(node_id, id_to_idx[node_id]) for node_id in ids if node_id in id_to_idx]
+            if not indices_needed:
+                return {}
+            # Read full matrix once
+            all_vecs = faiss.rev_swig_ptr(
+                self._index.get_xb(), self._index.ntotal * self._dimension
+            )
+            all_vecs = np.array(all_vecs).reshape(self._index.ntotal, self._dimension)
+            return {node_id: all_vecs[idx].copy().astype(np.float32) for node_id, idx in indices_needed}
 
     def reset(self) -> None:
-        self._index = faiss.IndexFlatIP(self._dimension)
-        self._id_map = []
+        with self._lock:
+            self._index = faiss.IndexFlatIP(self._dimension)
+            self._id_map = []

@@ -907,6 +907,27 @@ class GaOTTTConfig:
     faiss_persist_floor: int = 100
     # Persist only if in-memory faiss.size >= active * this ratio.
     faiss_persist_min_ratio: float = 0.5
+    # --- Concurrency hardening (2026-06-01) ----------------------------------
+    # Handover: docs/maintainers/handover-2026-06-01-concurrent-recall-session-termination.md
+    # Proxy transport serializes every upstream request on the single shared
+    # streamable-http ClientSession (one in-flight at a time). Two concurrent
+    # in-flight POSTs break that session → "MCP error 32600: Session
+    # terminated" for every later call until reconnect. ``False`` = legacy
+    # no-lock pass-through (also disables auto-reconnect, which needs the lock
+    # for exclusive rebuild). Env: GAOTTT_PROXY_SERIALIZE_REQUESTS_ENABLED=0.
+    proxy_serialize_requests_enabled: bool = True
+    # Proxy transport rebuilds the upstream session and retries once when it
+    # reports terminated/closed (also self-heals backend death / idle-watchdog
+    # shutdown / cold-start), instead of erroring every call until the client
+    # manually reconnects. Only effective when serialization is on (rebuild
+    # must hold the lock). Env: GAOTTT_PROXY_AUTO_RECONNECT_ENABLED=0.
+    proxy_auto_reconnect_enabled: bool = True
+    # FaissIndex guards add/save/search/reset/get_vectors with a threading.Lock
+    # so the background ``to_thread`` save (a real worker thread) cannot race a
+    # synchronous ``add()`` on the event loop — an asyncio lock cannot cover a
+    # cross-thread race. Cost is a µs-scale acquire on the recall hot path.
+    # Env: GAOTTT_FAISS_INDEX_LOCK_ENABLED=0 to disable.
+    faiss_index_lock_enabled: bool = True
     # Phase H Stage 5 — Wave neighbor uses virtual FAISS:
     # Previously the seed pool unioned raw+virtual, but the wave's per-
     # frontier `search_by_id` only queried raw FAISS. That breaks the

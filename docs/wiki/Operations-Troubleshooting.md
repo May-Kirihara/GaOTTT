@@ -100,6 +100,21 @@ sleep 3 && ps -ef | grep "gaottt.server.mcp_server.*streamable-http" | grep -v g
 - 修正前の DB で長期間積もった「FAISS に無く SQLite/cache にのみ存在する」ノードがある場合、`engine.compact(rebuild_faiss=True)` で全 active から再構築すれば解消（diagnostics: `len(faiss._id_map - cache.node_cache.keys())` と逆向きを比較）
 - `faiss_save_interval_seconds=0` に設定してしまっていないか確認（disable 設定）
 
+## `MCP error 32600: Session terminated`（並列 recall でセッションが死ぬ）
+
+**症状**: 1 つのエージェントターンで `recall` 等を **2 件以上並列**に呼んだ直後から、その MCP クライアントの **全 GaOTTT 呼び出し** が `MCP error 32600: Session terminated` を返し続ける。`/mcp` で gaottt を reconnect すると復旧。`ambient_recall` フック（毎ターン別接続で呼ばれる）は正常応答するので backend 自体は生きている。
+
+**原因**: proxy mode では各エージェントの shim が単一の upstream `ClientSession`（streamable-http）で backend に繋がる。lowlevel `Server` は受信リクエストを並行ディスパッチするため、2 件の `call_tool` が同じ session へ同時 POST し、streamable-http の 1 セッションが同時 in-flight で壊れる。一度壊れると以後その session の全呼び出しが落ち、自動復旧しなかった。調査: [`handover-2026-06-01-concurrent-recall-session-termination.md`](https://github.com/May-Kirihara/GaOTTT/blob/main/docs/maintainers/handover-2026-06-01-concurrent-recall-session-termination.md)。
+
+**修正（2026-06-01）**:
+- **直列化**: proxy が全 upstream 呼び出し + ping を `asyncio.Lock` で 1 in-flight に直列化（`proxy_serialize_requests_enabled`、既定 ON）。並列呼びでも session が壊れない。
+- **自己修復**: session 終了系の例外で upstream session を rebuild し 1 回 retry（`proxy_auto_reconnect_enabled`、既定 ON）。backend 死 / idle watchdog / cold-start でも自動再接続する（`/mcp` 手動 reconnect が不要に）。
+
+**それでも出る場合**:
+- 修正前の backend が動いている可能性 → backend を kill して新コードで respawn（[code deploy 時の backend 再起動](Operations-Server-Setup.md)）。
+- 緊急 rollback は `GAOTTT_PROXY_SERIALIZE_REQUESTS_ENABLED=0`（ただし legacy の壊れる挙動に戻る）。
+- 暫定の運用回避は従来どおり「GaOTTT 呼び出しを並列にしない（逐次化）」。
+
 ## メモリ使用量が大きい
 
 - embedding モデル: ~1.5GB（GPU VRAM）
