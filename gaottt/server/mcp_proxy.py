@@ -202,7 +202,10 @@ def _is_session_dead(exc: BaseException) -> bool:
     code alone so a genuine malformed request can't trigger a reconnect loop.
     """
     if isinstance(exc, (anyio.ClosedResourceError, anyio.BrokenResourceError,
-                        ConnectionError)):
+                        anyio.EndOfStream, ConnectionError)):
+        # EndOfStream: a *gracefully* closed backend (SIGTERM / idle-watchdog
+        # shutdown sends FIN) drains the session's read stream to EOF — the
+        # most likely real-world death mode, so it must count as "dead".
         return True
     if isinstance(exc, McpError):
         return "terminat" in str(exc).lower()
@@ -253,11 +256,20 @@ class _Upstream:
     async def connect(self) -> None:
         """Open the streamable-http transport + ClientSession and initialize."""
         stack = contextlib.AsyncExitStack()
-        read, write, _ = await stack.enter_async_context(
-            streamablehttp_client(self.url)
-        )
-        session = await stack.enter_async_context(ClientSession(read, write))
-        init_result = await session.initialize()
+        try:
+            read, write, _ = await stack.enter_async_context(
+                streamablehttp_client(self.url)
+            )
+            session = await stack.enter_async_context(ClientSession(read, write))
+            init_result = await session.initialize()
+        except BaseException:
+            # initialize() / transport open failed: close whatever was already
+            # entered so the streamable-http transport + fds don't leak. Without
+            # this the stack stays a local (never assigned to self._stack) and
+            # is never closed — and reconnect calls connect() repeatedly, so a
+            # flaky backend would leak an fd per failed attempt.
+            await stack.aclose()
+            raise
         self._stack = stack
         self._session = session
         self.instructions = (

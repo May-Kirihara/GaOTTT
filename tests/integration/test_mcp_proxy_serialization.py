@@ -84,6 +84,7 @@ def test_is_session_dead_classification():
     assert _is_session_dead(McpError(types.ErrorData(code=32600, message="Session terminated")))
     assert _is_session_dead(anyio.ClosedResourceError())
     assert _is_session_dead(anyio.BrokenResourceError())
+    assert _is_session_dead(anyio.EndOfStream())   # gracefully-closed backend (SIGTERM/idle)
     assert _is_session_dead(ConnectionError("connection refused"))
     # A genuine application/protocol error must NOT be treated as a dead session.
     assert not _is_session_dead(McpError(types.ErrorData(code=-32601, message="Method not found")))
