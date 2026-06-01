@@ -27,7 +27,7 @@ External long-term memory across sessions. Backed by embeddings + a gravity-simu
 - Looping in the same potential well.
 - Cross-domain transfer wanted.
 - User asks "got any interesting ideas?".
-- **Break fixation with `mode="dormant"`**: pulls low-mass, idle-for-≥30d self-authored memos the gravity field has *not* been pulling back. Use when `recall` keeps returning the same handful of high-mass nodes ("Heavy Persona Dominance") and you want to widen the lens. `query` is ignored in this mode.
+- **Break fixation with `mode="dormant"`**: pulls low-mass, idle-for-≥7d self-authored memos the gravity field has *not* been pulling back. Use when `recall` keeps returning the same handful of high-mass nodes ("Heavy Persona Dominance") and you want to widen the lens. `query` is ignored in this mode.
 
 ### Reading retrieval results
 - Each `recall`/`ambient_recall` result now carries a one-line **`reason:`** explanation: `high mass persona proximity (mass=2.82) — possible dominance artifact` / `bm25 strong lexical match (0.71)` / `lensing pick (gap=+0.07)` / `dormant surface (percentile=8)`. When you see *"possible dominance artifact"*, the field is leaning hard on a familiar high-mass node — consider `mode="dormant"` or different phrasing.
@@ -140,7 +140,7 @@ explore(query, top_k=5, diversity=0.5, source_filter=None,
         mode="serendipity")
 ```
 
-**Dormant surface**: pass `mode="dormant"` to bypass the wave entirely and pull random *self-authored* memos (`agent` / `value` / `intention` / `commitment` / `note` / `reference`) that have been idle ≥ 30 days **and** mass ≤ 2 — the "low-mass, the field never claimed it" cohort. `query` is ignored in this mode (pass any placeholder). Use it when you suspect you've forgotten something the field alone won't surface. `training_delta` / `routing_hint` are `None` in this mode (no wave ran, no aspect intent to detect).
+**Dormant surface**: pass `mode="dormant"` to bypass the wave entirely and pull random *self-authored* memos (`agent` / `value` / `intention` / `commitment` / `note` / `reference`) that have been idle ≥ 7 days **and** below the mass cut (percentile p10 by default) — the "low-mass, the field never claimed it" cohort. `query` is ignored in this mode (pass any placeholder). Use it when you suspect you've forgotten something the field alone won't surface. `training_delta` / `routing_hint` are `None` in this mode (no wave ran, no aspect intent to detect).
 
 Higher-temperature search; pulls in cross-domain neighbors a normal recall would miss. `diversity`: `0.0` (near-normal) → `0.5` (default) → `1.0` (maximum).
 

@@ -465,6 +465,18 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/path/to/GaOTTT
+# ★ opt-in tuning は **ここ (backend の env)** で渡す。proxy mode の auto-spawn は
+#   「最初に backend を spawn した frontend」の env しか継承しないため、frontend
+#   launcher (.claude.json / opencode.json / .codex/hooks.json) 側に env を書いても
+#   どの frontend が backend を立てたかで config が非決定的になる
+#   (`project_proxy_backend_env_not_delivered`)。共有 backend を単一の真実源にするなら
+#   env はこの unit に集約するのが正しい。code default 化済みの knob (anti-hub λ=0.4,
+#   dormant percentile=10, dormant age=7d) は省略可。
+# Environment=GAOTTT_DIRECT_HIT_ANTI_HUB_LAMBDA=0.4
+# Environment=GAOTTT_DORMANT_MASS_PERCENTILE=10
+# Environment=GAOTTT_DORMANT_AGE_THRESHOLD_SECONDS=604800
+# Mass Evaporation は physics 挙動変更 (measurement-first)。enable する場合のみ ↓ を有効化:
+# Environment=GAOTTT_MASS_EVAPORATION_ENABLED=true
 ExecStart=/path/to/GaOTTT/.venv/bin/python -m gaottt.server.mcp_server --transport streamable-http --port 7878 --idle-timeout 0
 Restart=on-failure
 RestartSec=5
