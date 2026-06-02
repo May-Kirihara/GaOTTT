@@ -768,6 +768,25 @@ class GaOTTTConfig:
     # not env-coercible); pair with the normalization knob above.
     cooccurrence_hub_degree_percentile_cut: float | None = None
 
+    # Synaptic Pruning (2026-06-02, default OFF) — co-occurrence edge decay.
+    # The edge-layer twin of Phase N mass evaporation: an association weight is
+    # a leaky integrator that decays by half-life since its last reinforcement
+    # (co-recall). A one-off bulk-recording session-clique is reinforced once
+    # then never again → it fades; an organic association is re-traversed
+    # repeatedly → it persists. This thins the bulk-content "degree wall" that
+    # capped Stage 8 (Plans-Synaptic-Pruning.md, the P3 lever). Biology: LTD /
+    # synaptic pruning, the twin of "fire together wire together". Physics: a
+    # filament's radioactive half-life. Touches no physics (force/mass) —
+    # co-occurrence weight feeds only the observation/ranking layer (Stage 5
+    # resonance, reflect, future Accretion). Lazy mode: weights are decayed at
+    # read time (get_association_strength / degree); the graph is not mutated,
+    # so off ⇒ bit-exact and rollback is a no-op. (Eager pruning — actually
+    # removing faded edges — is a future ops step, Fork A.) The decay clock is
+    # the edge's last_update, which the store already records as the last-
+    # reinforcement time, so decay applies retroactively to stale cliques.
+    synaptic_pruning_enabled: bool = False
+    synaptic_pruning_half_life_seconds: float = 30 * 86400.0  # 30 days
+
     # Phase O Stage 3 — Query routing (recall + reflect auto-merge).
     # When True, ``recall`` / ``explore`` heuristically classify the query
     # surface form (e.g. "現在 active な commitment", "持っている value") and run

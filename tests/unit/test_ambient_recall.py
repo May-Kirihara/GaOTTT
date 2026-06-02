@@ -92,7 +92,8 @@ def test_lensing_resonance_zero_when_no_cooccurrence():
         def get_neighbors(self, node_id):
             return {}
 
-        def get_association_strength(self, node_id, *, mode="cosine", hub_degree_cut=None):
+        def get_association_strength(self, node_id, *, mode="cosine", hub_degree_cut=None,
+                                     decay_half_life=None, now=None):
             return dict(self.get_neighbors(node_id))
 
     class _FakeEngine:
@@ -117,7 +118,8 @@ def test_lensing_resonance_saturates_with_cooccurrence_count():
         def get_neighbors(self, node_id):
             return self._w.get(node_id, {})
 
-        def get_association_strength(self, node_id, *, mode="cosine", hub_degree_cut=None):
+        def get_association_strength(self, node_id, *, mode="cosine", hub_degree_cut=None,
+                                     decay_half_life=None, now=None):
             return dict(self.get_neighbors(node_id))
 
     class _FakeEngine:
@@ -146,7 +148,8 @@ def test_lensing_resonance_scale_zero_short_circuits():
         def get_neighbors(self, node_id):
             return self._w.get(node_id, {})
 
-        def get_association_strength(self, node_id, *, mode="cosine", hub_degree_cut=None):
+        def get_association_strength(self, node_id, *, mode="cosine", hub_degree_cut=None,
+                                     decay_half_life=None, now=None):
             return dict(self.get_neighbors(node_id))
 
     class _FakeEngine:

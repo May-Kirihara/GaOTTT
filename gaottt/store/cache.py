@@ -45,6 +45,17 @@ class CacheLayer:
         # so the legacy "none" path pays nothing.
         self._degree_cache: dict[str, float] | None = None
         self._total_weight: float = 0.0
+        # Synaptic Pruning — per-edge last-reinforcement time (key = sorted
+        # pair) for the half-life decay, loaded from the store's edges table
+        # (which records last_update as the last co-recall flush) and bumped
+        # to now on every set_edge. Plus a separate decayed-degree cache keyed
+        # by the active half-life: the decayed degree map is time-dependent,
+        # so it is recomputed when the half-life changes or after a mutation;
+        # within-session time drift is negligible against a days-scale T½.
+        self.edge_last_update: dict[tuple[str, str], float] = {}
+        self._decayed_degree_cache: dict[str, float] | None = None
+        self._decayed_total: float = 0.0
+        self._decayed_degree_half_life: float | None = None
         self.displacement_cache: dict[str, np.ndarray] = {}
         self.velocity_cache: dict[str, np.ndarray] = {}
         # Phase H Stage 2: id → metadata.source. Populated on load_from_store
@@ -141,12 +152,23 @@ class CacheLayer:
     def get_neighbors(self, node_id: str) -> dict[str, float]:
         return self.graph_cache.get(node_id, {})
 
-    def set_edge(self, src: str, dst: str, weight: float, dirty: bool = True) -> None:
+    def _invalidate_degree_caches(self) -> None:
+        """Stage 8 / Synaptic Pruning — drop the raw + decayed degree maps
+        after any edge mutation; both are rebuilt lazily on next read."""
+        self._degree_cache = None
+        self._decayed_degree_cache = None
+
+    def set_edge(self, src: str, dst: str, weight: float, dirty: bool = True,
+                 last_update: float | None = None) -> None:
         self.graph_cache.setdefault(src, {})[dst] = weight
         self.graph_cache.setdefault(dst, {})[src] = weight
-        self._degree_cache = None  # Stage 8: degrees changed
+        key = (min(src, dst), max(src, dst))
+        # Synaptic Pruning: a set is a reinforcement → reset the decay clock.
+        # ``last_update`` lets load_from_store seed the historical timestamp;
+        # live reinforcements pass None and stamp now.
+        self.edge_last_update[key] = last_update if last_update is not None else time.time()
+        self._invalidate_degree_caches()
         if dirty:
-            key = (min(src, dst), max(src, dst))
             self.dirty_edges.add(key)
 
     def remove_edge(self, src: str, dst: str) -> None:
@@ -154,8 +176,9 @@ class CacheLayer:
             self.graph_cache[src].pop(dst, None)
         if dst in self.graph_cache:
             self.graph_cache[dst].pop(src, None)
-        self._degree_cache = None  # Stage 8: degrees changed
         key = (min(src, dst), max(src, dst))
+        self.edge_last_update.pop(key, None)
+        self._invalidate_degree_caches()
         self.dirty_edges.add(key)
 
     def get_all_edges(self) -> list[CooccurrenceEdge]:
@@ -166,52 +189,102 @@ class CacheLayer:
                 key = (min(src, dst), max(src, dst))
                 if key not in seen:
                     seen.add(key)
+                    # Synaptic Pruning: persist the tracked last-reinforcement
+                    # time (the decay clock), not a fabricated "now", so the
+                    # half-life survives a reload. Falls back to now for edges
+                    # with no tracked timestamp (e.g. set before this field).
+                    lu = self.edge_last_update.get(key, time.time())
                     edges.append(
-                        CooccurrenceEdge(src=key[0], dst=key[1], weight=weight, last_update=time.time())
+                        CooccurrenceEdge(src=key[0], dst=key[1], weight=weight, last_update=lu)
                     )
         return edges
 
-    # --- Association strength (Lateral Association Stage 8) ---
+    # --- Association strength (Lateral Association Stage 8) + Synaptic Pruning ---
 
-    def _ensure_degrees(self) -> None:
-        """Lazily (re)build the per-node degree map + total unique-edge weight.
+    def _edge_decay_factor(
+        self, a: str, b: str, now: float, half_life: float,
+    ) -> float:
+        """Synaptic Pruning — half-life decay of an edge by its age since the
+        last reinforcement. ``0.5 ** (age / half_life)``; ``1.0`` when there is
+        no tracked timestamp or the edge was just reinforced."""
+        key = (a, b) if a < b else (b, a)
+        last = self.edge_last_update.get(key)
+        if last is None:
+            return 1.0
+        age = now - last
+        if age <= 0.0:
+            return 1.0
+        return 0.5 ** (age / half_life)
 
-        ``deg(x) = Σ_n w(x, n)``. ``graph_cache`` is symmetric (set_edge
-        writes both directions), so summing every node's adjacency double-
-        counts each undirected edge; ``_total_weight`` stores that doubled
-        sum and ``get_association_strength`` halves it for ``W`` (the PMI
-        normalizer). Rebuilt only when invalidated (``_degree_cache is None``)
-        and only ever reached from the normalized association path, so the
-        legacy ``"none"`` consumers never pay for it.
+    def _degrees(
+        self, decay_half_life: float | None, now: float | None,
+    ) -> tuple[dict[str, float], float]:
+        """Return ``(degree_map, doubled_total)``.
+
+        ``deg(x) = Σ_n w(x, n)``. ``graph_cache`` is symmetric, so summing
+        every node's adjacency double-counts each undirected edge; the second
+        return value is that doubled sum (callers halve it for the PMI
+        normalizer ``W``).
+
+        Without Synaptic Pruning the raw map is cached and mutation-invalidated
+        (the legacy fast path). With it, weights are decayed by edge age — the
+        decayed map is time-dependent, so it is cached per active half-life and
+        rebuilt on mutation; within-session time drift is negligible against a
+        days-scale half-life (see the cache-field note).
         """
-        if self._degree_cache is not None:
-            return
-        deg: dict[str, float] = {}
-        doubled_total = 0.0
+        if not decay_half_life or decay_half_life <= 0.0:
+            if self._degree_cache is None:
+                deg: dict[str, float] = {}
+                doubled = 0.0
+                for src, neighbors in self.graph_cache.items():
+                    s = 0.0
+                    for w in neighbors.values():
+                        s += w
+                    deg[src] = s
+                    doubled += s
+                self._degree_cache = deg
+                self._total_weight = doubled
+            return self._degree_cache, self._total_weight
+
+        if (
+            self._decayed_degree_cache is not None
+            and self._decayed_degree_half_life == decay_half_life
+        ):
+            return self._decayed_degree_cache, self._decayed_total
+        if now is None:
+            now = time.time()
+        deg = {}
+        doubled = 0.0
         for src, neighbors in self.graph_cache.items():
             s = 0.0
-            for w in neighbors.values():
-                s += w
+            for dst, w in neighbors.items():
+                s += w * self._edge_decay_factor(src, dst, now, decay_half_life)
             deg[src] = s
-            doubled_total += s
-        self._degree_cache = deg
-        self._total_weight = doubled_total
+            doubled += s
+        self._decayed_degree_cache = deg
+        self._decayed_total = doubled
+        self._decayed_degree_half_life = decay_half_life
+        return deg, doubled
 
-    def get_degree(self, node_id: str) -> float:
-        """Co-occurrence degree (Σ incident edge weights) of a node."""
-        self._ensure_degrees()
-        assert self._degree_cache is not None
-        return self._degree_cache.get(node_id, 0.0)
+    def get_degree(
+        self, node_id: str, *,
+        decay_half_life: float | None = None, now: float | None = None,
+    ) -> float:
+        """Co-occurrence degree (Σ incident edge weights) of a node. With
+        ``decay_half_life`` set, weights are aged by Synaptic Pruning first."""
+        deg, _ = self._degrees(decay_half_life, now)
+        return deg.get(node_id, 0.0)
 
     def get_association_strength(
         self, node_id: str, *, mode: str = "cosine",
         hub_degree_cut: float | None = None,
+        decay_half_life: float | None = None, now: float | None = None,
     ) -> dict[str, float]:
         """Stage 8 — degree-normalized co-occurrence weights for a node.
 
         ``mode``:
           - ``"none"``   raw co-recall counts (legacy, identical to
-            ``get_neighbors``).
+            ``get_neighbors`` when Synaptic Pruning is off).
           - ``"cosine"`` ``w(a,b) / sqrt(deg(a)·deg(b))`` — co-occurrence
             cosine; a promiscuous hub's high ``deg`` divides its association
             to everyone down, a rare specific neighbour stays high.
@@ -222,14 +295,28 @@ class CacheLayer:
         whose degree exceeds that percentile of the active degree
         distribution before returning — an explicit anti-hub floor on top of
         the soft normalization. Unknown ``mode`` falls back to raw counts.
+
+        Synaptic Pruning: when ``decay_half_life`` is set (>0), each raw weight
+        is first multiplied by its half-life decay factor (before any
+        normalization, so it applies even in ``mode="none"``), and the degree
+        map used for normalization / the hub cut is the decayed one. ``None``
+        ⇒ no decay (bit-exact legacy).
         """
         raw = self.graph_cache.get(node_id, {})
-        if mode == "none" or not raw:
+        if not raw:
+            return {}
+        if decay_half_life and decay_half_life > 0.0:
+            if now is None:
+                now = time.time()
+            raw = {
+                j: w * self._edge_decay_factor(node_id, j, now, decay_half_life)
+                for j, w in raw.items()
+            }
+
+        if mode == "none":
             scored = dict(raw)
         else:
-            self._ensure_degrees()
-            assert self._degree_cache is not None
-            deg = self._degree_cache
+            deg, doubled_total = self._degrees(decay_half_life, now)
             deg_a = deg.get(node_id, 0.0)
             if deg_a <= 0.0:
                 scored = dict(raw)
@@ -239,7 +326,7 @@ class CacheLayer:
                     denom = math.sqrt(deg_a * deg.get(j, 0.0))
                     scored[j] = (w / denom) if denom > 0.0 else 0.0
             elif mode == "pmi":
-                big_w = self._total_weight / 2.0  # undo symmetric double-count
+                big_w = doubled_total / 2.0  # undo symmetric double-count
                 scored = {}
                 for j, w in raw.items():
                     denom = deg_a * deg.get(j, 0.0)
@@ -252,14 +339,10 @@ class CacheLayer:
                 scored = dict(raw)  # unknown mode → legacy
 
         if hub_degree_cut is not None and scored:
-            self._ensure_degrees()
-            assert self._degree_cache is not None
-            degrees = sorted(self._degree_cache.values())
+            deg, _ = self._degrees(decay_half_life, now)
+            degrees = sorted(deg.values())
             cut = _percentile_sorted(degrees, hub_degree_cut)
-            scored = {
-                j: s for j, s in scored.items()
-                if self._degree_cache.get(j, 0.0) <= cut
-            }
+            scored = {j: s for j, s in scored.items() if deg.get(j, 0.0) <= cut}
         return scored
 
     # --- Directed edges (Phase J Stage 1) ---
@@ -377,8 +460,13 @@ class CacheLayer:
                 continue
             self.graph_cache.setdefault(e.src, {})[e.dst] = e.weight
             self.graph_cache.setdefault(e.dst, {})[e.src] = e.weight
+            # Synaptic Pruning: seed the decay clock from the store's recorded
+            # last_update (= last reinforcement time), so decay is retroactive
+            # for stale cliques rather than restarting from this load.
+            key = (e.src, e.dst) if e.src < e.dst else (e.dst, e.src)
+            self.edge_last_update[key] = e.last_update
             loaded_edges += 1
-        self._degree_cache = None  # Stage 8: rebuilt lazily from fresh graph
+        self._invalidate_degree_caches()  # Stage 8: rebuilt lazily from fresh graph
 
         self.displacement_cache = await store.load_displacements()
         self.velocity_cache = await store.load_velocities()
@@ -447,8 +535,10 @@ class CacheLayer:
         neighbors = self.graph_cache.pop(node_id, {})
         for other in neighbors:
             self.graph_cache.get(other, {}).pop(node_id, None)
+            key = (node_id, other) if node_id < other else (other, node_id)
+            self.edge_last_update.pop(key, None)
         if neighbors:
-            self._degree_cache = None  # Stage 8: degrees changed
+            self._invalidate_degree_caches()  # Stage 8: degrees changed
         # Phase J Stage 1: prune directed edges touching this node so the
         # cache stays consistent with what the persona traversal expects.
         outgoing = self.directed_out.pop(node_id, [])
@@ -507,8 +597,12 @@ class CacheLayer:
             for src, dst in self.dirty_edges:
                 if dst in self.graph_cache.get(src, {}):
                     weight = self.graph_cache[src][dst]
+                    # Synaptic Pruning: persist the tracked reinforcement time
+                    # (the decay clock), not a fabricated "now". ``dirty_edges``
+                    # keys are already sorted (min,max).
+                    lu = self.edge_last_update.get((src, dst), time.time())
                     dirty_edge_list.append(
-                        CooccurrenceEdge(src=src, dst=dst, weight=weight, last_update=time.time())
+                        CooccurrenceEdge(src=src, dst=dst, weight=weight, last_update=lu)
                     )
                 else:
                     removed_pairs.append((src, dst))
@@ -557,7 +651,8 @@ class CacheLayer:
             state.sim_history = []
         self.dirty_nodes.update(self.node_cache.keys())
         self.graph_cache.clear()
-        self._degree_cache = None  # Stage 8: graph emptied
+        self.edge_last_update.clear()
+        self._invalidate_degree_caches()  # Stage 8: graph emptied
         self.dirty_edges.clear()
         self.displacement_cache.clear()
         self.dirty_displacements.clear()

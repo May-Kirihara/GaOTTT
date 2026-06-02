@@ -135,3 +135,69 @@ def test_resonance_cosine_demotes_hub_lensing_pick():
     r_s = _lensing_resonance("S", direct, eng, scale=1.0)
     r_h = _lensing_resonance("H", direct, eng, scale=1.0)
     assert r_s > r_h
+
+
+# --- Synaptic Pruning (edge decay) -----------------------------------------
+
+_HALF_LIFE = 30 * 86400.0  # 30 days
+_NOW = 1_000_000.0
+
+
+def _pruning_cache() -> CacheLayer:
+    """Fresh edge a-b (reinforced now) + stale edge a-c (reinforced 60d ago)."""
+    c = CacheLayer()
+    c.set_edge("a", "b", 4.0, last_update=_NOW)
+    c.set_edge("a", "c", 4.0, last_update=_NOW - 60 * 86400.0)  # 2 half-lives
+    return c
+
+
+def test_decay_none_is_bit_exact_legacy():
+    """``decay_half_life=None`` ⇒ no decay; identical to the un-decayed path."""
+    c = _pruning_cache()
+    assert c.get_association_strength("a", mode="none") == {"b": 4.0, "c": 4.0}
+    assert c.get_degree("a") == 8.0
+
+
+def test_stale_edge_decays_fresh_edge_survives():
+    """A 60d-old edge under a 30d half-life decays to 0.25×; a just-reinforced
+    edge keeps full weight."""
+    c = _pruning_cache()
+    d = c.get_association_strength(
+        "a", mode="none", decay_half_life=_HALF_LIFE, now=_NOW,
+    )
+    assert d["b"] == 4.0                     # fresh
+    assert math.isclose(d["c"], 1.0, rel_tol=1e-9)   # 4.0 · 0.5^(60/30)
+
+
+def test_decay_flows_into_degree():
+    """Fork C — the degree map uses decayed weights, so a stale node's degree
+    drops (this is what lets Stage 8's hub cut thin the bulk wall)."""
+    c = _pruning_cache()
+    # deg(a) = fresh 4.0 + decayed 1.0 = 5.0 (raw would be 8.0)
+    assert math.isclose(
+        c.get_degree("a", decay_half_life=_HALF_LIFE, now=_NOW), 5.0, rel_tol=1e-9,
+    )
+    # deg(c) = its single (stale) edge, decayed = 1.0
+    assert math.isclose(
+        c.get_degree("c", decay_half_life=_HALF_LIFE, now=_NOW), 1.0, rel_tol=1e-9,
+    )
+
+
+def test_reinforcement_resets_the_decay_clock():
+    """Re-setting an edge stamps last_update=now, so a previously-stale edge
+    returns to full weight — the leaky-integrator reinforcement."""
+    c = _pruning_cache()
+    c.set_edge("a", "c", 5.0, last_update=_NOW)  # reinforce the stale edge
+    d = c.get_association_strength(
+        "a", mode="none", decay_half_life=_HALF_LIFE, now=_NOW,
+    )
+    assert d["c"] == 5.0
+
+
+def test_load_seeds_decay_clock_and_get_all_edges_preserves_it():
+    """last_update round-trips: get_all_edges emits the tracked timestamp
+    (not a fabricated now), so the half-life survives persistence/reload."""
+    c = _pruning_cache()
+    edges = {(e.src, e.dst): e.last_update for e in c.get_all_edges()}
+    assert edges[("a", "b")] == _NOW
+    assert edges[("a", "c")] == _NOW - 60 * 86400.0
