@@ -38,6 +38,23 @@ class StubEmbedder:
         return v
 
 
+def _ids_line_count(ids_path: str) -> int:
+    """Non-empty line count of a FAISS ``.ids`` sidecar (0 if absent).
+
+    ``save()`` os.replace()s the ``.faiss`` index file *before* the ``.ids``
+    sidecar (with an fsync between), so a reader that gates only on the
+    ``.faiss`` file can observe a half-published pair — ``.faiss`` committed,
+    ``.ids`` not yet — and ``FaissIndex.load()``'s id-map/ntotal mismatch guard
+    then resets the index to empty. Tests poll on a *matching* ``.ids`` to
+    close that window. ``os.replace`` is atomic, so this reads either the
+    absent/old file or the fully-written new one, never a partial line.
+    """
+    if not os.path.exists(ids_path):
+        return 0
+    with open(ids_path) as f:
+        return sum(1 for line in f if line.strip())
+
+
 def _make_engine(tmp_path, faiss_save_interval: float):
     config = GaOTTTConfig(
         data_dir=str(tmp_path),
@@ -85,13 +102,21 @@ async def test_faiss_save_loop_persists_new_documents(tmp_path):
         # flag flips False *before* save completes by design (claim-then-
         # save) so other adds during the save aren't lost.
         path = engine_a.config.faiss_index_path
+        ids_path = path + ".ids"
         saved = False
         for _ in range(60):  # up to 6s
             await asyncio.sleep(0.1)
-            if os.path.exists(path) and os.path.getsize(path) > 0:
+            # Gate on the index file AND a matching .ids sidecar — not the
+            # .faiss file alone. save() commits .faiss before .ids, so a
+            # .faiss-only gate races the second os.replace: engine_b would
+            # load a torn pair and the H4 guard would reset it to empty.
+            if (
+                os.path.exists(path) and os.path.getsize(path) > 0
+                and _ids_line_count(ids_path) == len(ids)
+            ):
                 saved = True
                 break
-        assert saved, "FAISS index was not saved within timeout"
+        assert saved, "FAISS index (+ matching .ids sidecar) was not saved within timeout"
 
         # Spin up a fresh engine pointing at the same files.
         engine_b = _make_engine(tmp_path, faiss_save_interval=0.0)

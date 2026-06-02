@@ -848,6 +848,15 @@ class GaOTTTConfig:
     # only in the writing process's in-memory FAISS until shutdown(), so
     # other processes' recall() never sees it. Set to 0 to disable.
     faiss_save_interval_seconds: float = 5.0
+    # Upper bound (seconds) on the final synchronous FAISS save during
+    # engine.shutdown(). The save runs in a worker thread (asyncio.to_thread);
+    # without a bound, a wedged write (executor saturation or FaissIndex-lock
+    # contention with a cancelled-but-still-running periodic save) hung
+    # shutdown indefinitely. On timeout the save is skipped and logged — the
+    # startup diagnostic rebuilds from the store, so durability is preserved.
+    # 30s is ample for a real write_index + fsync; raise only for very large
+    # indexes on slow storage.
+    faiss_final_save_timeout_seconds: float = 30.0
 
     # F4: TTL for ephemeral memory (source="hypothesis")
     default_hypothesis_ttl_seconds: float = 7 * 86400.0  # 7 days

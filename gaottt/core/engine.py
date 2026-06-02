@@ -263,13 +263,39 @@ class GaOTTTEngine:
         # good on-disk index on its way out.
         ok, reason = self._faiss_safe_to_persist()
         if ok:
-            await asyncio.to_thread(
-                self.faiss_index.save, self.config.faiss_index_path,
-            )
-            if self.virtual_faiss_index is not None:
-                await asyncio.to_thread(
-                    self.virtual_faiss_index.save,
-                    self.config.virtual_faiss_index_path,
+            # Bound the final saves so shutdown cannot hang indefinitely. The
+            # per-task awaits above use wait_for(10s); these to_thread saves
+            # previously had no timeout, so a wedged save (executor saturation,
+            # or — with the FaissIndex lock — a cancelled-but-still-running
+            # periodic save holding the lock while this one waits for it) would
+            # block shutdown forever. On timeout we log and move on: the
+            # on-disk index may be stale, but the startup diagnostic rebuilds
+            # from the store, so durability is not lost. (wait_for cancels the
+            # await but cannot interrupt the worker thread; this unblocks
+            # shutdown, not a genuinely deadlocked write_index — the deeper fix
+            # there is to not hold the lock across the whole write.)
+            timeout = self.config.faiss_final_save_timeout_seconds
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.faiss_index.save, self.config.faiss_index_path,
+                    ),
+                    timeout=timeout,
+                )
+                if self.virtual_faiss_index is not None:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.virtual_faiss_index.save,
+                            self.config.virtual_faiss_index_path,
+                        ),
+                        timeout=timeout,
+                    )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Final FAISS save exceeded %.0fs during shutdown — "
+                    "skipping to avoid a hang. On-disk index may be stale; "
+                    "the startup diagnostic will rebuild from the store.",
+                    timeout,
                 )
         else:
             self._log_persist_skip(reason)
