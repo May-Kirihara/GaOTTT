@@ -132,6 +132,7 @@ async def _analyze_query(
     source_filter: list[str] | None = None,
     assoc_mode: str = "none",
     hub_cut: float | None = None,
+    decay_half_life: float | None = None,
 ) -> dict:
     cache = engine.cache
     # encode_query returns a (1, dim) batch; flatten so np.dot reads as a
@@ -170,6 +171,7 @@ async def _analyze_query(
     for aid in anchor_ids:
         assoc = cache.get_association_strength(
             aid, mode=assoc_mode, hub_degree_cut=hub_cut,
+            decay_half_life=decay_half_life,
         )
         for nid, w in assoc.items():
             if nid in anchor_set:
@@ -198,7 +200,7 @@ async def _analyze_query(
         rows.append({
             "id": nid,
             "weight": r["weight"],
-            "degree": cache.get_degree(nid),
+            "degree": cache.get_degree(nid, decay_half_life=decay_half_life),
             "cosine": cos,
             "in_reach": in_reach,
             "far": far,
@@ -279,12 +281,16 @@ async def main_async(args: argparse.Namespace) -> None:
 
     engine = await _load_engine(args.data_dir)
     try:
+        decay_hl = (
+            args.decay_half_life_days * 86400.0
+            if args.decay_half_life_days else None
+        )
         results = []
         for q in queries:
             results.append(await _analyze_query(
                 engine, q, args.anchor_k, args.reach_n,
                 args.far_threshold, args.examples, args.source_filter,
-                args.assoc_mode, args.hub_degree_cut,
+                args.assoc_mode, args.hub_degree_cut, decay_hl,
             ))
         faiss_size = engine.faiss_index.size
     finally:
@@ -299,13 +305,15 @@ async def main_async(args: argparse.Namespace) -> None:
             "far_threshold": args.far_threshold,
             "assoc_mode": args.assoc_mode,
             "hub_degree_cut": args.hub_degree_cut,
+            "decay_half_life_days": args.decay_half_life_days,
             "queries": results,
         }, ensure_ascii=False, indent=2))
         return
 
     print(f"FAISS size: {faiss_size:,}   anchor-k: {args.anchor_k}   "
           f"reach-n: {args.reach_n}   assoc-mode: {args.assoc_mode}"
-          + (f"   hub-cut: p{args.hub_degree_cut}" if args.hub_degree_cut else ""))
+          + (f"   hub-cut: p{args.hub_degree_cut}" if args.hub_degree_cut else "")
+          + (f"   decay-T½: {args.decay_half_life_days}d" if args.decay_half_life_days else ""))
     for d in results:
         _print_query(d, args.reach_n)
 
@@ -397,6 +405,13 @@ def main() -> None:
         "--hub-degree-cut", type=float, default=None,
         help="Drop halo neighbours whose co-occurrence degree exceeds this "
              "percentile of the active degree distribution (explicit anti-hub).",
+    )
+    parser.add_argument(
+        "--decay-half-life-days", type=float, default=None,
+        help="Synaptic Pruning: age co-recall weights (and degrees) by this "
+             "half-life in days before gather. None = no decay. Lets a run "
+             "preview how stale bulk-session cliques fade (read-only, the "
+             "store last_update = last reinforcement, so decay is retroactive).",
     )
     parser.add_argument(
         "--data-dir",

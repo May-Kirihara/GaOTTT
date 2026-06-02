@@ -560,11 +560,19 @@ def _lensing_resonance(
     raw=90 *in the raw-count regime*. ``scale=0`` short-circuits to 1.0 for
     any nonzero input (max-trust mode, not recommended).
     """
-    mode = engine.config.cooccurrence_assoc_normalization
-    hub_cut = engine.config.cooccurrence_hub_degree_percentile_cut
-    # mode="none" + hub_cut=None returns a copy of get_neighbors → legacy.
+    cfg = engine.config
+    mode = cfg.cooccurrence_assoc_normalization
+    hub_cut = cfg.cooccurrence_hub_degree_percentile_cut
+    # Synaptic Pruning: age the co-recall weights by half-life when enabled
+    # (None ⇒ no decay). A stale one-off clique contributes less trust than a
+    # repeatedly-reinforced organic association.
+    decay_hl = (
+        cfg.synaptic_pruning_half_life_seconds
+        if cfg.synaptic_pruning_enabled else None
+    )
+    # mode="none" + hub_cut=None + no decay returns a copy of get_neighbors → legacy.
     neighbors = engine.cache.get_association_strength(
-        lensing_id, mode=mode, hub_degree_cut=hub_cut,
+        lensing_id, mode=mode, hub_degree_cut=hub_cut, decay_half_life=decay_hl,
     )
     if scale <= 0.0:
         # Degenerate config — treat as "any cooccurrence is fully trustworthy".
