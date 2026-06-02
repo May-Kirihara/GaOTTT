@@ -427,7 +427,8 @@ async def explore(
               "serendipity" (default) — diversity-amplified semantic explore.
               "dormant" — counter-importance sampling: returns random
               self-authored memos (agent/value/intention/commitment/note/
-              reference) that are ≥ 30 days idle AND mass ≤ 2. The wave is
+              reference) that are ≥ 7 days idle AND below the mass cut
+              (percentile p10 by default). The wave is
               bypassed entirely; ``query`` is ignored. Use this when you
               suspect you have forgotten things worth pulling back; the field
               alone will not surface them (low mass + raw cosine alone never

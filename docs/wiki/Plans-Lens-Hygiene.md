@@ -134,7 +134,9 @@ GLM が観察した「openai が retrieval を支配する」症状は **cluster
 - **誤診断を恥じず documenting する** — 修正計画自体が学習データ、次の investigator が同じ罠を踏まないようにする (Articulation as Carrier の自己再帰応用)
 - code 変更ゼロで終わったが、**「実は問題ない」を確証する diagnostic + test を残す** ことで future regression を防げる
 
-## Stage 3 — Dormant explore observed-empty investigation `[完了: bug でなく transient — 2026-05-27]`
+## Stage 3 — Dormant explore observed-empty investigation `[2026-05-27 "transient" 結論 → 2026-06-01 訂正: systematic な env 未配送が真因]`
+
+> ⚠️ **2026-06-01 訂正**: 下の 2026-05-27 分析は「pool は 7d で 22,793 → 15 件あるので bug でなく transient」と結論したが、この pool は **age=7d を前提に `diag_dormant.py` を回した数値**。実 production backend は proxy 共有 backend で per-frontend env (`GAOTTT_DORMANT_AGE_THRESHOLD_SECONDS=604800`=7d) を継承しておらず (Codex shim が env 無しで spawn、`project_proxy_backend_env_not_delivered`)、**code default の 30d で稼働していた**。実コーパスで実測すると age=30d → pre-filter **0 件** / age=7d → p10 で **8 件**。つまり dormant=empty は transient ではなく **30d gate による systematic な空振り**で、それが 2 度の GLM acceptance (2026-05-27 §3.4 / 2026-06-01 §4.3) で再発した。**修正**: `dormant_age_threshold_seconds` の code default を 30d → 7d へ昇格 (env 非依存化、physics 不変)。diag と live engine の config drift が誤診の根 — 診断は live engine と同じ config で回すこと。
 
 > 優先: 🟢 低 → ⚪ 解決 / 実工数: 30 min 調査 + 30 min script 拡張 / 影響範囲: scripts のみ (code 変更なし)
 

@@ -718,7 +718,7 @@ class GaOTTTConfig:
     # (Phase D persona / agent / note classes) — it is a *filter* on caller
     # intent, not a gate on physics rule, so Phase M's source-branching-zero
     # principle stays intact (see Plans-Phase-O §Stage 5 "設計判断").
-    dormant_age_threshold_seconds: float = 30 * 86400.0  # 30 days
+    dormant_age_threshold_seconds: float = 7 * 86400.0  # 7 days
     dormant_mass_threshold: float = 2.0                  # mature gate point — below means "the field didn't claim it"
     # Lateral Association Stage 7.2 (2026-05-26) — distribution-relative
     # dormant mass cut. When set (e.g. ``10.0``), the actual cut becomes the
@@ -730,10 +730,18 @@ class GaOTTTConfig:
     # promoted from None to provisional active 2026-05-26 after production
     # acceptance: ``diag_dormant.py`` with age=7d showed p10 yields 23
     # candidates (vs absolute 2.0 floods at 89.6%). ``None`` for legacy
-    # absolute-threshold rollback. **Note**: percentile alone gives 0 dormant
-    # if ``dormant_age_threshold_seconds`` (default 30d) excludes every
-    # node; lower age via env (e.g. ``GAOTTT_DORMANT_AGE_THRESHOLD_SECONDS=604800``
-    # for 7d) for active-user corpora.
+    # absolute-threshold rollback. **Note**: percentile needs a matching age
+    # gate — the percentile cut surfaces 0 dormant nodes if
+    # ``dormant_age_threshold_seconds`` excludes every node. This is why the
+    # age default was lowered 30d → 7d on 2026-06-01: the proxy-mode shared
+    # backend does not reliably inherit the per-frontend opt-in env (a Codex
+    # shim spawned it with no GAOTTT_* set; see
+    # ``project_proxy_backend_env_not_delivered``), so the intended 7d env
+    # override never reached the engine and dormant returned 0 on a 41k corpus
+    # (GLM acceptance handover-2026-06-01 §4.3). Promoting to a code default
+    # makes it env-independent, mirroring ``direct_hit_anti_hub_lambda`` and
+    # ``dormant_mass_percentile``. Physics-invariant: dormant surfacing is an
+    # observation-layer filter, not a force/mass rule.
     dormant_mass_percentile: float | None = 10.0
     dormant_source_classes: tuple[str, ...] = (
         "agent", "value", "intention", "commitment", "note", "reference",

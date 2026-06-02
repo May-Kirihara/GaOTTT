@@ -175,8 +175,8 @@ explore(
 
 | 条件 | しきい値 (config) |
 |---|---|
-| `last_access` が cutoff より古い | `dormant_age_threshold_seconds` (既定 30 日) |
-| `mass ≤ θ` (mature gate 未満) | `dormant_mass_threshold` (既定 2.0) |
+| `last_access` が cutoff より古い | `dormant_age_threshold_seconds` (既定 **7 日**、2026-06-01 に 30d から昇格) |
+| `mass ≤ θ` (mature gate 未満) | `dormant_mass_percentile` (既定 p10、設定時は `dormant_mass_threshold=2.0` 絶対値より優先) |
 | `metadata.source ∈` allowlist | `dormant_source_classes` (上記 6 種) |
 
 `query` は **ignore** (任意の placeholder で OK)。`training_delta` / `routing_hint` は `None` (wave 走らず、aspect 意図も無し)。出力は `## 関連 reflect サマリ` / `## 訓練差分` 無しの dormant 専用 formatter で「💭 Dormant memories surfaced (N):」 prefix から始まる。**設計判断**: `source` 列挙は Phase M 「source 分岐ゼロの単一規則」を侵さない — physics rule (mass update / Hooke / kick) は branching せず、ここでは「自己発信 class」という structural identifier に対する filter (query intent) として使う。
