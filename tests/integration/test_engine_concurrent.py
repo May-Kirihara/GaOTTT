@@ -195,3 +195,91 @@ async def test_h1_compact_rebuild_swaps_index_atomically(tmp_path):
         assert len(res) >= 1, "recall must work against the swapped-in index"
     finally:
         await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_nonpassive_recalls_no_corruption(tmp_path):
+    """Concurrent non-passive recalls each apply their gradient step without
+    corrupting shared state. Formalizes the C2 finding (mutation phase is
+    atomic under cooperative scheduling) + C3 (shared gamma untouched) as a
+    live guard for the 2026-06-01 concurrency hardening.
+    """
+    engine = _make_engine(tmp_path)
+    await engine.startup()
+    try:
+        await _seed(engine, n=8)
+        original_gamma = engine.config.gamma
+
+        results = await asyncio.gather(
+            engine.query(text="doc-1", top_k=3),
+            engine.query(text="doc-2", top_k=3),
+            engine.query(text="doc-1", top_k=3),
+            engine.query(text="doc-3", top_k=3),
+        )
+
+        assert all(len(r) >= 1 for r in results), "every concurrent recall returns"
+        assert engine.config.gamma == original_gamma, "shared gamma must be untouched"
+        # No NaN/inf mass from interleaved gradient updates.
+        for state in engine.cache.node_cache.values():
+            assert np.isfinite(state.mass) and state.mass > 0
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_recall_plus_writer(tmp_path):
+    """A writer (index_documents) running concurrently with recalls must
+    leave the index consistent and the recalls valid — exercises add() on
+    the event loop racing the recall read path."""
+    engine = _make_engine(tmp_path)
+    await engine.startup()
+    try:
+        await _seed(engine, n=6)
+        before = engine.faiss_index.size
+
+        results = await asyncio.gather(
+            engine.query(text="doc-1", top_k=3),
+            engine.index_documents(
+                [{"content": f"new-{i}", "metadata": {"source": "agent"}}
+                 for i in range(4)]
+            ),
+            engine.query(text="doc-2", top_k=3),
+        )
+
+        assert engine.faiss_index.size == before + 4, "writer added all 4 vectors"
+        assert len(results[0]) >= 1 and len(results[2]) >= 1, "recalls still valid"
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_faiss_save_during_add_no_corruption(tmp_path):
+    """The FaissIndex threading.Lock must keep a to_thread save (worker
+    thread) from racing a synchronous add() on the event loop — the one
+    genuine cross-thread race an asyncio lock cannot cover. After hammering
+    both concurrently the on-disk index must reload cleanly with a
+    consistent id-map (the H4 invariant: ntotal == len(id_map)).
+    """
+    engine = _make_engine(tmp_path)
+    await engine.startup()
+    try:
+        await _seed(engine, n=10)
+        path = engine.config.faiss_index_path
+
+        for r in range(5):
+            await asyncio.gather(
+                asyncio.to_thread(engine.faiss_index.save, path),
+                engine.index_documents(
+                    [{"content": f"x-{r}-{j}", "metadata": {"source": "agent"}}
+                     for j in range(3)]
+                ),
+            )
+
+        reloaded = FaissIndex(dimension=engine.config.embedding_dim)
+        reloaded.load(path)
+        assert reloaded.size > 0, "on-disk index must be non-empty + loadable"
+        assert reloaded.size == len(reloaded._id_map), (
+            "index/id-map size mismatch — save raced a concurrent add()"
+        )
+    finally:
+        await engine.shutdown()

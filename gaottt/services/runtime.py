@@ -33,9 +33,15 @@ def build_engine(config: GaOTTTConfig) -> GaOTTTEngine:
     ``await engine.shutdown()``.
     """
     embedder = RuriEmbedder(model_name=config.model_name, batch_size=config.batch_size)
-    faiss_index = FaissIndex(dimension=config.embedding_dim)
+    faiss_index = FaissIndex(
+        dimension=config.embedding_dim,
+        lock_enabled=config.faiss_index_lock_enabled,
+    )
     virtual_faiss_index = (
-        FaissIndex(dimension=config.embedding_dim)
+        FaissIndex(
+            dimension=config.embedding_dim,
+            lock_enabled=config.faiss_index_lock_enabled,
+        )
         if config.virtual_faiss_enabled else None
     )
     # Phase L Stage 1: wire the BM25 lexical index when enabled. The flag

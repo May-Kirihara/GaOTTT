@@ -1892,7 +1892,10 @@ class GaOTTTEngine:
         # so no searcher observes a partial index: in-flight searches that
         # already captured the old reference finish against the old,
         # fully-valid index, and subsequent ones see the complete new one.
-        new_index = FaissIndex(dimension=self.config.embedding_dim)
+        new_index = FaissIndex(
+            dimension=self.config.embedding_dim,
+            lock_enabled=self.config.faiss_index_lock_enabled,
+        )
         new_index.add(matrix, [nid for nid, _ in all_pairs])
         self.faiss_index = new_index
         self._faiss_dirty = True
@@ -1936,7 +1939,10 @@ class GaOTTTEngine:
         matrix = np.stack(virtual_vectors).astype(np.float32)
         # H1: atomic swap, same rationale as _rebuild_faiss_index — no
         # concurrent seed step ever sees an empty virtual index mid-compact.
-        new_virtual = FaissIndex(dimension=self.config.embedding_dim)
+        new_virtual = FaissIndex(
+            dimension=self.config.embedding_dim,
+            lock_enabled=self.config.faiss_index_lock_enabled,
+        )
         new_virtual.add(matrix, virtual_ids)
         self.virtual_faiss_index = new_virtual
         logger.info(

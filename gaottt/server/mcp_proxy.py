@@ -34,6 +34,7 @@ to the "connect to existing" path.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import socket
@@ -42,12 +43,19 @@ import sys
 import time
 from pathlib import Path
 
+import anyio
 from mcp import ClientSession, types
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+from mcp.shared.exceptions import McpError
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_PORT = 7878
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_IDLE_TIMEOUT = 300.0   # backend self-shutdown after 5 minutes of silence
+DEFAULT_PING_INTERVAL = 60.0   # proxy heartbeat cadence
 
 
 # -----------------------------------------------------------------------
@@ -181,31 +189,177 @@ async def _ensure_backend(
 # stdio ↔ HTTP forwarder
 # -----------------------------------------------------------------------
 
-async def _ping_loop(session: ClientSession, interval: float) -> None:
+def _is_session_dead(exc: BaseException) -> bool:
+    """Does ``exc`` mean the upstream session is gone (vs. an app error)?
+
+    Reconnect ONLY on transport/session-terminated signals — never on a
+    legitimate tool error. Tool errors come back as a successful
+    ``CallToolResult(isError=True)``, not as an exception, so they never
+    reach here. The match is deliberately narrow: stream-closed anyio
+    errors, a dropped connection, or an ``McpError`` whose message says the
+    session was terminated (the observed ``MCP error 32600: Session
+    terminated``). A bare 32600 ("Invalid Request") is NOT matched on the
+    code alone so a genuine malformed request can't trigger a reconnect loop.
+    """
+    if isinstance(exc, (anyio.ClosedResourceError, anyio.BrokenResourceError,
+                        anyio.EndOfStream, ConnectionError)):
+        # EndOfStream: a *gracefully* closed backend (SIGTERM / idle-watchdog
+        # shutdown sends FIN) drains the session's read stream to EOF — the
+        # most likely real-world death mode, so it must count as "dead".
+        return True
+    if isinstance(exc, McpError):
+        return "terminat" in str(exc).lower()
+    return False
+
+
+class _Upstream:
+    """Owns the (rebuildable) upstream ClientSession + a serialization lock.
+
+    The single streamable-http ``ClientSession`` cannot survive concurrent
+    in-flight requests: two simultaneous POSTs break it (``MCP error 32600:
+    Session terminated``), after which every later call fails until the
+    client reconnects. ``lock`` serializes all upstream access to one
+    in-flight request at a time; ``call`` / ``ping`` transparently rebuild
+    the session and retry once on a terminated/closed error (which also
+    self-heals backend death / idle-watchdog shutdown / cold-start).
+
+    The handlers close over this stable holder, not the session object, so
+    the session underneath can be torn down and rebuilt while the stdio
+    ``Server`` keeps serving.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        host: str,
+        port: int,
+        idle_timeout: float,
+        spawn_log_path: Path,
+        serialize: bool,
+        auto_reconnect: bool,
+        instructions_override: str | None,
+    ) -> None:
+        self.url = url
+        self._host = host
+        self._port = port
+        self._idle_timeout = idle_timeout
+        self._spawn_log_path = spawn_log_path
+        self._serialize = serialize
+        self._auto_reconnect = auto_reconnect
+        self._instructions_override = instructions_override
+        self.lock = asyncio.Lock()
+        self._stack: contextlib.AsyncExitStack | None = None
+        self._session: ClientSession | None = None
+        self.instructions: str | None = None
+
+    async def connect(self) -> None:
+        """Open the streamable-http transport + ClientSession and initialize."""
+        stack = contextlib.AsyncExitStack()
+        try:
+            read, write, _ = await stack.enter_async_context(
+                streamablehttp_client(self.url)
+            )
+            session = await stack.enter_async_context(ClientSession(read, write))
+            init_result = await session.initialize()
+        except BaseException:
+            # initialize() / transport open failed: close whatever was already
+            # entered so the streamable-http transport + fds don't leak. Without
+            # this the stack stays a local (never assigned to self._stack) and
+            # is never closed — and reconnect calls connect() repeatedly, so a
+            # flaky backend would leak an fd per failed attempt.
+            await stack.aclose()
+            raise
+        self._stack = stack
+        self._session = session
+        self.instructions = (
+            init_result.instructions
+            if self._instructions_override is None
+            else self._instructions_override
+        )
+
+    async def aclose(self) -> None:
+        if self._stack is not None:
+            try:
+                await self._stack.aclose()
+            except Exception:  # noqa: BLE001 — best-effort teardown
+                pass
+            self._stack = None
+            self._session = None
+
+    async def _reconnect_locked(self) -> None:
+        """Rebuild the upstream session. Caller MUST hold ``self.lock`` so
+        no other coroutine touches the session mid-rebuild. Re-probes via
+        ``_ensure_backend`` which re-spawns the backend if it died."""
+        await self.aclose()
+        self.url = await _ensure_backend(
+            host=self._host,
+            port=self._port,
+            idle_timeout=self._idle_timeout,
+            spawn_log_path=self._spawn_log_path,
+        )
+        await self.connect()
+
+    async def call(self, method: str, *args):
+        """Forward ``method`` to the upstream session, serialized + healing."""
+        if not self._serialize:
+            # Legacy no-lock pass-through (rollback). No reconnect either —
+            # reconnect needs the lock for an exclusive rebuild.
+            return await getattr(self._session, method)(*args)
+        async with self.lock:
+            try:
+                return await getattr(self._session, method)(*args)
+            except BaseException as exc:  # noqa: BLE001
+                if not (self._auto_reconnect and _is_session_dead(exc)):
+                    raise
+                logger.warning(
+                    "upstream %s failed (%s); rebuilding session + retry once",
+                    method, exc,
+                )
+                await self._reconnect_locked()
+                return await getattr(self._session, method)(*args)
+
+    async def ping(self) -> None:
+        if not self._serialize:
+            await self._session.send_ping()
+            return
+        async with self.lock:
+            try:
+                await self._session.send_ping()
+            except BaseException as exc:  # noqa: BLE001
+                if not (self._auto_reconnect and _is_session_dead(exc)):
+                    raise
+                logger.warning(
+                    "upstream ping failed (%s); rebuilding session", exc,
+                )
+                await self._reconnect_locked()
+                await self._session.send_ping()
+
+
+async def _ping_loop(upstream: _Upstream, interval: float) -> None:
     """Cold-war heartbeat — refresh the backend's idle timer.
 
     Any incoming request from this proxy also resets the timer, but
     when the agent is silent for a while only these pings prevent
-    backend shutdown. ``session.send_ping`` is a no-op at the protocol
-    level — just signal that this side is still around.
+    backend shutdown. ``upstream.ping`` shares the same serialization lock
+    as the tool forwarders, so a ping never races an in-flight tool call.
     """
     while True:
         try:
             await asyncio.sleep(interval)
-            await session.send_ping()
+            await upstream.ping()
             logger.debug("backend ping ok")
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
-            # Backend may have shut down or crashed; the main forwarder
-            # will hit the same error and exit. Don't spam logs.
+            # Keep looping — upstream.ping() already tried to reconnect; a
+            # transient failure shouldn't permanently stop the heartbeat.
             logger.warning("backend ping failed: %s", exc)
-            break
 
 
-def _build_proxy_server(upstream: ClientSession, instructions: str | None) -> Server:
-    """Create a low-level Server that forwards every request type to
-    ``upstream``.
+def _build_proxy_server(upstream: _Upstream) -> Server:
+    """Create a low-level Server that forwards every request type to the
+    ``_Upstream`` holder.
 
     Instead of using FastMCP's decorator-based API (which wraps return
     values into specific MCP types and would force us to unwrap+rewrap
@@ -215,39 +369,41 @@ def _build_proxy_server(upstream: ClientSession, instructions: str | None) -> Se
     response makes it back to the agent unmodified — schemas, hidden
     fields, future MCP types we haven't seen yet.
 
+    All handlers route through ``upstream.call(...)`` so they are
+    serialized on one in-flight request and heal a broken session.
+
     ``PingRequest`` is left to the default handler that the lowlevel
     Server pre-registers; it just returns an empty result. The proxy's
-    periodic ``send_ping`` to the *upstream* keeps the backend warm
-    independently.
+    periodic ``upstream.ping`` keeps the backend warm independently.
     """
-    proxy = Server("gaottt", instructions=instructions or "")
+    proxy = Server("gaottt", instructions=upstream.instructions or "")
 
     async def list_tools(_req: types.ListToolsRequest) -> types.ServerResult:
-        return types.ServerResult(await upstream.list_tools())
+        return types.ServerResult(await upstream.call("list_tools"))
 
     async def call_tool(req: types.CallToolRequest) -> types.ServerResult:
-        result = await upstream.call_tool(
-            req.params.name, req.params.arguments or {},
+        result = await upstream.call(
+            "call_tool", req.params.name, req.params.arguments or {},
         )
         return types.ServerResult(result)
 
     async def list_resources(_req: types.ListResourcesRequest) -> types.ServerResult:
-        return types.ServerResult(await upstream.list_resources())
+        return types.ServerResult(await upstream.call("list_resources"))
 
     async def list_resource_templates(
         _req: types.ListResourceTemplatesRequest,
     ) -> types.ServerResult:
-        return types.ServerResult(await upstream.list_resource_templates())
+        return types.ServerResult(await upstream.call("list_resource_templates"))
 
     async def read_resource(req: types.ReadResourceRequest) -> types.ServerResult:
-        return types.ServerResult(await upstream.read_resource(req.params.uri))
+        return types.ServerResult(await upstream.call("read_resource", req.params.uri))
 
     async def list_prompts(_req: types.ListPromptsRequest) -> types.ServerResult:
-        return types.ServerResult(await upstream.list_prompts())
+        return types.ServerResult(await upstream.call("list_prompts"))
 
     async def get_prompt(req: types.GetPromptRequest) -> types.ServerResult:
         return types.ServerResult(
-            await upstream.get_prompt(req.params.name, req.params.arguments or {})
+            await upstream.call("get_prompt", req.params.name, req.params.arguments or {})
         )
 
     proxy.request_handlers[types.ListToolsRequest] = list_tools
@@ -261,43 +417,53 @@ def _build_proxy_server(upstream: ClientSession, instructions: str | None) -> Se
     return proxy
 
 
-async def _proxy_session(url: str, ping_interval: float, instructions: str | None) -> None:
+async def _proxy_session(
+    url: str,
+    ping_interval: float,
+    instructions: str | None,
+    *,
+    serialize: bool = True,
+    auto_reconnect: bool = True,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
+    spawn_log_path: Path | None = None,
+) -> None:
     """Connect to backend, run the stdio proxy, until the agent disconnects."""
-    async with streamablehttp_client(url) as (read, write, _):
-        async with ClientSession(read, write) as upstream:
-            init_result = await upstream.initialize()
-            upstream_instructions = (
-                init_result.instructions if instructions is None else instructions
+    upstream = _Upstream(
+        url,
+        host=host,
+        port=port,
+        idle_timeout=idle_timeout,
+        spawn_log_path=spawn_log_path or _spawn_log_path(),
+        serialize=serialize,
+        auto_reconnect=auto_reconnect,
+        instructions_override=instructions,
+    )
+    await upstream.connect()
+    logger.info("Proxy connected to backend; serving stdio")
+
+    ping_task = asyncio.create_task(_ping_loop(upstream, ping_interval))
+    try:
+        proxy_server = _build_proxy_server(upstream)
+        async with stdio_server() as (stdio_read, stdio_write):
+            await proxy_server.run(
+                stdio_read,
+                stdio_write,
+                proxy_server.create_initialization_options(),
             )
-            logger.info("Proxy connected to backend; serving stdio")
-
-            ping_task = asyncio.create_task(_ping_loop(upstream, ping_interval))
-
-            try:
-                proxy_server = _build_proxy_server(upstream, upstream_instructions)
-                async with stdio_server() as (stdio_read, stdio_write):
-                    await proxy_server.run(
-                        stdio_read,
-                        stdio_write,
-                        proxy_server.create_initialization_options(),
-                    )
-            finally:
-                ping_task.cancel()
-                try:
-                    await ping_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
+    finally:
+        ping_task.cancel()
+        try:
+            await ping_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+        await upstream.aclose()
 
 
 # -----------------------------------------------------------------------
 # Public entrypoint
 # -----------------------------------------------------------------------
-
-DEFAULT_PORT = 7878
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_IDLE_TIMEOUT = 300.0   # backend self-shutdown after 5 minutes of silence
-DEFAULT_PING_INTERVAL = 60.0   # proxy heartbeat cadence
-
 
 def _spawn_log_path() -> Path:
     """Where to redirect spawned backend stdout/stderr.
@@ -317,11 +483,32 @@ async def run_proxy(
     idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
     ping_interval: float = DEFAULT_PING_INTERVAL,
 ) -> None:
-    """High-level entrypoint: ensure backend, run stdio proxy."""
+    """High-level entrypoint: ensure backend, run stdio proxy.
+
+    The proxy is its own spawned process, so it reads its own config to
+    learn the concurrency-hardening flags (the backend's env does not reach
+    it). Defaults keep serialization + auto-reconnect ON.
+    """
+    # Local import: keep mcp_proxy importable without pulling the full config
+    # module at module-load time (it is heavy and not needed for the helpers).
+    from gaottt.config import GaOTTTConfig
+
+    config = GaOTTTConfig.from_config_file()
+    spawn_log_path = _spawn_log_path()
     url = await _ensure_backend(
         host=host,
         port=port,
         idle_timeout=idle_timeout,
-        spawn_log_path=_spawn_log_path(),
+        spawn_log_path=spawn_log_path,
     )
-    await _proxy_session(url, ping_interval=ping_interval, instructions=None)
+    await _proxy_session(
+        url,
+        ping_interval=ping_interval,
+        instructions=None,
+        serialize=config.proxy_serialize_requests_enabled,
+        auto_reconnect=config.proxy_auto_reconnect_enabled,
+        host=host,
+        port=port,
+        idle_timeout=idle_timeout,
+        spawn_log_path=spawn_log_path,
+    )
