@@ -536,7 +536,7 @@ def _lensing_resonance(
     """Lateral Association Stage 5 — cooccurrence-derived trust signal.
 
     Mode 5a: ``resonance = raw / (raw + scale)`` where
-    ``raw = sum_{d in direct_ids} cache.get_neighbors(lensing_id)[d]``.
+    ``raw = sum_{d in direct_ids} assoc(lensing_id, d)``.
 
     Measures "how often has the field pulled this lensing memo together with
     today's direct hits in past active recalls" — the cooccurrence graph
@@ -544,16 +544,31 @@ def _lensing_resonance(
     not write cooccurrence, so the signal is uncontaminated by ambient
     background noise).
 
+    Stage 8 (2026-06-02): ``assoc`` is the degree-normalized association
+    strength (``cache.get_association_strength``) when
+    ``config.cooccurrence_assoc_normalization != "none"``, otherwise the raw
+    co-recall count (legacy, bit-exact). Normalization fixes the hub
+    pathology — a promiscuous lensing pick that co-occurs with *everything*
+    has high ``deg`` so its association to today's direct hits is divided
+    down, dropping its resonance: the trust signal stops trusting hubs.
+    **When enabling normalization, retune ``ambient_lensing_resonance_scale``**
+    — normalized strengths live in a far smaller range than raw counts, so
+    the count-tuned ``scale=10`` would crush every resonance toward 0.
+
     Saturating non-linearity bounds the output to ``[0, 1)`` regardless of
-    the raw cooccurrence count's scale. ``scale=10`` (default) hits 0.5
-    at raw=10 and 0.9 at raw=90. ``scale=0`` short-circuits to 1.0 for any
-    nonzero raw (max-trust mode, not recommended).
+    the input scale. ``scale=10`` (default) hits 0.5 at raw=10 and 0.9 at
+    raw=90 *in the raw-count regime*. ``scale=0`` short-circuits to 1.0 for
+    any nonzero input (max-trust mode, not recommended).
     """
+    mode = engine.config.cooccurrence_assoc_normalization
+    hub_cut = engine.config.cooccurrence_hub_degree_percentile_cut
+    # mode="none" + hub_cut=None returns a copy of get_neighbors → legacy.
+    neighbors = engine.cache.get_association_strength(
+        lensing_id, mode=mode, hub_degree_cut=hub_cut,
+    )
     if scale <= 0.0:
         # Degenerate config — treat as "any cooccurrence is fully trustworthy".
-        neighbors = engine.cache.get_neighbors(lensing_id)
         return 1.0 if any(neighbors.get(d, 0.0) > 0.0 for d in direct_ids) else 0.0
-    neighbors = engine.cache.get_neighbors(lensing_id)
     raw = sum(float(neighbors.get(d, 0.0)) for d in direct_ids)
     if raw <= 0.0:
         return 0.0
