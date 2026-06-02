@@ -40,6 +40,23 @@ class StubEmbedder:
         return v
 
 
+def _ids_line_count(ids_path: str) -> int:
+    """Non-empty line count of a FAISS ``.ids`` sidecar (0 if absent).
+
+    ``save()`` os.replace()s the ``.faiss`` index file *before* the ``.ids``
+    sidecar (with an fsync between), so a reader that gates only on the
+    ``.faiss`` file can observe a half-published pair — ``.faiss`` committed,
+    ``.ids`` not yet — and ``FaissIndex.load()``'s id-map/ntotal mismatch guard
+    then resets the index to empty. Tests poll on a *matching* ``.ids`` to
+    close that window. ``os.replace`` is atomic, so this reads either the
+    absent/old file or the fully-written new one, never a partial line.
+    """
+    if not os.path.exists(ids_path):
+        return 0
+    with open(ids_path) as f:
+        return sum(1 for line in f if line.strip())
+
+
 def _make_engine(
     tmp_path,
     *,
@@ -99,19 +116,26 @@ async def test_displacement_edit_persists_to_virtual_faiss_on_disk(tmp_path):
         assert engine_a.cache.virtual_faiss_dirty is True
 
         path = engine_a.config.virtual_faiss_index_path
+        ids_path = path + ".ids"
         saved = False
         for _ in range(60):  # up to 6s
             await asyncio.sleep(0.1)
+            # Gate on the index file AND a matching .ids sidecar — not the
+            # .faiss file alone. save() commits .faiss before .ids, so a
+            # .faiss-only gate races the second os.replace: engine_b would
+            # load a torn pair and the H4 guard would reset it to empty.
             if (
                 os.path.exists(path) and os.path.getsize(path) > 0
                 and not engine_a.cache.virtual_faiss_dirty
+                and _ids_line_count(ids_path) == len(ids)
             ):
                 saved = True
                 break
         assert saved, (
-            "virtual FAISS was not rebuilt/saved within timeout "
-            f"(dirty={engine_a.cache.virtual_faiss_dirty}, "
-            f"exists={os.path.exists(path)})"
+            "virtual FAISS (+ matching .ids sidecar) was not rebuilt/saved "
+            f"within timeout (dirty={engine_a.cache.virtual_faiss_dirty}, "
+            f"exists={os.path.exists(path)}, "
+            f"ids_lines={_ids_line_count(ids_path)})"
         )
 
         # Fresh engine should load the persisted virtual index.

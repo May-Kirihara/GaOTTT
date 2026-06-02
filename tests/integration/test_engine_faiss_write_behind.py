@@ -38,6 +38,23 @@ class StubEmbedder:
         return v
 
 
+def _ids_line_count(ids_path: str) -> int:
+    """Non-empty line count of a FAISS ``.ids`` sidecar (0 if absent).
+
+    ``save()`` os.replace()s the ``.faiss`` index file *before* the ``.ids``
+    sidecar (with an fsync between), so a reader that gates only on the
+    ``.faiss`` file can observe a half-published pair — ``.faiss`` committed,
+    ``.ids`` not yet — and ``FaissIndex.load()``'s id-map/ntotal mismatch guard
+    then resets the index to empty. Tests poll on a *matching* ``.ids`` to
+    close that window. ``os.replace`` is atomic, so this reads either the
+    absent/old file or the fully-written new one, never a partial line.
+    """
+    if not os.path.exists(ids_path):
+        return 0
+    with open(ids_path) as f:
+        return sum(1 for line in f if line.strip())
+
+
 def _make_engine(tmp_path, faiss_save_interval: float):
     config = GaOTTTConfig(
         data_dir=str(tmp_path),
@@ -85,13 +102,21 @@ async def test_faiss_save_loop_persists_new_documents(tmp_path):
         # flag flips False *before* save completes by design (claim-then-
         # save) so other adds during the save aren't lost.
         path = engine_a.config.faiss_index_path
+        ids_path = path + ".ids"
         saved = False
         for _ in range(60):  # up to 6s
             await asyncio.sleep(0.1)
-            if os.path.exists(path) and os.path.getsize(path) > 0:
+            # Gate on the index file AND a matching .ids sidecar — not the
+            # .faiss file alone. save() commits .faiss before .ids, so a
+            # .faiss-only gate races the second os.replace: engine_b would
+            # load a torn pair and the H4 guard would reset it to empty.
+            if (
+                os.path.exists(path) and os.path.getsize(path) > 0
+                and _ids_line_count(ids_path) == len(ids)
+            ):
                 saved = True
                 break
-        assert saved, "FAISS index was not saved within timeout"
+        assert saved, "FAISS index (+ matching .ids sidecar) was not saved within timeout"
 
         # Spin up a fresh engine pointing at the same files.
         engine_b = _make_engine(tmp_path, faiss_save_interval=0.0)
@@ -125,3 +150,46 @@ async def test_faiss_save_interval_zero_disables_loop(tmp_path):
         await engine.shutdown()
     # Disk file should exist after shutdown's final synchronous save.
     assert os.path.exists(engine.config.faiss_index_path)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_is_bounded_when_final_save_blocks(tmp_path):
+    """A wedged final FAISS save must not hang shutdown.
+
+    Regression for the ~2h shutdown hang: the final ``to_thread(save)`` is
+    wrapped in ``wait_for(faiss_final_save_timeout_seconds)``, so a blocked
+    save is skipped (logged) instead of blocking shutdown forever. Here we
+    make ``save`` block well past a short timeout and assert ``shutdown()``
+    still returns promptly.
+    """
+    import threading
+    import time
+
+    engine = _make_engine(tmp_path, faiss_save_interval=0.0)
+    engine.config.faiss_final_save_timeout_seconds = 1.0
+    await engine.startup()
+    # Index a doc so the reverse-overwrite guard permits the final-save path.
+    await engine.index_documents([
+        {"content": "shutdown-block-doc", "metadata": {"source": "agent"}},
+    ])
+
+    # Block the final save past the timeout. ``release`` lets the worker thread
+    # finish after shutdown returns so it doesn't linger to interpreter exit.
+    release = threading.Event()
+
+    def _blocking_save(*_a, **_k):
+        release.wait(timeout=10.0)
+
+    engine.faiss_index.save = _blocking_save
+
+    t0 = time.monotonic()
+    # If the bound were missing (unbounded await), this wait_for would itself
+    # time out — i.e. the assertion below would never be reached.
+    await asyncio.wait_for(engine.shutdown(), timeout=8.0)
+    elapsed = time.monotonic() - t0
+    release.set()  # unblock the background save worker
+
+    assert elapsed < 5.0, (
+        f"shutdown took {elapsed:.1f}s — final save was not bounded by "
+        f"faiss_final_save_timeout_seconds"
+    )
