@@ -739,6 +739,35 @@ class GaOTTTConfig:
         "agent", "value", "intention", "commitment", "note", "reference",
     )
 
+    # Lateral Association Stage 8 (2026-06-02) — degree-normalized
+    # co-occurrence association strength (graph-layer anti-hub). The raw
+    # ``cache.get_neighbors`` weight is a co-recall *count*; promiscuous
+    # hubs (nodes that surfaced in many recall sessions, e.g. a bulk
+    # self-knowledge recording batch) carry high weight to *every* anchor
+    # regardless of semantic relevance, so any consumer that ranks/pulls by
+    # raw weight amplifies hubs (measured 2026-06-02 via
+    # ``scripts/diag_assoc_halo.py``: one w=16 node surfaced as a top novel-
+    # far halo member across unrelated queries). This knob transforms the
+    # raw weight into an association strength that discounts promiscuity:
+    #   "none"   — raw co-recall count (legacy, bit-exact default)
+    #   "cosine" — ``w(a,b) / sqrt(deg(a)·deg(b))``  (co-occurrence cosine)
+    #   "pmi"    — ``max(0, log(w·W / (deg(a)·deg(b))))`` (positive PMI)
+    # where ``deg(x) = Σ_n w(x,n)`` and ``W`` = total unique-edge weight.
+    # A high-degree hub has its association to everyone divided down; a node
+    # that co-occurs only with ``a`` (rare, specific) keeps a high score —
+    # exactly the "〇〇といえば〜" signal Lateral Association is after.
+    # Consumed by Stage 5 lensing resonance now; the future Accretion Recall
+    # gather layer reuses it (Plans-Accretion-Recall.md P2). Touches no
+    # physics (force/mass): a transform on an observation/ranking signal.
+    # Default "none" keeps every consumer bit-exact.
+    cooccurrence_assoc_normalization: str = "none"
+    # Optional explicit hub cut: drop neighbors whose degree exceeds this
+    # percentile of the active-corpus degree distribution before returning
+    # association strengths (degree-axis sibling of Stage 7.2's mass
+    # percentile cut). ``None`` = no cut. JSON-only (``| None`` default is
+    # not env-coercible); pair with the normalization knob above.
+    cooccurrence_hub_degree_percentile_cut: float | None = None
+
     # Phase O Stage 3 — Query routing (recall + reflect auto-merge).
     # When True, ``recall`` / ``explore`` heuristically classify the query
     # surface form (e.g. "現在 active な commitment", "持っている value") and run

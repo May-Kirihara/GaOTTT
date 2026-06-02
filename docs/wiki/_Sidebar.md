@@ -72,6 +72,7 @@
 - [Ambient Recall Enrichment](Plans-Ambient-Recall-Enrichment.md)
 - [Ambient Recall Refinement (Phase A 由来)](Plans-Ambient-Recall-Refinement.md)
 - [Ambient Recall Lateral Association (〇〇といえば〜)](Plans-Ambient-Recall-Lateral-Association.md)
+- [Accretion Recall (降着想起・〇〇ってなんだっけ)](Plans-Accretion-Recall.md)
 - [Save Candidates Hook (ambient-recall の write-side 対称)](Plans-Save-Candidates-Hook.md)
 - [Lens Hygiene (ambient block の漏れ防止)](Plans-Lens-Hygiene.md)
 - [Instruction Surface Hygiene (指示表層と hook harness)](Plans-Instruction-Surface-Hygiene.md)

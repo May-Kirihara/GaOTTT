@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 
 import numpy as np
@@ -12,10 +13,38 @@ from gaottt.store.base import StoreBase
 logger = logging.getLogger(__name__)
 
 
+def _percentile_sorted(sorted_vals: list[float], p: float) -> float:
+    """Linear-interpolated percentile of an ascending-sorted list.
+
+    ``p`` in [0, 100]. Used by Stage 8's optional hub-degree cut. Empty
+    input returns +inf so an absent distribution cuts nothing.
+    """
+    if not sorted_vals:
+        return float("inf")
+    if p <= 0:
+        return sorted_vals[0]
+    if p >= 100:
+        return sorted_vals[-1]
+    pos = (p / 100.0) * (len(sorted_vals) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = pos - lo
+    return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
+
+
 class CacheLayer:
     def __init__(self, flush_interval: float = 5.0, flush_threshold: int = 100):
         self.node_cache: dict[str, NodeState] = {}
         self.graph_cache: dict[str, dict[str, float]] = {}
+        # Lateral Association Stage 8 — lazily-built per-node co-occurrence
+        # degree map (deg(x) = Σ weights of x's edges) + total unique-edge
+        # weight, used by get_association_strength to discount promiscuous
+        # hubs. None = stale; rebuilt on first use after any edge mutation
+        # (set_edge / remove_edge / load_from_store / evict_node / reset all
+        # invalidate). Only ever built when the normalization knob is active,
+        # so the legacy "none" path pays nothing.
+        self._degree_cache: dict[str, float] | None = None
+        self._total_weight: float = 0.0
         self.displacement_cache: dict[str, np.ndarray] = {}
         self.velocity_cache: dict[str, np.ndarray] = {}
         # Phase H Stage 2: id → metadata.source. Populated on load_from_store
@@ -115,6 +144,7 @@ class CacheLayer:
     def set_edge(self, src: str, dst: str, weight: float, dirty: bool = True) -> None:
         self.graph_cache.setdefault(src, {})[dst] = weight
         self.graph_cache.setdefault(dst, {})[src] = weight
+        self._degree_cache = None  # Stage 8: degrees changed
         if dirty:
             key = (min(src, dst), max(src, dst))
             self.dirty_edges.add(key)
@@ -124,6 +154,7 @@ class CacheLayer:
             self.graph_cache[src].pop(dst, None)
         if dst in self.graph_cache:
             self.graph_cache[dst].pop(src, None)
+        self._degree_cache = None  # Stage 8: degrees changed
         key = (min(src, dst), max(src, dst))
         self.dirty_edges.add(key)
 
@@ -139,6 +170,97 @@ class CacheLayer:
                         CooccurrenceEdge(src=key[0], dst=key[1], weight=weight, last_update=time.time())
                     )
         return edges
+
+    # --- Association strength (Lateral Association Stage 8) ---
+
+    def _ensure_degrees(self) -> None:
+        """Lazily (re)build the per-node degree map + total unique-edge weight.
+
+        ``deg(x) = Σ_n w(x, n)``. ``graph_cache`` is symmetric (set_edge
+        writes both directions), so summing every node's adjacency double-
+        counts each undirected edge; ``_total_weight`` stores that doubled
+        sum and ``get_association_strength`` halves it for ``W`` (the PMI
+        normalizer). Rebuilt only when invalidated (``_degree_cache is None``)
+        and only ever reached from the normalized association path, so the
+        legacy ``"none"`` consumers never pay for it.
+        """
+        if self._degree_cache is not None:
+            return
+        deg: dict[str, float] = {}
+        doubled_total = 0.0
+        for src, neighbors in self.graph_cache.items():
+            s = 0.0
+            for w in neighbors.values():
+                s += w
+            deg[src] = s
+            doubled_total += s
+        self._degree_cache = deg
+        self._total_weight = doubled_total
+
+    def get_degree(self, node_id: str) -> float:
+        """Co-occurrence degree (Σ incident edge weights) of a node."""
+        self._ensure_degrees()
+        assert self._degree_cache is not None
+        return self._degree_cache.get(node_id, 0.0)
+
+    def get_association_strength(
+        self, node_id: str, *, mode: str = "cosine",
+        hub_degree_cut: float | None = None,
+    ) -> dict[str, float]:
+        """Stage 8 — degree-normalized co-occurrence weights for a node.
+
+        ``mode``:
+          - ``"none"``   raw co-recall counts (legacy, identical to
+            ``get_neighbors``).
+          - ``"cosine"`` ``w(a,b) / sqrt(deg(a)·deg(b))`` — co-occurrence
+            cosine; a promiscuous hub's high ``deg`` divides its association
+            to everyone down, a rare specific neighbour stays high.
+          - ``"pmi"``    ``max(0, log(w·W / (deg(a)·deg(b))))`` — positive
+            pointwise mutual information; ``W`` = total unique-edge weight.
+
+        ``hub_degree_cut`` (percentile in [0,100], or None): drop neighbours
+        whose degree exceeds that percentile of the active degree
+        distribution before returning — an explicit anti-hub floor on top of
+        the soft normalization. Unknown ``mode`` falls back to raw counts.
+        """
+        raw = self.graph_cache.get(node_id, {})
+        if mode == "none" or not raw:
+            scored = dict(raw)
+        else:
+            self._ensure_degrees()
+            assert self._degree_cache is not None
+            deg = self._degree_cache
+            deg_a = deg.get(node_id, 0.0)
+            if deg_a <= 0.0:
+                scored = dict(raw)
+            elif mode == "cosine":
+                scored = {}
+                for j, w in raw.items():
+                    denom = math.sqrt(deg_a * deg.get(j, 0.0))
+                    scored[j] = (w / denom) if denom > 0.0 else 0.0
+            elif mode == "pmi":
+                big_w = self._total_weight / 2.0  # undo symmetric double-count
+                scored = {}
+                for j, w in raw.items():
+                    denom = deg_a * deg.get(j, 0.0)
+                    if denom > 0.0 and big_w > 0.0 and w > 0.0:
+                        val = math.log((w * big_w) / denom)
+                        scored[j] = val if val > 0.0 else 0.0
+                    else:
+                        scored[j] = 0.0
+            else:
+                scored = dict(raw)  # unknown mode → legacy
+
+        if hub_degree_cut is not None and scored:
+            self._ensure_degrees()
+            assert self._degree_cache is not None
+            degrees = sorted(self._degree_cache.values())
+            cut = _percentile_sorted(degrees, hub_degree_cut)
+            scored = {
+                j: s for j, s in scored.items()
+                if self._degree_cache.get(j, 0.0) <= cut
+            }
+        return scored
 
     # --- Directed edges (Phase J Stage 1) ---
 
@@ -256,6 +378,7 @@ class CacheLayer:
             self.graph_cache.setdefault(e.src, {})[e.dst] = e.weight
             self.graph_cache.setdefault(e.dst, {})[e.src] = e.weight
             loaded_edges += 1
+        self._degree_cache = None  # Stage 8: rebuilt lazily from fresh graph
 
         self.displacement_cache = await store.load_displacements()
         self.velocity_cache = await store.load_velocities()
@@ -324,6 +447,8 @@ class CacheLayer:
         neighbors = self.graph_cache.pop(node_id, {})
         for other in neighbors:
             self.graph_cache.get(other, {}).pop(node_id, None)
+        if neighbors:
+            self._degree_cache = None  # Stage 8: degrees changed
         # Phase J Stage 1: prune directed edges touching this node so the
         # cache stays consistent with what the persona traversal expects.
         outgoing = self.directed_out.pop(node_id, [])
@@ -432,6 +557,7 @@ class CacheLayer:
             state.sim_history = []
         self.dirty_nodes.update(self.node_cache.keys())
         self.graph_cache.clear()
+        self._degree_cache = None  # Stage 8: graph emptied
         self.dirty_edges.clear()
         self.displacement_cache.clear()
         self.dirty_displacements.clear()

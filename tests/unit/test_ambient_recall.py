@@ -92,8 +92,12 @@ def test_lensing_resonance_zero_when_no_cooccurrence():
         def get_neighbors(self, node_id):
             return {}
 
+        def get_association_strength(self, node_id, *, mode="cosine", hub_degree_cut=None):
+            return dict(self.get_neighbors(node_id))
+
     class _FakeEngine:
         cache = _FakeCache()
+        config = GaOTTTConfig()
 
     res = _lensing_resonance(
         "lensing_id", ["direct_a", "direct_b"], _FakeEngine(), scale=10.0,
@@ -113,9 +117,13 @@ def test_lensing_resonance_saturates_with_cooccurrence_count():
         def get_neighbors(self, node_id):
             return self._w.get(node_id, {})
 
+        def get_association_strength(self, node_id, *, mode="cosine", hub_degree_cut=None):
+            return dict(self.get_neighbors(node_id))
+
     class _FakeEngine:
         def __init__(self, weights):
             self.cache = _FakeCache(weights)
+            self.config = GaOTTTConfig()
 
     # Lensing has 3+7=10 cooccurrence count with direct pair → resonance 0.5
     eng = _FakeEngine({"L": {"D1": 3.0, "D2": 7.0}})
@@ -138,9 +146,13 @@ def test_lensing_resonance_scale_zero_short_circuits():
         def get_neighbors(self, node_id):
             return self._w.get(node_id, {})
 
+        def get_association_strength(self, node_id, *, mode="cosine", hub_degree_cut=None):
+            return dict(self.get_neighbors(node_id))
+
     class _FakeEngine:
         def __init__(self, weights):
             self.cache = _FakeCache(weights)
+            self.config = GaOTTTConfig()
 
     eng = _FakeEngine({"L": {"D1": 0.5}})
     assert _lensing_resonance("L", ["D1"], eng, scale=0.0) == 1.0
