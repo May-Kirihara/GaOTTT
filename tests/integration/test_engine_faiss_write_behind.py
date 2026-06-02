@@ -150,3 +150,46 @@ async def test_faiss_save_interval_zero_disables_loop(tmp_path):
         await engine.shutdown()
     # Disk file should exist after shutdown's final synchronous save.
     assert os.path.exists(engine.config.faiss_index_path)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_is_bounded_when_final_save_blocks(tmp_path):
+    """A wedged final FAISS save must not hang shutdown.
+
+    Regression for the ~2h shutdown hang: the final ``to_thread(save)`` is
+    wrapped in ``wait_for(faiss_final_save_timeout_seconds)``, so a blocked
+    save is skipped (logged) instead of blocking shutdown forever. Here we
+    make ``save`` block well past a short timeout and assert ``shutdown()``
+    still returns promptly.
+    """
+    import threading
+    import time
+
+    engine = _make_engine(tmp_path, faiss_save_interval=0.0)
+    engine.config.faiss_final_save_timeout_seconds = 1.0
+    await engine.startup()
+    # Index a doc so the reverse-overwrite guard permits the final-save path.
+    await engine.index_documents([
+        {"content": "shutdown-block-doc", "metadata": {"source": "agent"}},
+    ])
+
+    # Block the final save past the timeout. ``release`` lets the worker thread
+    # finish after shutdown returns so it doesn't linger to interpreter exit.
+    release = threading.Event()
+
+    def _blocking_save(*_a, **_k):
+        release.wait(timeout=10.0)
+
+    engine.faiss_index.save = _blocking_save
+
+    t0 = time.monotonic()
+    # If the bound were missing (unbounded await), this wait_for would itself
+    # time out — i.e. the assertion below would never be reached.
+    await asyncio.wait_for(engine.shutdown(), timeout=8.0)
+    elapsed = time.monotonic() - t0
+    release.set()  # unblock the background save worker
+
+    assert elapsed < 5.0, (
+        f"shutdown took {elapsed:.1f}s — final save was not bounded by "
+        f"faiss_final_save_timeout_seconds"
+    )
