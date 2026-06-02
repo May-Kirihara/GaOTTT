@@ -801,7 +801,17 @@ assoc(a, b) = log( w(a, b) · W / ( deg(a) · deg(b) ) ) # pointwise mutual info
 | `cosine` | フロイト hub は top から消えた ✅、が survivors は依然 **moderate-high degree の book/history chunk** (deg 67-105) | soft 正規化だけでは不十分 |
 | `cosine` + `--hub-degree-cut 70` | kept halo 11→1 に激減、だが survivor が **deg=6 の specific 連想**: 「# 手紙 — 未来のめいさんへ … 観測者からの手紙」が *Articulation as Carrier* クエリで novel-far surface ✅ | **explicit degree cut が決定的レバー** (ただし p70 は aggressive、percentile 要 tuning) |
 
-→ **学び**: soft cosine/pmi は単独だと共起グラフの bulk-content 飽和を崩しきれない。**`hub_degree_cut` の percentile が本命の lever**で、適切な値 (p70 は厳しすぎ、p80-90 を measurement で詰める) で初めて「〇〇といえば〜」の specific 連想 (例: future-self への手紙) が浮上する。これは P3 (organic 共起の蓄積) とも噛む — bulk session artifact が薄まれば soft 正規化の効きも上がる。
+**percentile sweep (2026-06-02、1 engine load で p70/80/85/90/95 + cut なしを横断)**:
+
+| cut | kept_halo total (4 query) | novel_far total | survivors |
+|---|---|---|---|
+| none (cosine) | 44 | 40 | gem (deg≈6) + bulk (deg 67-105) 混在 |
+| p95 | 32 | 28 | bulk まだ残る (deg 67-105 が p95 閾値未満) |
+| **p90 → p70** | **4** | **1** | gem (deg=6 の future-self 手紙) のみ、bulk 全落ち |
+
+→ **学び (tuning の天井を確認)**: halo の degree 分布は **bimodal** — {deg≈6 の specific gem} ∪ {deg 67-105 の bulk-content の壁}、**間が無い**。よって p90↔p95 に cliff があり、どの percentile も「gem + bulk」か「gem だけ」の二択で、**「良いものを数件残す」中間が存在しない**。`hub_degree_cut` は precision レバーとしては機能する (p≈85-90 で bulk を全落としし gem だけ残す = 高 precision・低 recall) が、**percentile tuning では recall を増やせない**。しかも gem は実質 4 query で 1 件 (novel_far=1)。
+
+→ **結論**: Stage 8 機構は正しく動く (gem を isolate する) が、薄いのは **データ (P3)**。クリーンな specific Hebbian 信号が現状 ~1件/query しかなく、bulk-content session artifact が cross-doc edge を埋めている。**次の lever は knob ではなく P3** — organic で多様な specific co-recall を蓄積する / recording 由来の session-clique を減衰させる。それが厚くなって初めて Accretion が volume を持つ。precision-mode で 1 件でも良ければ `hub_degree_cut≈85` + `assoc_normalization=cosine` で今でも future-self への手紙のような連想は surface できる。
 
 ### 関連 (Stage 8)
 
