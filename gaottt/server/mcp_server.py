@@ -321,7 +321,8 @@ async def recall(
     )
     verbose_modes = engine.config.recall_trailer_verbose_modes.split(",")
     verbose = (output_mode in verbose_modes) and (mode != "list")
-    return formatters.format_recall(result, output_mode=output_mode, verbose=verbose)
+    show_reason = output_mode in engine.config.recall_reason_line_modes.split(",")
+    return formatters.format_recall(result, output_mode=output_mode, verbose=verbose, show_reason=show_reason)
 
 
 @mcp.tool()

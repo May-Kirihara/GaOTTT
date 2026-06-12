@@ -686,6 +686,11 @@ class GaOTTTConfig:
     # pre-Stage-2 behaviour (Phase O observability preserved in default path).
     recall_trailer_verbose_modes: str = "detail,full"
 
+    # Observation Apparatus Round 2 (Stage B) — reason line display modes.
+    # reason line は breakdown/trailer と独立に表示 mode を制御。
+    # default 全 mode = triage 中でも dominance artifact 警告が見える。
+    recall_reason_line_modes: str = "detail,full,compact,ids,list"
+
     # Lateral Association Stage 7.1 (2026-05-26) — direct-hit anti-hub.
     # Greedy MMR-style penalty on top-k composition: for each subsequent slot,
     # candidate ``final_score`` is reduced by
@@ -743,8 +748,13 @@ class GaOTTTConfig:
     # ``dormant_mass_percentile``. Physics-invariant: dormant surfacing is an
     # observation-layer filter, not a force/mass rule.
     dormant_mass_percentile: float | None = 10.0
+    # 2026-06-12 dogfooding で exploration-report (self-authored 化石レポート層)
+    # と compaction (context compression 層) が dormant 経路から構造的に出ない
+    # ことが判明。dormant surfacing is an observation-layer filter, not a
+    # force/mass rule なので追加は physics 不変。
     dormant_source_classes: tuple[str, ...] = (
         "agent", "value", "intention", "commitment", "note", "reference",
+        "exploration-report", "compaction",
     )
 
     # Lateral Association Stage 8 (2026-06-02) — degree-normalized

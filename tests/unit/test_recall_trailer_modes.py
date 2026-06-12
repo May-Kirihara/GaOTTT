@@ -115,3 +115,68 @@ def test_empty_results_no_trailer():
     resp = RecallResponse(items=[], count=0)
     out = formatters.format_recall(resp, output_mode="full", verbose=False)
     assert out == "No memories found."
+
+
+def _item_with_reason(reason: str = "dominance artifact detected") -> MemoryItem:
+    bd = ScoreBreakdown(
+        raw_cosine=0.8,
+        virtual_cosine=0.85,
+        decay_factor=0.99,
+        wave_score=0.02,
+        mass_boost=0.01,
+        emotion_term=0.0,
+        certainty_term=0.0,
+        saturation=1.0,
+        persona_proximity=0.0,
+        reason=reason,
+    )
+    return MemoryItem(
+        id="reason1abcd",
+        content="test content",
+        raw_score=0.85,
+        final_score=0.90,
+        source="agent",
+        tags=["test"],
+        displacement_norm=0.1,
+        score_breakdown=bd,
+    )
+
+
+def _resp_with_reason() -> RecallResponse:
+    return RecallResponse(
+        items=[_item_with_reason()],
+        count=1,
+        training_delta=None,
+    )
+
+
+def test_show_reason_compact_mode():
+    out = formatters.format_recall(
+        _resp_with_reason(), output_mode="compact", verbose=False, show_reason=True,
+    )
+    assert "reason: dominance artifact detected" in out
+    assert "breakdown:" not in out
+
+
+def test_show_reason_ids_mode():
+    out = formatters.format_recall(
+        _resp_with_reason(), output_mode="ids", verbose=False, show_reason=True,
+    )
+    assert "reason: dominance artifact detected" in out
+    assert "breakdown:" not in out
+
+
+def test_show_reason_false_compact_suppresses_reason():
+    out = formatters.format_recall(
+        _resp_with_reason(), output_mode="compact", verbose=False, show_reason=False,
+    )
+    assert "reason:" not in out
+    assert "breakdown:" not in out
+
+
+def test_show_reason_none_legacy_verbose_true_still_has_reason():
+    out = formatters.format_recall(
+        _resp_with_reason(), output_mode="full", verbose=True, show_reason=None,
+    )
+    assert "reason: dominance artifact detected" in out
+    assert "breakdown:" in out
