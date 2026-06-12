@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -60,6 +61,20 @@ def _running_gaottt_pids() -> list[tuple[int, str]]:
             if line.isdigit():
                 found.append((int(line), label))
     return found
+
+
+def _backend_port_reachable(
+    host: str = "127.0.0.1",
+    port: int = 7878,
+    timeout: float = 1.0,
+) -> bool:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect((host, port))
+            return True
+    except OSError:
+        return False
 
 
 async def main() -> None:
@@ -95,6 +110,15 @@ async def main() -> None:
                 "  cache write-back で reset が即上書きされます。先に停止してください:\n"
                 "    pkill -f gaottt.server.mcp_server\n"
                 "    pkill -f gaottt.server.app\n"
+                "  停止せず続行するには --force を指定してください。",
+                file=sys.stderr,
+            )
+            sys.exit(3)
+        if _backend_port_reachable() and not args.force:
+            print(
+                "WARNING: detached GaOTTT proxy backend is listening on port 7878.\n"
+                "  Its in-memory cache write-back would overwrite the reset.\n"
+                "  Kill it first: ps -ef | grep 'gaottt.server.mcp_server.*streamable-http' | grep -v grep\n"
                 "  停止せず続行するには --force を指定してください。",
                 file=sys.stderr,
             )

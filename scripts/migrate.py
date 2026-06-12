@@ -47,6 +47,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -920,6 +921,27 @@ def _running_gaottt_pids() -> list[tuple[int, str]]:
     return found
 
 
+def _backend_port_reachable(
+    host: str = "127.0.0.1",
+    port: int = 7878,
+    timeout: float = 1.0,
+) -> bool:
+    """Check if a detached proxy backend is listening on the given port.
+
+    Uses a bare TCP connect probe — faster than an HTTP round-trip and
+    sufficient to detect the streamable-http backend started by
+    ``mcp_proxy._spawn_backend_detached``. Returns True if the port
+    accepts a connection.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect((host, port))
+            return True
+    except OSError:
+        return False
+
+
 def _backup_data_dir(data_dir: Path) -> Path:
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     dst = data_dir.with_name(f"{data_dir.name}.backup-{timestamp}")
@@ -1052,6 +1074,15 @@ async def main_async(args: argparse.Namespace) -> int:
                 "  Stop them first (in-memory cache write-back would overwrite migration changes):\n"
                 "    pkill -f gaottt.server.mcp_server\n"
                 "    pkill -f gaottt.server.app\n"
+                "  Then re-run. Pass --force to bypass at your own risk.",
+                file=sys.stderr,
+            )
+            return 3
+        if _backend_port_reachable() and not args.force:
+            print(
+                "ERROR: detached GaOTTT proxy backend is listening on port 7878.\n"
+                "  Its in-memory cache write-back would overwrite migration changes.\n"
+                "  Kill it first: ps -ef | grep 'gaottt.server.mcp_server.*streamable-http' | grep -v grep\n"
                 "  Then re-run. Pass --force to bypass at your own risk.",
                 file=sys.stderr,
             )
