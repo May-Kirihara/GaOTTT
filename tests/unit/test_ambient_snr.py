@@ -76,7 +76,8 @@ def test_source_factor_returns_1_when_factor_above_1():
 
 
 def test_e1_direct_ranking_bitexact_when_off():
-    """factor=1.0 (default) preserves original final_score ordering."""
+    """factor=1.0 (legacy OFF) preserves original final_score ordering."""
+    off_cfg = _cfg(ambient_conversational_source_factor=1.0)
     cfg_items = [
         _item("a", 0.1, 0.9, source="openai", final_score=0.95),
         _item("b", 0.1, 0.8, source="agent", final_score=0.80),
@@ -84,7 +85,7 @@ def test_e1_direct_ranking_bitexact_when_off():
     decayed = []
     for it in cfg_items:
         nv = 1.0
-        src_f = _conversational_source_factor(it.source, _cfg())
+        src_f = _conversational_source_factor(it.source, off_cfg)
         decayed.append((it.final_score * nv * src_f, it))
     decayed.sort(key=lambda t: t[0], reverse=True)
     ids = [it.id for _, it in decayed]
@@ -218,7 +219,7 @@ def test_e2_items_filter_removes_dump():
 
 
 def test_e2_items_filter_off_is_noop():
-    """ambient_dump_symbol_ratio >= 1.0 (default) disables the gate entirely."""
+    """ambient_dump_symbol_ratio >= 1.0 (legacy OFF) disables the gate entirely."""
     cfg = _cfg(ambient_dump_symbol_ratio=1.0)
     items = [
         _item("good", 0.1, 0.9, source="agent", content="通常の文章"),

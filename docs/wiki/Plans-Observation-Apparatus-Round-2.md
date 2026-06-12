@@ -2,7 +2,9 @@
 
 **Status: Stage A-E 実装完了 (2026-06-12 同日)** / branch: `feat/observation-apparatus-round-2` / 実装は secondopinion-MCP (GLM) 委託、Claude Code はレビュー・受け入れ・commit を担当
 
-> **実装記録 (2026-06-12)**: 全 4 バッチ完了 — バッチ 1 (D+B) / 2 (A) / 3 (C) / 4 (E1+E2)。GLM は 2 回 ReadTimeout (~5.5 分壁) で落ちたが、いずれも code 本体は working tree に残っており、残作業 (バッチ 2: テスト一式 / バッチ 4: ヒューリスティック較正 + docs) はレビュー側で補完。**E2 の実装時変更 2 点**: (1) dump score を記号比率単独 → `max(記号比率, 長 ASCII 識別子トークン比率)` に較正 — GLM 自身のテストが「code/state-dict は英字主体で記号比率 0.16 にしかならない」盲点を暴いた。(2) OFF sentinel を `None` → `1.0` に変更 — `float | None = None` default は `GAOTTT_<FIELD>` env 自動マップ対象外 (scalar default のみ env-settable、`config.from_config_file` 参照) のため、E1 と同じ float 規約に統一。最終: 803 unit/integration passed + perf 71 passed + rest/mcp smoke green。Stage E の本番 opt-in env 登録と 1-2 週 dogfooding は未着手 (rollout 節の通り)。
+> **実装記録 (2026-06-12)**: 全 4 バッチ完了 — バッチ 1 (D+B) / 2 (A) / 3 (C) / 4 (E1+E2)。GLM は 2 回 ReadTimeout (~5.5 分壁) で落ちたが、いずれも code 本体は working tree に残っており、残作業 (バッチ 2: テスト一式 / バッチ 4: ヒューリスティック較正 + docs) はレビュー側で補完。**E2 の実装時変更 2 点**: (1) dump score を記号比率単独 → `max(記号比率, 長 ASCII 識別子トークン比率)` に較正 — GLM 自身のテストが「code/state-dict は英字主体で記号比率 0.16 にしかならない」盲点を暴いた。(2) OFF sentinel を `None` → `1.0` に変更 — `float | None = None` default は `GAOTTT_<FIELD>` env 自動マップ対象外 (scalar default のみ env-settable、`config.from_config_file` 参照) のため、E1 と同じ float 規約に統一。最終: 803 unit/integration passed + perf 71 passed + rest/mcp smoke green。
+
+> **Stage E default-ON 昇格 (2026-06-12 同日午後)**: opt-in を `~/.config/gaottt/config.json` で本番反映 (proxy backend の env 継承トラップ回避のため env でなく config.json 経由) → backend kill→respawn で live 化 → MCP 実機評価 (memory id=fa1d03a8) で E1/E2 の意図どおりの分離を確認 (E2: true dump 0.97-1.0 / readable code ≤0.40 / 自然文 <0.05 で 0.45 は clean gap、E1: near-tie で agent source 浮上)。めいさんの「旧 ambient は会話ログ raw chunk 支配で実用性低かった、本番設定値に焼く」判断で **code default を `1.0`(OFF) → `0.5` / `0.45`(ON) に昇格**。redundant になった config.json は削除、single source of truth = code default。legacy 挙動は両 knob を `1.0` で復帰。`docs/wiki/Operations-Tuning.md` / `Guides-Ambient-Recall.md` の default 列更新済み。
 
 ## 背景
 
@@ -167,7 +169,7 @@ ambient_recall の slot 選択は `exclude_tags` / novelty decay / `ambient_pers
 
 ### ロールアウト
 
-code merge (OFF) → env opt-in で 1-2 週 dogfooding (Lateral Association observation 期間と合流可) → 効果あれば code default 昇格を別途判断 (Phase Q governor の昇格と同じ 2 段階)。
+code merge (OFF) → env opt-in で 1-2 週 dogfooding (Lateral Association observation 期間と合流可) → 効果あれば code default 昇格を別途判断 (Phase Q governor の昇格と同じ 2 段階)。**→ 実績 (2026-06-12)**: config.json opt-in → 同日の MCP 実機評価で効果確認 → `0.5`/`0.45` を code default に昇格 (上記実装記録の Stage E default-ON 節)。dogfooding 期間は短縮されたが、評価が production の実 surfaced content に対する直接 measurement だったため判断材料は十分と判断。
 
 ---
 

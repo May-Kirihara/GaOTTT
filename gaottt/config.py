@@ -723,8 +723,10 @@ class GaOTTTConfig:
     # 観測・注入層のみの lens — recall/force/mass には不適用。
     # Phase M 単一規則は不変 (precedent: exclude_tags / novelty decay /
     # persona min relevance). ``1.0`` = OFF (bit-exact legacy).
-    # Recommended opt-in: ``0.5`` (first dogfooding measurement round).
-    ambient_conversational_source_factor: float = 1.0
+    # Default ``0.5`` baked in 2026-06-12 after a dogfooding measurement round
+    # (id=fa1d03a8) confirmed conversational sources were dominating ambient
+    # slots; set to ``1.0`` to restore legacy behaviour.
+    ambient_conversational_source_factor: float = 0.5
     ambient_conversational_sources: tuple[str, ...] = (
         "openai", "claude-web", "claude-code",
     )
@@ -738,8 +740,11 @@ class GaOTTTConfig:
     # artifacts. ``>= 1.0`` = OFF (bit-exact legacy; same convention as E1 —
     # a float default keeps the field GAOTTT_* env-settable, which a
     # ``None`` default would not be).
-    # Recommended opt-in: ``0.45`` (calibrated against production dump examples).
-    ambient_dump_symbol_ratio: float = 1.0
+    # Default ``0.45`` baked in 2026-06-12 (id=fa1d03a8): calibrated against
+    # production dumps — true dumps (state-dict / base64 / hex) score 0.97-1.0,
+    # readable code ≤0.40, prose <0.05, so 0.45 sits in a clean gap. Set to
+    # ``1.0`` to restore legacy behaviour.
+    ambient_dump_symbol_ratio: float = 0.45
 
     # Phase O Stage 5 — Dormant surface (explore(mode='dormant')).
     # ``explore(mode='dormant')`` returns random self-authored memos that have
