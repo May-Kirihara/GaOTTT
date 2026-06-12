@@ -109,7 +109,11 @@ def main() -> int:
         return 0
     try:
         block = path.read_text(encoding="utf-8").strip()
-    except Exception:
+    except (UnicodeDecodeError, OSError):
+        try:
+            path.unlink()
+        except OSError:
+            pass
         return 0
     # Delete before emit so a partial pipe-write doesn't leave the block to
     # re-inject next turn (worst case: block lost once, the heuristic just

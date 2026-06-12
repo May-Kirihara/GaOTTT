@@ -67,6 +67,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 _URL = os.environ.get(
@@ -271,10 +272,24 @@ def main() -> int:
         return 0
     try:
         _STATE_DIR.mkdir(parents=True, exist_ok=True)
-        _state_path(session_id).write_text(block, encoding="utf-8")
+        target = _state_path(session_id)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(_STATE_DIR), prefix=".save-cand-", suffix=".tmp",
+        )
+        try:
+            os.write(fd, block.encode("utf-8"))
+            os.close(fd)
+            fd = -1
+            os.replace(tmp_path, str(target))
+        except BaseException:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     except Exception:
-        # State-file write failed (permissions, disk full, etc.) — fail
-        # silent, never block the agent's turn-end.
         pass
     return 0
 

@@ -1521,14 +1521,9 @@ class GaOTTTEngine:
             disps = await self.store.load_displacements(ids=node_ids)
             vels = await self.store.load_velocities(ids=node_ids)
             for nid, disp in disps.items():
-                self.cache.displacement_cache[nid] = disp
+                self.cache.set_displacement(nid, disp)
             for nid, vel in vels.items():
-                self.cache.velocity_cache[nid] = vel
-            # Restored nodes change the active set + their displacement
-            # was reloaded behind set_displacement's back; force a virtual
-            # FAISS refresh so they reappear in seed pools.
-            if affected:
-                self.cache.virtual_faiss_dirty = True
+                self.cache.set_velocity(nid, vel)
             # Phase L Stage 1: BM25 also surfaces the restored docs again.
             # Calling restore is cheap (just flips the soft-remove flag);
             # if the postings were already compacted away, this is a no-op
