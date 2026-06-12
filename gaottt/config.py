@@ -686,6 +686,11 @@ class GaOTTTConfig:
     # pre-Stage-2 behaviour (Phase O observability preserved in default path).
     recall_trailer_verbose_modes: str = "detail,full"
 
+    # Observation Apparatus Round 2 (Stage B) — reason line display modes.
+    # reason line は breakdown/trailer と独立に表示 mode を制御。
+    # default 全 mode = triage 中でも dominance artifact 警告が見える。
+    recall_reason_line_modes: str = "detail,full,compact,ids,list"
+
     # Lateral Association Stage 7.1 (2026-05-26) — direct-hit anti-hub.
     # Greedy MMR-style penalty on top-k composition: for each subsequent slot,
     # candidate ``final_score`` is reduced by
@@ -708,6 +713,33 @@ class GaOTTTConfig:
     #   recall top-k composition    — engine returns a larger pool, then MMR
     # See docs/wiki/Plans-Ambient-Recall-Lateral-Association.md (Stage 7).
     direct_hit_anti_hub_lambda: float = 0.4
+
+    # Observation Apparatus Round 2 — E1: conversational source damping
+    # (Plans-Observation-Apparatus-Round-2.md Stage E1). Multiplies the
+    # ambient-slot ranking score of items whose source matches one of
+    # ``ambient_conversational_sources`` by this factor, before the slot-pick
+    # slice. Applied to direct and lensing slots only (persona slot is not
+    # affected — conversational sources are not declared values/intentions).
+    # 観測・注入層のみの lens — recall/force/mass には不適用。
+    # Phase M 単一規則は不変 (precedent: exclude_tags / novelty decay /
+    # persona min relevance). ``1.0`` = OFF (bit-exact legacy).
+    # Recommended opt-in: ``0.5`` (first dogfooding measurement round).
+    ambient_conversational_source_factor: float = 1.0
+    ambient_conversational_sources: tuple[str, ...] = (
+        "openai", "claude-web", "claude-code",
+    )
+
+    # Observation Apparatus Round 2 — E2: dump-shape gate.
+    # When set, the first N characters of each ambient candidate's content are
+    # checked for the ratio of "symbol" characters (non-Japanese, non-ASCII-
+    # letter, non-whitespace). Items exceeding the ratio are dropped from both
+    # direct and lensing ambient slots (next-best naturally fills). Targets
+    # state-dict key dumps, raw code fragments, and similar low-S/N ingest
+    # artifacts. ``>= 1.0`` = OFF (bit-exact legacy; same convention as E1 —
+    # a float default keeps the field GAOTTT_* env-settable, which a
+    # ``None`` default would not be).
+    # Recommended opt-in: ``0.45`` (calibrated against production dump examples).
+    ambient_dump_symbol_ratio: float = 1.0
 
     # Phase O Stage 5 — Dormant surface (explore(mode='dormant')).
     # ``explore(mode='dormant')`` returns random self-authored memos that have
@@ -743,8 +775,13 @@ class GaOTTTConfig:
     # ``dormant_mass_percentile``. Physics-invariant: dormant surfacing is an
     # observation-layer filter, not a force/mass rule.
     dormant_mass_percentile: float | None = 10.0
+    # 2026-06-12 dogfooding で exploration-report (self-authored 化石レポート層)
+    # と compaction (context compression 層) が dormant 経路から構造的に出ない
+    # ことが判明。dormant surfacing is an observation-layer filter, not a
+    # force/mass rule なので追加は physics 不変。
     dormant_source_classes: tuple[str, ...] = (
         "agent", "value", "intention", "commitment", "note", "reference",
+        "exploration-report", "compaction",
     )
 
     # Lateral Association Stage 8 (2026-06-02) — degree-normalized

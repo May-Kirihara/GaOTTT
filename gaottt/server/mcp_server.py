@@ -97,7 +97,10 @@ mcp = FastMCP(
         "layer is automated, calling remember stays manual), "
         "'forget'/'restore' to prune (soft by default), 'merge' to collide "
         "near-duplicates, 'compact' for periodic maintenance, 'revalidate' to "
-        "refresh certainty, 'relate'/'unrelate'/'get_relations' for typed "
+        "refresh certainty, 'get_node' to fetch a single node by ID "
+        "(read-only, bypasses the gravity field entirely — use when "
+        "reflect(hot_topics) showed an ID but recall cannot reach it), "
+        "'relate'/'unrelate'/'get_relations' for typed "
         "directed edges (supersedes/derived_from/contradicts), Phase D persona "
         "& task layer ('commit'/'start'/'complete'/'abandon'/'depend' for "
         "tasks; 'declare_value'/'declare_intention'/'declare_commitment' for "
@@ -321,7 +324,8 @@ async def recall(
     )
     verbose_modes = engine.config.recall_trailer_verbose_modes.split(",")
     verbose = (output_mode in verbose_modes) and (mode != "list")
-    return formatters.format_recall(result, output_mode=output_mode, verbose=verbose)
+    show_reason = output_mode in engine.config.recall_reason_line_modes.split(",")
+    return formatters.format_recall(result, output_mode=output_mode, verbose=verbose, show_reason=show_reason)
 
 
 @mcp.tool()
@@ -953,6 +957,30 @@ async def ingest(
         include_tool_results=include_tool_results,
     )
     return formatters.format_ingest(result)
+
+
+@mcp.tool()
+async def get_node(
+    node_id: str,
+) -> str:
+    """Fetch a single node by ID — read-only, bypasses the gravity field.
+
+    Retrieves content, provenance (source, tags, certainty, emotion), and
+    physical state (mass, temperature, displacement) for a known node ID.
+    This is the only retrieval path that **does not go through the seed
+    pool** — it reads directly from the store and cache without perturbing
+    mass, co-occurrence, displacement, or prefetch state. Use it when
+    ``reflect(hot_topics)`` or another listing tool showed an ID but
+    ``recall`` cannot surface it due to lexical/gravity capture by
+    dominant neighbours.
+
+    Returns "Node not found." for missing or archived IDs.
+    """
+    engine = await get_engine()
+    result = await memory_service.get_node(engine, node_id)
+    if result is None:
+        return "Node not found."
+    return formatters.format_node_detail(result)
 
 
 # -----------------------------------------------------------------------

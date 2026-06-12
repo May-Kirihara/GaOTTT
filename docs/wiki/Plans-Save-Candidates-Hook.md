@@ -170,3 +170,7 @@ ambient_recall (~500ms steady) と直列実行すると合計 ~550ms が UserPro
 - [Guides — Ambient Recall](Guides-Ambient-Recall.md) — hook の fail-safe / 観測者効果の原則、本計画も同じ規律を継承
 - [MCP Reference — Memory](MCP-Reference-Memory.md) — `auto_remember` 既存 tool の docs、本計画で `save_candidates` を追加
 - [Architecture — Overview](Architecture-Overview.md) — 設計判断表に「observation vs physics boundary を hook 層に適用」を着手時に追記
+
+## 2026-06-12 Stage C — instruction-surface strip
+
+Plans-Observation-Apparatus-Round-2 Stage C。`save_candidates.py` の `_strip_injected_surfaces()` が transcript 読み出し全経路 (Claude Code JSONL `_extract_text()` / Codex event_msg / opencode pre-extracted `transcript`) で `<gaottt-*>` / `<system-reminder>` / `<command-*>` / skill 注入 turn を除外。knob 不要 (注入テキストが save 候補になる正しいケースは存在しない)。dogfooding §2.5 (score=4.40 の SKILL.md 断片候補化) の根治。

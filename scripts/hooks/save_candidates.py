@@ -66,6 +66,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -101,6 +102,38 @@ _EMIT_MODE = os.environ.get(
 
 _BLOCK_TAG = "<gaottt-save-candidates>"
 
+_INJECTED_BLOCK_TAGS = [
+    "gaottt-ambient-recall",
+    "gaottt-save-candidates",
+    "system-reminder",
+    "command-name",
+    "command-message",
+    "command-args",
+    "local-command-stdout",
+    "local-command-caveat",
+]
+_INJECTED_BLOCK_PATTERN = re.compile(
+    "|".join(
+        rf"<{tag}>.*?</{tag}>" for tag in _INJECTED_BLOCK_TAGS
+    ),
+    re.DOTALL,
+)
+
+
+def _strip_injected_surfaces(text: str) -> str:
+    """Remove instruction-surface artifacts from transcript text.
+
+    Strips injected blocks that are neither user nor agent speech:
+    gaottt lens blocks, system-reminder, and Claude Code local-command
+    injection tags.  If the text starts with ``Base directory for this
+    skill:`` the entire text is cleared (it is a Skill-tool content dump).
+
+    Plans-Observation-Apparatus-Round-2 Stage C.
+    """
+    if text.startswith("Base directory for this skill:"):
+        return ""
+    return _INJECTED_BLOCK_PATTERN.sub("", text).strip()
+
 
 def _disabled() -> bool:
     return os.environ.get(
@@ -120,7 +153,7 @@ def _extract_text(rec: dict) -> str:
     if content is None:
         content = rec.get("content")
     if isinstance(content, str):
-        return content.strip()
+        return _strip_injected_surfaces(content.strip())
     if isinstance(content, list):
         parts: list[str] = []
         for c in content:
@@ -136,7 +169,7 @@ def _extract_text(rec: dict) -> str:
             t = c.get("text")
             if isinstance(t, str):
                 parts.append(t)
-        return " ".join(parts).strip()
+        return _strip_injected_surfaces(" ".join(parts).strip())
     return ""
 
 
@@ -173,10 +206,12 @@ def _build_transcript_from_path(path: str, turns: int) -> str:
                         pt = p.get("type")
                         t = p.get("message")
                         if isinstance(t, str) and t.strip():
-                            if pt == "user_message":
-                                exchanges.append(("user", t.strip()))
-                            elif pt == "agent_message":
-                                exchanges.append(("assistant", t.strip()))
+                            t_clean = _strip_injected_surfaces(t.strip())
+                            if t_clean:
+                                if pt == "user_message":
+                                    exchanges.append(("user", t_clean))
+                                elif pt == "agent_message":
+                                    exchanges.append(("assistant", t_clean))
                     continue
                 role = rec.get("type") or rec.get("role")
                 if role not in ("user", "assistant"):
@@ -239,6 +274,8 @@ def main() -> int:
     # scanning transcript_path. Either path lands on the same downstream
     # call — same parity convention as ambient_recall.
     transcript = str(payload.get("transcript") or "").strip()
+    if transcript:
+        transcript = _strip_injected_surfaces(transcript)
     if not transcript:
         transcript_path = str(payload.get("transcript_path") or "")
         transcript = _build_transcript_from_path(

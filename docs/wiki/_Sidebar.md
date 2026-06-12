@@ -68,6 +68,7 @@
 - [Phase Q — Orbital Mechanics (Rosette Orbits)](Plans-Phase-Q-Orbital-Mechanics.md)
 - [Phase Q2 — Gravitational Scale Matching](Plans-Phase-Q2-Gravitational-Scale.md)
 - [Observation Apparatus Refinement](Plans-Observation-Apparatus-Refinement.md)
+- [Observation Apparatus Round 2 (dogfooding 2026-06-12 起点)](Plans-Observation-Apparatus-Round-2.md)
 - [Hardening — Concurrency & Persistence](Plans-Hardening-Concurrency-Persistence.md)
 - [Ambient Recall Enrichment](Plans-Ambient-Recall-Enrichment.md)
 - [Ambient Recall Refinement (Phase A 由来)](Plans-Ambient-Recall-Refinement.md)

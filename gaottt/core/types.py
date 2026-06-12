@@ -159,6 +159,24 @@ class NodeResponse(BaseModel):
     displacement_norm: float = 0.0
 
 
+class GetNodeResponse(BaseModel):
+    """Observation Apparatus Round 2 Stage A — fetch-by-id (read-only).
+
+    Combines document content/provenance with physical state.
+    """
+    id: str
+    content: str
+    source: str = ""
+    tags: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    certainty: float = 1.0
+    emotion: float = 0.0
+    mass: float = 1.0
+    temperature: float = 0.0
+    last_access: float = 0.0
+    displacement_norm: float = 0.0
+
+
 class GraphResponse(BaseModel):
     edges: list[CooccurrenceEdge]
     count: int

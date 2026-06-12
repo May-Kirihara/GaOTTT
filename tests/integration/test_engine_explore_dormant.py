@@ -190,9 +190,13 @@ async def test_dormant_response_omits_training_delta_and_routing_hint(engine):
 
 
 async def test_dormant_includes_all_self_authored_classes(engine):
-    """Each class in dormant_source_classes is eligible — agent/value/intention/commitment/note/reference."""
+    """Each class in dormant_source_classes is eligible."""
+    all_sources = (
+        "agent", "value", "intention", "commitment", "note", "reference",
+        "exploration-report", "compaction",
+    )
     seeded: dict[str, str] = {}
-    for src in ("agent", "value", "intention", "commitment", "note", "reference"):
+    for src in all_sources:
         seeded[src] = await _index_aged(
             engine, f"dormant {src}", source=src, age_days=60, mass=1.0,
         )
@@ -200,13 +204,9 @@ async def test_dormant_includes_all_self_authored_classes(engine):
         engine, query="ignored", mode="dormant", top_k=20,
     )
     surfaced_sources = {item.source for item in r.items}
-    # All 6 should be surfacable; depending on random sample we may not hit all
-    # in a single call, so we run multiple draws.
     for _ in range(5):
         r2 = await memory_service.explore(
             engine, query="ignored", mode="dormant", top_k=20,
         )
         surfaced_sources |= {item.source for item in r2.items}
-    assert surfaced_sources >= {
-        "agent", "value", "intention", "commitment", "note", "reference",
-    }
+    assert surfaced_sources >= set(all_sources)

@@ -593,3 +593,121 @@ def test_inject_codex_output_mode_detects_flag(monkeypatch):
     assert mod._codex_output_mode() is True
     monkeypatch.setattr(mod.sys, "argv", ["save_candidates_inject.py"])
     assert mod._codex_output_mode() is False
+
+
+# --- Stage C: instruction-surface strip (Plans-Observation-Apparatus-Round-2) ---
+
+def _load_hook_strip():
+    """Import ``_strip_injected_surfaces`` from the Stop hook script."""
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "save_candidates_hook_strip",
+        Path(__file__).resolve().parents[2]
+        / "scripts" / "hooks" / "save_candidates.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod._strip_injected_surfaces
+
+
+def test_strip_removes_ambient_block_leaves_surrounding_text():
+    strip = _load_hook_strip()
+    text = (
+        "before text\n"
+        "<gaottt-ambient-recall>\n"
+        "GaOTTT 長期記憶から自動取得した関連知識です。\n"
+        "direct hit content here\n"
+        "</gaottt-ambient-recall>\n"
+        "after text"
+    )
+    result = strip(text)
+    assert "before text" in result
+    assert "after text" in result
+    assert "<gaottt-ambient-recall>" not in result
+    assert "direct hit content" not in result
+
+
+def test_strip_removes_save_candidates_and_system_reminder_blocks():
+    strip = _load_hook_strip()
+    text = (
+        "user said something\n"
+        "<gaottt-save-candidates>\ncandidate A\n</gaottt-save-candidates>\n"
+        "<system-reminder>reminder text</system-reminder>\n"
+        "more text"
+    )
+    result = strip(text)
+    assert "user said something" in result
+    assert "more text" in result
+    assert "candidate A" not in result
+    assert "reminder text" not in result
+    assert "<gaottt-save-candidates>" not in result
+    assert "<system-reminder>" not in result
+
+
+def test_strip_clears_skill_injection_turn():
+    strip = _load_hook_strip()
+    text = "Base directory for this skill: /path/to/skill\n\nSKILL.md content here"
+    assert strip(text) == ""
+
+
+def test_strip_preserves_normal_text_bit_exact():
+    strip = _load_hook_strip()
+    text = "[user] 通常の会話テキストです\n[assistant] 了解しました"
+    assert strip(text) == text
+
+
+def test_strip_removes_command_tags():
+    strip = _load_hook_strip()
+    text = (
+        "before\n"
+        "<command-name>Bash</command-name>\n"
+        "<command-message>running ls</command-message>\n"
+        "<command-args>ls -la</command-args>\n"
+        "<local-command-stdout>file1.txt\nfile2.txt</local-command-stdout>\n"
+        "<local-command-caveat>note</local-command-caveat>\n"
+        "after"
+    )
+    result = strip(text)
+    assert "before" in result
+    assert "after" in result
+    assert "<command-name>" not in result
+    assert "running ls" not in result
+    assert "file1.txt" not in result
+
+
+def test_build_transcript_strips_ambient_block_in_jsonl(tmp_path):
+    """Integration: a Claude Code JSONL user record containing an ambient block
+    should have the block stripped in the resulting transcript string."""
+    build = _load_build_transcript()
+    rec_with_block = {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": (
+                    "human text here\n"
+                    "<gaottt-ambient-recall>\n"
+                    "ambient content to strip\n"
+                    "</gaottt-ambient-recall>"
+                )},
+            ],
+        },
+    }
+    rec_assistant = {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "assistant reply"}],
+        },
+    }
+    f = tmp_path / "session.jsonl"
+    f.write_text(
+        json.dumps(rec_with_block, ensure_ascii=False) + "\n"
+        + json.dumps(rec_assistant, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    out = build(str(f), 2)
+    assert "human text here" in out
+    assert "ambient content to strip" not in out
+    assert "<gaottt-ambient-recall>" not in out

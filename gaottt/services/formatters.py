@@ -26,6 +26,7 @@ from gaottt.core.types import (
     DependResponse,
     ExploreResponse,
     ForgetResponse,
+    GetNodeResponse,
     IngestResponse,
     MergeResponse,
     PersonaSnapshotResponse,
@@ -193,7 +194,21 @@ def _format_routing_hint(h) -> str:
     )
 
 
-def format_recall(result: RecallResponse, output_mode: str = "full", *, verbose: bool = True) -> str:
+def format_node_detail(result: GetNodeResponse) -> str:
+    """Observation Apparatus Round 2 Stage A — single node detail."""
+    tag_str = f" [{', '.join(result.tags)}]" if result.tags else ""
+    lines = [
+        f"id={result.id} (source={result.source}{tag_str}, "
+        f"certainty={result.certainty:.2f}, emotion={result.emotion:.2f})",
+        f"  physics: mass={result.mass:.2f} temperature={result.temperature:.4f} "
+        f"displacement={result.displacement_norm:.4f}",
+        "",
+        result.content,
+    ]
+    return "\n".join(lines)
+
+
+def format_recall(result: RecallResponse, output_mode: str = "full", *, verbose: bool = True, show_reason: bool | None = None) -> str:
     """Format recall results for MCP output.
 
     output_mode:
@@ -205,6 +220,10 @@ def format_recall(result: RecallResponse, output_mode: str = "full", *, verbose:
       trailer are emitted — Phase O observability preserved. When False
       (lightweight triage: ids / compact / list) they are suppressed to
       save tokens.
+    show_reason:
+      When True, the reason line is emitted even if verbose=False (compact/ids
+      triage modes). None = legacy behaviour (reason follows verbose). Does not
+      affect breakdown or 訓練差分 — only the ``reason:`` sub-line.
     """
     if not result.items:
         # Even with no memories, surface the auto-routed reflect summary so
@@ -214,6 +233,7 @@ def format_recall(result: RecallResponse, output_mode: str = "full", *, verbose:
         routing_trailer = _format_routing_hint(result.routing_hint)
         return "No memories found." + routing_trailer
     lines = []
+    _emit_reason = (show_reason is True) and not verbose
     for i, item in enumerate(result.items):
         tag_str = f" [{', '.join(item.tags)}]" if item.tags else ""
         header = (
@@ -223,10 +243,17 @@ def format_recall(result: RecallResponse, output_mode: str = "full", *, verbose:
             f"displacement={item.displacement_norm:.4f})"
         )
         breakdown_line = _format_breakdown(item.score_breakdown) if verbose else ""
+        reason_only = ""
+        if _emit_reason and item.score_breakdown is not None:
+            reason = getattr(item.score_breakdown, "reason", None)
+            if reason:
+                reason_only = f"  reason: {reason}"
         if output_mode == "ids":
             block = header
             if breakdown_line:
                 block += f"\n{breakdown_line}"
+            elif reason_only:
+                block += f"\n{reason_only}"
             lines.append(block)
         elif output_mode == "compact":
             content = item.content
@@ -235,12 +262,16 @@ def format_recall(result: RecallResponse, output_mode: str = "full", *, verbose:
             block = header
             if breakdown_line:
                 block += f"\n{breakdown_line}"
+            elif reason_only:
+                block += f"\n{reason_only}"
             block += f"\n{content}"
             lines.append(block)
         else:
             block = header
             if breakdown_line:
                 block += f"\n{breakdown_line}"
+            elif reason_only:
+                block += f"\n{reason_only}"
             block += f"\n{item.content}"
             lines.append(block)
     body = "\n\n---\n\n".join(lines)
