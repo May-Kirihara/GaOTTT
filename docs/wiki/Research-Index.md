@@ -27,6 +27,7 @@ GaOTTT の設計根拠、評価、実験レポートの目次。
 | ドキュメント | 内容 |
 |---|---|
 | [Phase 2 Evaluation](Research-Phase-2-Evaluation.md) | Static RAG vs GaOTTT ベンチマーク、nDCG/MRR、セッション適応性 |
+| [`docs/research/dogfooding-review-2026-06-12.md`](../research/dogfooding-review-2026-06-12.md) | セッション復元 + 自由探索の dogfooding レビュー — 良かった点 8 / 摩擦 9 / 改善案 P1-P9（層判定つき）、get-by-id MCP gap と dominance 二方向の整理 |
 
 ## 初期設計アーカイブ
 
