@@ -714,6 +714,33 @@ class GaOTTTConfig:
     # See docs/wiki/Plans-Ambient-Recall-Lateral-Association.md (Stage 7).
     direct_hit_anti_hub_lambda: float = 0.4
 
+    # Observation Apparatus Round 2 — E1: conversational source damping
+    # (Plans-Observation-Apparatus-Round-2.md Stage E1). Multiplies the
+    # ambient-slot ranking score of items whose source matches one of
+    # ``ambient_conversational_sources`` by this factor, before the slot-pick
+    # slice. Applied to direct and lensing slots only (persona slot is not
+    # affected — conversational sources are not declared values/intentions).
+    # 観測・注入層のみの lens — recall/force/mass には不適用。
+    # Phase M 単一規則は不変 (precedent: exclude_tags / novelty decay /
+    # persona min relevance). ``1.0`` = OFF (bit-exact legacy).
+    # Recommended opt-in: ``0.5`` (first dogfooding measurement round).
+    ambient_conversational_source_factor: float = 1.0
+    ambient_conversational_sources: tuple[str, ...] = (
+        "openai", "claude-web", "claude-code",
+    )
+
+    # Observation Apparatus Round 2 — E2: dump-shape gate.
+    # When set, the first N characters of each ambient candidate's content are
+    # checked for the ratio of "symbol" characters (non-Japanese, non-ASCII-
+    # letter, non-whitespace). Items exceeding the ratio are dropped from both
+    # direct and lensing ambient slots (next-best naturally fills). Targets
+    # state-dict key dumps, raw code fragments, and similar low-S/N ingest
+    # artifacts. ``>= 1.0`` = OFF (bit-exact legacy; same convention as E1 —
+    # a float default keeps the field GAOTTT_* env-settable, which a
+    # ``None`` default would not be).
+    # Recommended opt-in: ``0.45`` (calibrated against production dump examples).
+    ambient_dump_symbol_ratio: float = 1.0
+
     # Phase O Stage 5 — Dormant surface (explore(mode='dormant')).
     # ``explore(mode='dormant')`` returns random self-authored memos that have
     # been quietly forgotten — older than ``dormant_age_threshold_seconds``

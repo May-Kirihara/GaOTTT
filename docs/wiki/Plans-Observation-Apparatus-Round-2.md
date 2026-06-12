@@ -149,7 +149,7 @@ ambient_recall の slot 選択は `exclude_tags` / novelty decay / `ambient_pers
 
 ### E2 — dump-shape gate
 
-- `config.py`: `ambient_dump_symbol_ratio: float | None = None`(None = OFF)
+- `config.py`: `ambient_dump_symbol_ratio: float = 1.0`(>= 1.0 = OFF — 実装時変更: None default は GAOTTT_* env 自動マップ対象外 [scalar default のみ env-settable] のため、E1 と同じ float 規約に統一)
 - ambient slot 候補の content 先頭 N 文字の記号・識別子比率 (非和文・非英単語文字の割合) が閾値超なら slot から skip (state-dict キー羅列、生コード断片を注入しない)。実装は軽量 heuristic で良い (正規表現 1 本 + 比率計算)。落とした候補は次点繰り上げ
 - 推奨初期値 0.45 (実装時に手元の dump 実例 — apitest / residual_layer chunk — で較正)
 

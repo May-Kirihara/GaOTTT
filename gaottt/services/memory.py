@@ -700,6 +700,51 @@ def _novelty_factor(
     return float(decay) ** int(count)
 
 
+def _conversational_source_factor(source: str, cfg: Any) -> float:
+    """Observation Apparatus Round 2 Stage E1 — source damping for ambient
+    slots. Returns ``ambient_conversational_source_factor`` when source is in
+    ``ambient_conversational_sources``, else ``1.0``. Returns ``1.0`` early
+    when factor >= 1.0 (OFF / rollback path)."""
+    factor = cfg.ambient_conversational_source_factor
+    if factor >= 1.0:
+        return 1.0
+    if source in cfg.ambient_conversational_sources:
+        return factor
+    return 1.0
+
+
+# E2 — dump-shape symbol ratio. Characters that are NOT Japanese (hiragana,
+# katakana, kanji), NOT ASCII letters, and NOT whitespace are counted as
+# "symbols" (digits, punctuation, brackets, underscores, operators, etc.).
+_NON_SYMBOL_RE = re.compile(
+    r"[^\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u3400-\u4DBF"
+    r"a-zA-Z\s]",
+)
+
+
+def _dump_symbol_ratio(text: str, head: int = 400) -> float:
+    """Observation Apparatus Round 2 Stage E2 — "dump score" of the first
+    ``head`` characters: ``max(symbol ratio, long-ASCII-token ratio)``.
+
+    Symbol ratio alone misses code / state-dict dumps because identifiers
+    are letter-heavy (``residual_layer.0.fn.weight`` is ~80% letters). The
+    second signal — the fraction of characters living in whitespace-split
+    tokens that are ≥ 20 chars and ≥ 80% ASCII — catches exactly those
+    machine-shaped tokens, while Japanese prose (no whitespace tokens) and
+    natural English (short words) stay near 0. Returns ``0.0`` for empty
+    text."""
+    chunk = text[:head]
+    if not chunk:
+        return 0.0
+    total = len(chunk)
+    symbols = len(_NON_SYMBOL_RE.findall(chunk))
+    long_ascii = 0
+    for tok in chunk.split():
+        if len(tok) >= 20 and sum(c.isascii() for c in tok) >= 0.8 * len(tok):
+            long_ascii += len(tok)
+    return max(symbols / total, long_ascii / total)
+
+
 def _pick_lensing(
     engine: GaOTTTEngine, items: list[MemoryItem], exclude: set[str],
     recently_surfaced: dict[str, int] | None = None,
@@ -746,7 +791,8 @@ def _pick_lensing(
         novelty = _novelty_factor(
             item.id, recently_surfaced, cfg.ambient_novelty_decay,
         )
-        ranked.append((item, gap, gap * novelty))
+        src_f = _conversational_source_factor(item.source, cfg)
+        ranked.append((item, gap, gap * novelty * src_f))
     ranked.sort(key=lambda t: t[2], reverse=True)
     return [(it, raw_gap) for it, raw_gap, _ in ranked[:max_k]]
 
@@ -1007,6 +1053,17 @@ async def ambient_recall(
         items = [it for it in items if it.id not in excluded_ids]
     if not items:
         return AmbientRecallResponse(count=0)
+    # E2 — dump-shape gate. Drop items whose content is dominated by symbols
+    # (state-dict keys, raw code). Applied before ranking so next-best
+    # naturally fills. ``>= 1.0`` = OFF (bit-exact legacy).
+    if cfg.ambient_dump_symbol_ratio < 1.0:
+        ratio_threshold = cfg.ambient_dump_symbol_ratio
+        items = [
+            it for it in items
+            if _dump_symbol_ratio(it.content) <= ratio_threshold
+        ]
+    if not items:
+        return AmbientRecallResponse(count=0)
     if bm25_ok is None:
         # BM25 unavailable — fall back to the virtual_score gate (the pool's
         # max raw_score). Known weak on large corpora; BM25 is preferred.
@@ -1020,17 +1077,22 @@ async def ambient_recall(
     # re-sort, so a memo seen on the last few turns rotates out unless its
     # margin survives the decay. No-op when ``recently_surfaced`` is empty
     # or ``ambient_novelty_decay >= 1.0`` (rollback path).
+    # Observation Apparatus Round 2 E1 — source damping is folded into the
+    # same combined multiplier: ``score = final_score × novelty × src_factor``.
+    # Triggers re-rank when either novelty or source damping is active.
     score_map: dict[str, float] | None = None
-    if (
-        recently_surfaced
-        and cfg.ambient_novelty_decay < 1.0
-    ):
+    need_rerank = (
+        (recently_surfaced and cfg.ambient_novelty_decay < 1.0)
+        or cfg.ambient_conversational_source_factor < 1.0
+    )
+    if need_rerank:
         decayed: list[tuple[float, MemoryItem]] = []
         for it in items:
             nv = _novelty_factor(
                 it.id, recently_surfaced, cfg.ambient_novelty_decay,
             )
-            decayed.append((it.final_score * nv, it))
+            src_f = _conversational_source_factor(it.source, cfg)
+            decayed.append((it.final_score * nv * src_f, it))
         decayed.sort(key=lambda t: t[0], reverse=True)
         items = [it for _, it in decayed]
         score_map = {it.id: s for s, it in decayed}

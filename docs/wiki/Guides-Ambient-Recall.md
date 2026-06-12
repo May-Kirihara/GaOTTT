@@ -69,6 +69,17 @@ LLM はユーザー発話 + 関連記憶 の両方を見て応答
 
 **Passive 原則との関係**: novelty decay は **slot pick の ranking だけ** を曲げる。node の mass・displacement・co-occurrence は一切触らない (ambient_recall は `passive=True` のまま)。「経験は言葉にすることで質量を持つ」原則は無変更で、session 内 surface 履歴は per-call の transient な ranking 補正としてだけ存在する。
 
+### S/N knob — 会話 source damping + dump-shape gate (Round 2 E1/E2)
+
+Observation Apparatus Round 2 ([Plans](Plans-Observation-Apparatus-Round-2.md) Stage E) で導入された 2 つの **default OFF** の slot 選別 lens。2026-06-12 dogfooding で direct hits 6 件中 5 件が chat-history raw chunk (state-dict ダンプ・無関係コード断片・依頼定型句一致) だった観察への対処。
+
+| knob | default | 効果 |
+|---|---|---|
+| `ambient_conversational_source_factor` (E1) | `1.0` = OFF | `ambient_conversational_sources` (既定 openai / claude-web / claude-code) の item の slot ranking score を factor 倍。novelty decay と同じ combined multiplier に合成、direct + lensing のみ (persona slot 不触)。推奨 opt-in `0.5` |
+| `ambient_dump_symbol_ratio` (E2) | `1.0` = OFF | content 先頭 400 字の dump score (`max(記号比率, 長 ASCII 識別子トークン比率)`) が閾値超の候補を slot から除外、次点繰り上げ。推奨 opt-in `0.45` (自然文 <0.2 / state-dict 羅列 >0.7) |
+
+どちらも **観測・注入層のみ** — recall 本体 / force / mass には不適用 (Phase M 単一規則不変。precedent: `exclude_tags`、novelty decay)。rollout は Stage 7 anti-hub と同じ 2 段階: code merge (OFF) → env opt-in で 1-2 週 dogfooding → 効果が確認できたら code default 昇格を別途判断。
+
 ## なぜ passive recall なのか — 観察者効果
 
 GaOTTT の `recall` は副作用を持つ TTT ステップである。1 回 recall するたびに retrieved nodes は query 方向に displacement が nudge され (Phase I query attraction)、mass が accrete し、co-occurrence edge が引かれる。**recall は重力勾配を供給する backward pass**。
