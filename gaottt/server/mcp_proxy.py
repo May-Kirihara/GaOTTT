@@ -89,6 +89,11 @@ async def _probe_backend(url: str, timeout: float = 5.0) -> bool:
         return False
 
 
+def _gaottt_env_names() -> list[str]:
+    """Return the names (not values) of GAOTTT_* env vars in this process."""
+    return sorted(k for k in os.environ if k.startswith("GAOTTT_"))
+
+
 def _spawn_backend_detached(
     host: str,
     port: int,
@@ -154,6 +159,13 @@ async def _ensure_backend(
     url = f"http://{host}:{port}/mcp"
     if await _probe_backend(url, timeout=3.0):
         logger.info("GaOTTT backend already up at %s — connecting", url)
+        local_env = _gaottt_env_names()
+        if local_env:
+            logger.warning(
+                "Local GAOTTT_* env vars are NOT applied to the existing "
+                "backend (env was inherited at spawn time): %s",
+                ", ".join(local_env),
+            )
         return url
 
     if _port_in_use(host, port):
@@ -168,6 +180,12 @@ async def _ensure_backend(
         "(idle_timeout=%ds, log=%s)",
         int(idle_timeout), spawn_log_path,
     )
+    env_names = _gaottt_env_names()
+    if env_names:
+        logger.info(
+            "Spawning backend with GAOTTT_* env inherited: %s",
+            ", ".join(env_names),
+        )
     pid = _spawn_backend_detached(host, port, idle_timeout, spawn_log_path)
     logger.info("Spawned backend pid=%d, waiting for readiness ...", pid)
 
