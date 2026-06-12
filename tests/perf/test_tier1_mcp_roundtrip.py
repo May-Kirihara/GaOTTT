@@ -1,7 +1,7 @@
 """Tier 1 smoke — every MCP tool is callable and returns a non-empty string.
 
 Two checks:
-  1. The MCP server exposes exactly 26 tools (matches the documented surface).
+  1. The MCP server exposes exactly 28 tools (matches the documented surface).
   2. Each tool runs end-to-end with sane args and returns a non-empty
      string. IDs from earlier calls thread into later calls so we exercise
      the realistic shape of a session.
@@ -32,6 +32,7 @@ EXPECTED_TOOLS = {
     "declare_value", "declare_intention", "declare_commitment",
     "inherit_persona", "merge", "compact", "auto_remember",
     "save_candidates",  # Plans-Save-Candidates-Hook.md (2026-05-27)
+    "get_node",  # Plans-Observation-Apparatus-Round-2.md Stage A (2026-06-12)
     "ingest",
 }
 
@@ -49,11 +50,11 @@ async def engine_singleton(tmp_path, monkeypatch):
 
 
 def test_mcp_surface_count_matches_expected():
-    """The 27-tool surface is a contract — additions/removals are intentional."""
+    """The 28-tool surface is a contract — additions/removals are intentional."""
     source = Path(srv.__file__).read_text(encoding="utf-8")
     decorator_count = len(re.findall(r"^@mcp\.tool\(\)\s*$", source, re.MULTILINE))
-    assert decorator_count == 27, (
-        f"Found {decorator_count} @mcp.tool() decorators; expected 27"
+    assert decorator_count == 28, (
+        f"Found {decorator_count} @mcp.tool() decorators; expected 28"
     )
 
     discovered = set()
@@ -71,7 +72,7 @@ def _extract_id(text: str) -> str:
     return match.group(0)
 
 
-async def test_all_27_tools_round_trip(engine_singleton):
+async def test_all_28_tools_round_trip(engine_singleton):
     """Drive every tool through a single coherent workflow.
 
     The order is chosen so each tool gets realistic inputs from prior tool
@@ -142,6 +143,10 @@ async def test_all_27_tools_round_trip(engine_singleton):
 
     recall_out = await srv.recall(query="Tier-1 smoke", top_k=3)
     assert "smoke" in recall_out.lower() or "tier" in recall_out.lower()
+
+    get_node_out = await srv.get_node(node_id=mem_id)
+    assert "a note with no surprises" in get_node_out
+    assert "physics:" in get_node_out
 
     explore_out = await srv.explore(query="Tier-1 smoke", top_k=3)
     assert isinstance(explore_out, str) and len(explore_out) > 0

@@ -91,7 +91,8 @@ ReDoc: http://localhost:8000/redoc
 |---|---|---|
 | POST | `/index` | Phase A 互換。内部的には `remember` を呼ぶ |
 | POST | `/query` | Phase A 互換。`/recall` のサブセット（prefetch キャッシュは bypass） |
-| GET | `/node/{id}` | ノード状態の直接参照 |
+| GET | `/node/{id}` | ノード状態の直接参照 (物理状態のみ) |
+| GET | `/node/{id}/detail` | content + provenance + 物理状態 (read-only) |
 | GET | `/graph` | 共起グラフ確認 |
 | POST | `/reset` | 全動的状態リセット（**REST 専用**、MCP からは呼べない） |
 | POST | `/admin/reset_masses` | Phase M Stage 1 maintainer-only — mass のみ既定 1.0 にリセット（**REST 専用**、MCP からは呼べない） |
@@ -563,6 +564,10 @@ Phase A の古いエンドポイント。`/recall` のサブセット（source_f
 ### GET /node/{id}
 
 単一ノードの動的状態。
+
+### GET /node/{id}/detail
+
+単一ノードの content + provenance (source, tags, certainty, emotion) + 物理状態 (mass, temperature, displacement)。Observation Apparatus Round 2 Stage A — read-only (重力場不変)。`GetNodeResponse` を返す。archived / 不存在は 404。
 
 ### GET /graph
 

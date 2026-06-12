@@ -94,11 +94,11 @@ Data is stored in a fixed per-OS directory (`~/.local/share/gaottt/` on Linux/ma
 
 ## Usage
 
-### MCP tools (27)
+### MCP tools (28)
 
 The agent-facing protocol is defined in **[`SKILL.md`](SKILL.md)** (English, MCP-loaded at runtime).
 
-- **Memory**: `remember`, `recall`, `ambient_recall`, `explore`, `reflect`, `ingest`, `auto_remember`, `save_candidates`
+- **Memory**: `remember`, `recall`, `get_node`, `ambient_recall`, `explore`, `reflect`, `ingest`, `auto_remember`, `save_candidates`
 - **Maintenance**: `forget`, `restore`, `merge`, `compact`, `revalidate`, `relate`/`unrelate`/`get_relations`, `prefetch`/`prefetch_status`
 - **Tasks (Phase D)**: `commit`, `start`, `complete`, `abandon`, `depend`
 - **Persona (Phase D)**: `declare_value`, `declare_intention`, `declare_commitment`, `inherit_persona`

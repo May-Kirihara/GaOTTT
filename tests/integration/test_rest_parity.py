@@ -279,3 +279,25 @@ async def test_inherit_persona_returns_snapshot(rest_client):
     for key in ("values", "intentions", "commitments", "styles", "relationships"):
         assert key in data
     assert any(v["content"] == "care about clarity" for v in data["values"])
+
+
+# ---------- get_node detail (Observation Apparatus Round 2 Stage A) ----------
+
+async def test_get_node_detail_roundtrip(rest_client):
+    mem = (await rest_client.post(
+        "/remember",
+        json={"content": "rest detail probe", "source": "agent", "tags": ["rest-detail"]},
+    )).json()
+    node_id = mem["id"]
+
+    resp = await rest_client.get(f"/node/{node_id}/detail")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == node_id
+    assert body["content"] == "rest detail probe"
+    assert body["source"] == "agent"
+    assert "rest-detail" in body["tags"]
+    assert body["mass"] > 0
+
+    missing = await rest_client.get("/node/no-such-id/detail")
+    assert missing.status_code == 404

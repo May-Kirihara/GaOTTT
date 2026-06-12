@@ -43,6 +43,7 @@ from gaottt.core.types import (
     MergeRequest,
     MergeResponse,
     NodeResponse,
+    GetNodeResponse,
     PersonaSnapshotResponse,
     PrefetchRequest,
     PrefetchResponse,
@@ -282,6 +283,18 @@ async def get_node(node_id: str):
         sim_history=state.sim_history,
         displacement_norm=engine.get_displacement_norm(node_id),
     )
+
+
+# --- GET /node/{node_id}/detail ---
+
+@app.get("/node/{node_id}/detail", response_model=GetNodeResponse)
+async def get_node_detail(node_id: str):
+    """Observation Apparatus Round 2 Stage A — content + physics (read-only)."""
+    engine = _get_engine()
+    result = await memory_service.get_node(engine, node_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Node not found or archived")
+    return result
 
 
 # --- GET /graph ---

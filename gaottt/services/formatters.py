@@ -26,6 +26,7 @@ from gaottt.core.types import (
     DependResponse,
     ExploreResponse,
     ForgetResponse,
+    GetNodeResponse,
     IngestResponse,
     MergeResponse,
     PersonaSnapshotResponse,
@@ -191,6 +192,20 @@ def _format_routing_hint(h) -> str:
         f"(query 形式から自動判定 — 関連した state snapshot を併走実行)\n\n"
         f"{h.reflect_summary}"
     )
+
+
+def format_node_detail(result: GetNodeResponse) -> str:
+    """Observation Apparatus Round 2 Stage A — single node detail."""
+    tag_str = f" [{', '.join(result.tags)}]" if result.tags else ""
+    lines = [
+        f"id={result.id} (source={result.source}{tag_str}, "
+        f"certainty={result.certainty:.2f}, emotion={result.emotion:.2f})",
+        f"  physics: mass={result.mass:.2f} temperature={result.temperature:.4f} "
+        f"displacement={result.displacement_norm:.4f}",
+        "",
+        result.content,
+    ]
+    return "\n".join(lines)
 
 
 def format_recall(result: RecallResponse, output_mode: str = "full", *, verbose: bool = True, show_reason: bool | None = None) -> str:

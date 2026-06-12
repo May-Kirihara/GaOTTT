@@ -30,6 +30,7 @@ from gaottt.core.types import (
     AutoRememberResponse,
     ExploreResponse,
     ForgetResponse,
+    GetNodeResponse,
     MemoryItem,
     RecallResponse,
     RememberResponse,
@@ -1363,4 +1364,33 @@ async def save_candidates(
         candidates=list(auto_result.candidates),
         persona=persona,
         count=len(auto_result.candidates),
+    )
+
+
+async def get_node(engine: GaOTTTEngine, node_id: str) -> GetNodeResponse | None:
+    """Observation Apparatus Round 2 Stage A — fetch-by-id, read-only.
+
+    Retrieves a single node's content + provenance + physical state without
+    touching mass, co-occurrence, displacement, or prefetch cache. Returns
+    None for missing or archived nodes.
+    """
+    doc = await engine.store.get_document(node_id)
+    if doc is None:
+        return None
+    state = engine.cache.get_node(node_id)
+    if state is None or state.is_archived:
+        return None
+    meta = doc.get("metadata") or {}
+    return GetNodeResponse(
+        id=node_id,
+        content=doc.get("content", ""),
+        source=meta.get("source", ""),
+        tags=meta.get("tags", []),
+        metadata=meta,
+        certainty=state.certainty,
+        emotion=state.emotion_weight,
+        mass=state.mass,
+        temperature=state.temperature,
+        last_access=state.last_access,
+        displacement_norm=engine.get_displacement_norm(node_id),
     )

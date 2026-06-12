@@ -448,3 +448,45 @@ async def test_prefetch_status_reports_pool_and_cache_lines(engine_singleton):
     assert "Prefetch cache:" in out
     assert "Prefetch pool:" in out
     assert "max_concurrent" in out or "in_flight" in out
+
+
+async def test_get_node_mcp_returns_content_and_physics(engine_singleton):
+    """Observation Apparatus Round 2 Stage A — fetch-by-id round trip."""
+    out = await srv.remember(
+        content="get-node probe: visible but ungraspable star",
+        source="agent",
+        tags=["stage-a-probe"],
+    )
+    node_id = out.split("ID: ")[1].split()[0]
+
+    detail = await srv.get_node(node_id=node_id)
+    assert "visible but ungraspable star" in detail
+    assert "physics:" in detail
+    assert "stage-a-probe" in detail
+    assert node_id in detail
+
+
+async def test_get_node_mcp_not_found_and_archived(engine_singleton):
+    """Missing and archived nodes both return the sentinel."""
+    assert await srv.get_node(node_id="no-such-id") == "Node not found."
+
+    out = await srv.remember(content="get-node archive probe", source="agent")
+    node_id = out.split("ID: ")[1].split()[0]
+    await srv.forget([node_id])
+    assert await srv.get_node(node_id=node_id) == "Node not found."
+
+
+async def test_get_node_mcp_is_read_only(engine_singleton):
+    """get_node must not perturb mass or displacement (read-only by construction)."""
+    out = await srv.remember(content="get-node passivity probe", source="agent")
+    node_id = out.split("ID: ")[1].split()[0]
+    # Leave the field in a non-trivial state with one active recall first.
+    await srv.recall(query="get-node passivity probe", top_k=3)
+    mass_before = float(engine_singleton.cache.get_node(node_id).mass)
+    disp_before = float(engine_singleton.get_displacement_norm(node_id))
+
+    for _ in range(5):
+        await srv.get_node(node_id=node_id)
+
+    assert float(engine_singleton.cache.get_node(node_id).mass) == mass_before
+    assert float(engine_singleton.get_displacement_norm(node_id)) == disp_before

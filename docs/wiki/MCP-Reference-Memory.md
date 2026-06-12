@@ -224,6 +224,20 @@ ingest(
 
 > **既存 backend は再起動が必要**: `.jsonl` ディスパッチと `include_tool_results` は loader 改修後の機能。古いプロセスがメモリにロードしていると `.jsonl` をプレーンテキスト扱いする。
 
+## get_node
+
+ID 指定で 1 件取得 — **read-only、重力場を一切迂回**。content / provenance (source, tags, certainty, emotion) / 物理状態 (mass, temperature, displacement) を返す。seed pool を通らない唯一の取得経路。
+
+```
+get_node(node_id: str)
+```
+
+- `reflect(hot_topics)` 等で id が見えたが `recall` が到達できない (lexical / gravity capture で seed pool が占拠されている) 場合に使う
+- mass / co-occurrence / displacement / prefetch に一切触れない (passive by construction)
+- archived / 不存在 id は `"Node not found."` を返す
+
+**recall との使い分け**: id が分かっているなら `get_node`、意味で探すなら `recall`。
+
 ## auto_remember
 
 会話 transcript から保存候補をヒューリスティック抽出（**保存はしない**）。

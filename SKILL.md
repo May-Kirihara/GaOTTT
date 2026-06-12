@@ -90,7 +90,7 @@ recall(query, top_k=5, source_filter=None, wave_depth=None, wave_k=None,
 - `tag_filter` — list of tag substrings; force-injects matching nodes into both seed and final top-K, bypassing `source_filter`. Use when query and target memo live in different vocabularies.
 - `force_refresh=True` — bypass the prefetch cache (rare; cache is auto-invalidated on destructive ops).
 - `auto_route=False` — disable auto-routing for this call (otherwise queries phrased as structured aspect questions auto-attach a matching `reflect` summary; see "Auto-routed reflect" below).
-- `mode="list"` — service-level content economy: truncates each result's content to 80 chars (newline-stripped). Pair with `top_k=20` for a scannable index; follow up with `recall(text=..., top_k=1, mode="detail")` on the id you care about for the full payload. Affects REST too — the truncation lives on the wire.
+- `mode="list"` — service-level content economy: truncates each result's content to 80 chars (newline-stripped). Pair with `top_k=20` for a scannable index; follow up with `get_node(node_id=...)` on the id you care about for the full payload. Affects REST too — the truncation lives on the wire.
 
 ```
 recall(query="design decisions", top_k=5, output_mode="compact")
@@ -109,6 +109,16 @@ recall(query="any past notes on X", top_k=10, output_mode="ids")     # existence
 - `cache hit` trailer means **no simulation ran** — useful to distinguish "I touched the field" from "I got a free read".
 
 **Auto-routed reflect (default on):** when your query phrasing matches a structured persona / task aspect — e.g. "現在 active な commitment は?", "持っている value", "今やってる task", "my intentions" — `recall` runs the matching `reflect` aspect in parallel and appends a `## 関連 reflect サマリ (auto-routed)` section. You don't need to switch tools manually. Pattern-based on the query surface form (not source class), so it never gates physics — it only routes which aspect summary rides along. Pass `auto_route=False` to suppress for one call (debugging, or you want pure free-form output).
+
+### get_node
+
+```
+get_node(node_id)
+```
+
+Fetch a single node by ID — **read-only, bypasses the gravity field entirely**. Returns content, provenance (source, tags, certainty, emotion), and physical state (mass, temperature, displacement) without touching mass, co-occurrence, or displacement. This is the **only retrieval path that does not go through the seed pool** — use it when `reflect(hot_topics)` or another listing tool showed an ID but `recall` cannot surface it (lexical/gravity capture by dominant neighbours). Returns `"Node not found."` for missing or archived IDs.
+
+**When to use which:** if you already know the ID (from `reflect`, `recall(output_mode="ids")`, `get_relations`, etc.), use `get_node`. If you're searching by meaning, use `recall`.
 
 ### ambient_recall
 
@@ -367,7 +377,7 @@ for _ in range(3):
 
 ## Notes
 
-- **27 MCP tools**: 8 memory (remember/recall/ambient_recall/explore/reflect/auto_remember/save_candidates/ingest) + 10 maintenance / relations / prefetch + 9 Phase D (commit/start/complete/abandon/depend/declare_value/declare_intention/declare_commitment/inherit_persona).
+- **28 MCP tools**: 9 memory (remember/recall/get_node/ambient_recall/explore/reflect/auto_remember/save_candidates/ingest) + 10 maintenance / relations / prefetch + 9 Phase D (commit/start/complete/abandon/depend/declare_value/declare_intention/declare_commitment/inherit_persona).
 - **Duplicate `content` is auto-skipped** via SHA-256 hashing.
 - **Memory persists across sessions.** Every `recall` accumulates gravity — co-recalled memories drift closer over time.
 - **Cache is auto-invalidated** on `forget` / `restore` / `merge` / `compact`. Manual `force_refresh=True` is rarely needed.
