@@ -1,6 +1,8 @@
 # Plans — Observation Apparatus Round 2 (dogfooding review 2026-06-12 起点)
 
-**Status: 起草 (2026-06-12)** / branch: `feat/observation-apparatus-round-2` / 実装は secondopinion-MCP (GLM) 委託、Claude Code はレビュー・受け入れ・commit を担当
+**Status: Stage A-E 実装完了 (2026-06-12 同日)** / branch: `feat/observation-apparatus-round-2` / 実装は secondopinion-MCP (GLM) 委託、Claude Code はレビュー・受け入れ・commit を担当
+
+> **実装記録 (2026-06-12)**: 全 4 バッチ完了 — バッチ 1 (D+B) / 2 (A) / 3 (C) / 4 (E1+E2)。GLM は 2 回 ReadTimeout (~5.5 分壁) で落ちたが、いずれも code 本体は working tree に残っており、残作業 (バッチ 2: テスト一式 / バッチ 4: ヒューリスティック較正 + docs) はレビュー側で補完。**E2 の実装時変更 2 点**: (1) dump score を記号比率単独 → `max(記号比率, 長 ASCII 識別子トークン比率)` に較正 — GLM 自身のテストが「code/state-dict は英字主体で記号比率 0.16 にしかならない」盲点を暴いた。(2) OFF sentinel を `None` → `1.0` に変更 — `float | None = None` default は `GAOTTT_<FIELD>` env 自動マップ対象外 (scalar default のみ env-settable、`config.from_config_file` 参照) のため、E1 と同じ float 規約に統一。最終: 803 unit/integration passed + perf 71 passed + rest/mcp smoke green。Stage E の本番 opt-in env 登録と 1-2 週 dogfooding は未着手 (rollout 節の通り)。
 
 ## 背景
 

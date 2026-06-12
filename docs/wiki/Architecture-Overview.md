@@ -128,6 +128,7 @@ GaOTTT の主要な設計選択とその根拠:
 | アンカー引力 | Hooke's law (`F=-k×d`) で原始位置に復元 | 脱出防止、銀河の暗黒物質ハローに相当 |
 | 重力半径 | `min_sim = 1 - G×mass/(2×a_min)` | 質量から物理的に導出 |
 | 重力波伝播 | 再帰的近傍展開、mass 依存 top-k | 高 mass ハブは広い重力圏 |
+| fetch-by-id 経路 | `get_node` (MCP) + `GET /node/{id}/detail` (REST) は store/cache の read 合成のみで、seed pool・wave・mass update を一切通らない | 2026-06-12 dogfooding で「reflect に id が見えているのに recall が lexical/gravity capture で届かない」事象を観測。anti-hub (pool 内 rerank) では救えない補集合として pool 迂回の read-only 経路を追加。既存 `GET /node/{id}` (物理状態のみ) は不変 ([Plans — Observation Apparatus Round 2](Plans-Observation-Apparatus-Round-2.md) Stage A) |
 | 二層分離 | シミュレーション層 + プレゼンテーション層 | 全到達ノードの物理更新、LLM には top-5 のみ |
 | 共起ブラックホール | 共起クラスタ重心に BH 形成 | 銀河束縛、edge_decay で自然消滅 |
 | 返却飽和 | `saturation = 1/(1+return_count×rate)` | 同じ結果の繰り返し防止、脳の馴化 |
