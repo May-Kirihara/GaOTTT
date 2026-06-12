@@ -7,7 +7,6 @@ save_candidates_inject.py handles corrupted state files gracefully
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -69,7 +68,7 @@ def test_inject_corrupted_file_is_deleted(state_dir):
 def test_inject_empty_file_no_output(state_dir):
     from scripts.hooks import save_candidates_inject as mod
 
-    target = _write_state(state_dir, "sess_empty", "")
+    _write_state(state_dir, "sess_empty", "")
     emitted = []
 
     def fake_emit(text):
