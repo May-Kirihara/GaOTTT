@@ -60,6 +60,11 @@ ReDoc: http://localhost:8000/redoc
 | POST | `/reflect/relationships` | `relationships` |
 | POST | `/reflect/persona` | `persona` |
 
+> **`/reflect/connections` の `bucket` query param** (オプショナル):
+> `bucket=persona` / `bucket=agent_user` / `bucket=ingest` で単一バケットにフィルタ。
+> フィルタは weight top-N 選択の **前** に適用され、高 weight の ingest 共起が
+> persona / agent_user の関係を押し潰すのを防ぐ。無効な値は HTTP 422。
+
 ### Ingest
 
 | メソッド | パス | 対応 MCP ツール |

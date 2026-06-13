@@ -348,6 +348,44 @@ def scenario_forget_restore(client: httpx.Client) -> Scenario:
     return s
 
 
+def scenario_reflect_connections_bucket(client: httpx.Client) -> Scenario:
+    """reflect/connections?bucket=persona filters edges to the persona bucket."""
+    s = Scenario("Reflect connections bucket filter (persona edge survives ingest weight)", client)
+    step(s.name)
+
+    # Persona pair.
+    v = client.post("/persona/values", json={"content": "value for connections bucket"}).json()["id"]
+    i = client.post(
+        "/persona/intentions", json={"content": "intention for connections bucket"},
+    ).json()["id"]
+    # Ingest pair — heavier weight so it would dominate top-N without the filter.
+    fa = client.post(
+        "/remember", json={"content": "file chunk alpha", "source": "file"},
+    ).json()["id"]
+    fb = client.post(
+        "/remember", json={"content": "file chunk beta", "source": "file"},
+    ).json()["id"]
+
+    r_all = client.post("/reflect/connections", params={"limit": 20})
+    s.check("unfiltered reflect/connections returns 200",
+            r_all.status_code == 200, f"status={r_all.status_code}")
+    s.check("unfiltered response has no filter_bucket",
+            r_all.json().get("filter_bucket") is None)
+
+    r = client.post("/reflect/connections", params={"limit": 20, "bucket": "persona"})
+    data = r.json()
+    s.check("bucket=persona returns 200", r.status_code == 200, f"status={r.status_code}")
+    s.check("filter_bucket is persona", data.get("filter_bucket") == "persona")
+    s.check("filtered_total is set", data.get("filtered_total") is not None)
+    s.check("no ingest endpoints in persona-filtered result",
+            all(fa not in {it["src"], it["dst"]} and fb not in {it["src"], it["dst"]}
+                for it in data["items"]))
+
+    r_bad = client.post("/reflect/connections", params={"bucket": "personna"})
+    s.check("invalid bucket returns 422", r_bad.status_code == 422, f"status={r_bad.status_code}")
+    return s
+
+
 # --- Runner -------------------------------------------------------------
 
 def run_all_scenarios(url: str) -> int:
@@ -359,6 +397,7 @@ def run_all_scenarios(url: str) -> int:
             scenario_knowledge_revision(client),
             scenario_maintenance(client),
             scenario_forget_restore(client),
+            scenario_reflect_connections_bucket(client),
         ]
     print()
     print("=" * 60)

@@ -490,3 +490,35 @@ async def test_get_node_mcp_is_read_only(engine_singleton):
 
     assert float(engine_singleton.cache.get_node(node_id).mass) == mass_before
     assert float(engine_singleton.get_displacement_norm(node_id)) == disp_before
+
+
+# ---------------------------------------------------------------------------
+# reflect bucket filter — connections aspect only
+# ---------------------------------------------------------------------------
+
+async def test_reflect_connections_bucket_persona_filters(engine_singleton):
+    """MCP reflect(aspect='connections', bucket='persona') surfaces only the
+    persona edge, not the heavier ingest edge. Verifies the _reflect_dispatch
+    → dispatch_aspect → connections(bucket=...) plumbing end-to-end."""
+    eng = engine_singleton
+    v = (await srv.remember(content="mcp value node", source="value")).split("ID: ")[1].split()[0]
+    i = (await srv.remember(content="mcp intention node", source="intention")).split("ID: ")[1].split()[0]
+    f1 = (await srv.remember(content="mcp file alpha", source="file")).split("ID: ")[1].split()[0]
+    f2 = (await srv.remember(content="mcp file beta", source="file")).split("ID: ")[1].split()[0]
+    eng.cache.set_edge(v, i, weight=1.0)
+    eng.cache.set_edge(f1, f2, weight=10.0)
+
+    out = await srv.reflect(aspect="connections", bucket="persona", limit=10)
+    # The persona edge endpoints appear; the ingest endpoints do not.
+    assert v[:8] in out or v in out
+    assert f1[:8] not in out
+    # The filter annotation is present.
+    assert "[filtered: persona bucket" in out
+
+
+async def test_reflect_bucket_ignored_for_non_connections_aspect(engine_singleton):
+    """MCP reflect(aspect='summary', bucket='persona') ignores the bucket —
+    summary returns normally without raising or filtering."""
+    await srv.remember(content="summary probe for bucket ignore")
+    out = await srv.reflect(aspect="summary", bucket="persona", limit=5)
+    assert "Memory Summary" in out

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from gaottt.services import formatters
 from gaottt.services import memory as memory_service
 from gaottt.services.reflection import connections as connections_service
 from tests.integration.test_engine_ambient_recall import _make_engine
@@ -123,5 +124,168 @@ async def test_file_pair_classified_ingest(tmp_path):
         ]
         assert match
         assert match[0].bucket == "ingest"
+    finally:
+        await engine.shutdown()
+
+
+# ----- Bucket filter + grouping flag interaction -----
+
+@pytest.mark.asyncio
+async def test_grouping_off_bucket_ignored(tmp_path):
+    """connections_grouped_by_source=False + bucket="persona": the filter
+    is structurally meaningless without classification, so it must NOT be
+    applied. filter_bucket stays None and the result is the legacy
+    all-buckets top-N."""
+    engine = _make_engine(tmp_path, connections_grouped_by_source=False)
+    await engine.startup()
+    try:
+        v = await memory_service.remember(
+            engine, content="value statement", source="value",
+        )
+        i = await memory_service.remember(
+            engine, content="intention statement", source="intention",
+        )
+        fa = await memory_service.remember(
+            engine, content="file chunk A", source="file",
+        )
+        fb = await memory_service.remember(
+            engine, content="file chunk B", source="file",
+        )
+        engine.cache.set_edge(v.id, i.id, weight=1.0)
+        engine.cache.set_edge(fa.id, fb.id, weight=100.0)
+        resp = await connections_service(engine, limit=10, bucket="persona")
+        # Filter was NOT applied — observability fields stay None.
+        assert resp.filter_bucket is None
+        assert resp.filtered_total is None
+        # bucket labels are also None (grouping off).
+        for e in resp.items:
+            assert e.bucket is None
+        # And the high-weight ingest edge DOES appear (no filter).
+        top_pair_ids = set()
+        for item in resp.items:
+            top_pair_ids.add(item.src)
+            top_pair_ids.add(item.dst)
+        assert fa.id in top_pair_ids
+        assert fb.id in top_pair_ids
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_formatter_shows_filter_header_when_bucket_set(tmp_path):
+    """format_reflect_connections prepends '[filtered: ... bucket, N total]'
+    to the header when filter_bucket is set, while keeping the
+    'Strongest connections' prefix intact."""
+    from gaottt.services import formatters
+    engine = _make_engine(tmp_path)
+    await engine.startup()
+    try:
+        v = await memory_service.remember(
+            engine, content="value statement", source="value",
+        )
+        i = await memory_service.remember(
+            engine, content="intention statement", source="intention",
+        )
+        engine.cache.set_edge(v.id, i.id, weight=1.0)
+        resp = await connections_service(engine, limit=10, bucket="persona")
+        rendered = formatters.format_reflect_connections(resp)
+        assert "Strongest connections" in rendered
+        assert "[filtered: persona bucket" in rendered
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_formatter_no_filter_header_when_bucket_none(tmp_path):
+    """format_reflect_connections does NOT emit '[filtered:' when
+    filter_bucket is None (default / grouping-off path)."""
+    from gaottt.services import formatters
+    engine = _make_engine(tmp_path)
+    await engine.startup()
+    try:
+        a = await memory_service.remember(
+            engine, content="agent note", source="agent",
+        )
+        b = await memory_service.remember(
+            engine, content="user note", source="user",
+        )
+        engine.cache.set_edge(a.id, b.id, weight=1.0)
+        resp = await connections_service(engine, limit=10)
+        rendered = formatters.format_reflect_connections(resp)
+        assert "Strongest connections" in rendered
+        assert "[filtered:" not in rendered
+    finally:
+        await engine.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Bucket filter parameter — reflect(aspect="connections", bucket=...)
+#
+# The core filter behaviour (persona / ingest / agent_user / None / invalid /
+# filter-before-top-N / observability fields / empty result) is covered in
+# ``tests/unit/test_connection_bucket.py``. The tests below cover the aspects
+# that need the grouped-connections config flag or the formatter: grouping-off
+# suppression, and the ``[filtered: ...]`` header annotation.
+# ---------------------------------------------------------------------------
+
+async def _seed_three_buckets(engine):
+    """Seed one edge per bucket (persona / agent_user / ingest).
+
+    Returns a dict with the created node ids so tests can assert presence
+    or absence after filtering. Weights are chosen so the ingest edge is
+    the heaviest — this mirrors the production pathology the filter fixes.
+    """
+    v = await memory_service.remember(engine, content="value: design lens", source="value")
+    i = await memory_service.remember(engine, content="intention: ship filter", source="intention")
+    engine.cache.set_edge(v.id, i.id, weight=1.0)  # persona, low weight
+
+    a = await memory_service.remember(engine, content="agent note", source="agent")
+    u = await memory_service.remember(engine, content="user note", source="user")
+    engine.cache.set_edge(a.id, u.id, weight=3.0)  # agent_user, mid weight
+
+    f1 = await memory_service.remember(engine, content="file chunk A", source="file")
+    f2 = await memory_service.remember(engine, content="file chunk B", source="file")
+    engine.cache.set_edge(f1.id, f2.id, weight=10.0)  # ingest, high weight
+
+    return {
+        "persona": (v.id, i.id),
+        "agent_user": (a.id, u.id),
+        "ingest": (f1.id, f2.id),
+    }
+
+
+@pytest.mark.asyncio
+async def test_formatter_no_filter_header_when_grouping_off(tmp_path):
+    """grouping_on=False also suppresses the filter annotation."""
+    engine = _make_engine(tmp_path, connections_grouped_by_source=False)
+    await engine.startup()
+    try:
+        await _seed_three_buckets(engine)
+        resp = await connections_service(engine, limit=10, bucket="persona")
+        rendered = formatters.format_reflect_connections(resp)
+        assert "[filtered:" not in rendered
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_formatter_empty_result_filter_header(tmp_path):
+    """QA #1 — bucket='persona' with zero persona edges: the formatter renders
+    the empty-result header with the filter annotation intact."""
+    engine = _make_engine(tmp_path)
+    await engine.startup()
+    try:
+        f1 = await memory_service.remember(engine, content="file A", source="file")
+        f2 = await memory_service.remember(engine, content="file B", source="file")
+        engine.cache.set_edge(f1.id, f2.id, weight=5.0)
+
+        resp = await connections_service(engine, limit=10, bucket="persona")
+        assert resp.items == []
+        assert resp.filter_bucket == "persona"
+        assert resp.filtered_total == 0
+
+        rendered = formatters.format_reflect_connections(resp)
+        assert "Strongest connections (0 shown)" in rendered
+        assert "[filtered: persona bucket, 0 total]" in rendered
     finally:
         await engine.shutdown()

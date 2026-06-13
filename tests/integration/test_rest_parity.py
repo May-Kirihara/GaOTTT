@@ -198,6 +198,35 @@ async def test_reflect_duplicates_structure(rest_client):
     assert "clusters" in resp.json()
 
 
+async def test_rest_connections_bucket_persona(rest_client):
+    """POST /reflect/connections?bucket=persona filters to persona edges only."""
+    # Seed a persona edge (value ↔ intention) and an ingest edge (file ↔ file).
+    v = (await rest_client.post("/remember", json={"content": "rest value X", "source": "value"})).json()["id"]
+    i = (await rest_client.post("/remember", json={"content": "rest intention X", "source": "intention"})).json()["id"]
+    f1 = (await rest_client.post("/remember", json={"content": "rest file A", "source": "file"})).json()["id"]
+    f2 = (await rest_client.post("/remember", json={"content": "rest file B", "source": "file"})).json()["id"]
+    # Directly plant the co-occurrence edges via the engine.
+    eng = app.state.engine
+    eng.cache.set_edge(v, i, weight=1.0)
+    eng.cache.set_edge(f1, f2, weight=10.0)
+
+    resp = await rest_client.post("/reflect/connections", params={"bucket": "persona", "limit": 10})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["filter_bucket"] == "persona"
+    assert data["filtered_total"] == 1
+    assert len(data["items"]) == 1
+    pair = {data["items"][0]["src"], data["items"][0]["dst"]}
+    assert pair == {v, i}
+
+
+async def test_rest_connections_invalid_bucket_422(rest_client):
+    """An invalid bucket value is rejected by FastAPI's Literal validation
+    with HTTP 422 — the service-layer ValueError never fires."""
+    resp = await rest_client.post("/reflect/connections", params={"bucket": "invalid"})
+    assert resp.status_code == 422
+
+
 # ---------- Phase D: tasks ----------
 
 async def test_task_lifecycle_commit_start_complete(rest_client):

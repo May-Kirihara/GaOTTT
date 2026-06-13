@@ -345,6 +345,45 @@ async def scenario_resources(session: ClientSession) -> Scenario:
     return s
 
 
+async def scenario_reflect_connections_bucket(session: ClientSession) -> Scenario:
+    """reflect(connections, bucket=persona) filters to the persona bucket."""
+    s = Scenario("Reflect connections bucket filter (persona via MCP)")
+    step(s.name)
+
+    v = _extract_id(await _call(session, "declare_value", {
+        "content": "MCP smoke value for bucket filter",
+    }))
+    i = _extract_id(await _call(session, "declare_intention", {
+        "content": "MCP smoke intention for bucket filter",
+        "parent_value_id": v,
+    }))
+    f1 = _extract_id(await _call(session, "remember", {
+        "content": "MCP smoke file alpha", "source": "file",
+    }))
+    f2 = _extract_id(await _call(session, "remember", {
+        "content": "MCP smoke file beta", "source": "file",
+    }))
+
+    text = await _call(session, "reflect", {
+        "aspect": "connections", "bucket": "persona", "limit": 20,
+    })
+    s.check("reflect(connections, bucket=persona) renders filter annotation",
+            "[filtered: persona bucket" in text,
+            f"has_filter={'[filtered: persona bucket' in text}")
+    s.check("ingest endpoints excluded from persona-filtered output",
+            (f1[:8] if f1 else "?") not in text,
+            f"f1={f1}")
+
+    # Invalid bucket should surface as an error, not a crash.
+    bad = await _call(session, "reflect", {
+        "aspect": "connections", "bucket": "personna", "limit": 5,
+    })
+    s.check("invalid bucket returns an error message",
+            "Invalid bucket" in bad or "Error" in bad,
+            f"bad={bad[:120]}")
+    return s
+
+
 # --- Runner -------------------------------------------------------------
 
 async def run_all(data_dir: Path) -> int:
@@ -379,6 +418,7 @@ async def run_all(data_dir: Path) -> int:
                 await scenario_persona_chain(session),
                 await scenario_relations(session),
                 await scenario_resources(session),
+                await scenario_reflect_connections_bucket(session),
             ]
 
     print()

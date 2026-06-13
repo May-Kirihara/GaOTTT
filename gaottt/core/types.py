@@ -717,6 +717,14 @@ class ReflectConnectionItem(BaseModel):
 class ReflectConnectionsResponse(BaseModel):
     items: list[ReflectConnectionItem] = Field(default_factory=list)
     total: int = 0
+    # Set only when a bucket filter was actually applied (caller passed
+    # ``bucket=...`` AND ``connections_grouped_by_source`` is True). None
+    # otherwise, so the formatter never shows a misleading filter banner.
+    filter_bucket: str | None = None
+    # Total edge count in the filtered pool *before* the top-N slice —
+    # observability for "how many persona edges exist overall?". None when
+    # no filter was applied.
+    filtered_total: int | None = None
 
 
 class ReflectDormantItem(BaseModel):
