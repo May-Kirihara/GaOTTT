@@ -451,6 +451,7 @@ async def explore(
 async def reflect(
     aspect: str = "summary",
     limit: int = 10,
+    bucket: str | None = None,
 ) -> str:
     """Analyze the state of your memory.
 
@@ -472,12 +473,18 @@ async def reflect(
               - **values**, **intentions**, **relationships**
               - **persona** (composite self-introduction; same as `inherit_persona`)
         limit: Number of items to return
+        bucket: (connections aspect only) Filter to one display bucket —
+            "persona", "agent_user", or "ingest". None = all buckets
+            (default). Ignored for every other aspect. Ignored when
+            connections_grouped_by_source is False.
     """
     engine = await get_engine()
-    return await _reflect_dispatch(engine, aspect, limit)
+    return await _reflect_dispatch(engine, aspect, limit, bucket)
 
 
-async def _reflect_dispatch(engine, aspect: str, limit: int) -> str:
+async def _reflect_dispatch(
+    engine, aspect: str, limit: int, bucket: str | None = None,
+) -> str:
     """Thin wrapper for backward-compat — delegates to the service dispatcher.
 
     The actual aspect → service-fn + formatter mapping lives in
@@ -485,7 +492,9 @@ async def _reflect_dispatch(engine, aspect: str, limit: int) -> str:
     can reuse the same table without re-importing the
     server layer.
     """
-    return await reflection_service.dispatch_aspect(engine, aspect, limit=limit)
+    return await reflection_service.dispatch_aspect(
+        engine, aspect, limit=limit, bucket=bucket,
+    )
 
 
 @mcp.tool()

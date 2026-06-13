@@ -32,7 +32,7 @@ External long-term memory across sessions. Backed by embeddings + a gravity-simu
 ### Reading retrieval results
 - Each `recall`/`ambient_recall` result now carries a one-line **`reason:`** explanation: `high mass persona proximity (mass=2.82) — possible dominance artifact` / `bm25 strong lexical match (0.71)` / `lensing pick (gap=+0.07)` / `dormant surface (percentile=8)`. When you see *"possible dominance artifact"*, the field is leaning hard on a familiar high-mass node — consider `mode="dormant"` or different phrasing.
 - `ambient_recall` blocks now include a **▼ ささやき** slot when a dormant memo also lexically matches the prompt — these are the "〇〇といえば〜だったよな" picks. Silence is correct when nothing dormant matches lexically (no random hits).
-- `reflect(aspect="connections")` is grouped into **persona / agent / ingest** buckets — co-occurrence between value↔intention edges (rare and meaningful) are no longer crowded out by same-file chunk co-occurrence (the ingest bucket — typically display noise).
+- `reflect(aspect="connections")` groups results into **persona / agent_user / ingest** display buckets. Pass `bucket="persona"` (or `"agent_user"` / `"ingest"`) to filter to a single bucket — the filter applies *before* the weight-sorted top-N, so low-weight persona edges surface even when high-weight same-file chunk co-occurrence would otherwise dominate.
 
 ### Debugging retrieval geometry
 - `scripts/compare_retrieval.py "<query>"` runs the same query through `recall` / `explore(diversity=0.9)` / `explore(mode="dormant")` / `ambient_recall` side-by-side. Read-only — does not perturb the field. Use this when retrieval feels off, when you want to see what each mode returns differently, or to compare before/after a config change (`--json` for diff-driven regression).
@@ -158,12 +158,15 @@ Higher-temperature search; pulls in cross-domain neighbors a normal recall would
 
 ```
 reflect(aspect="summary", limit=10)
+reflect(aspect="connections", bucket="persona")  # filter to one bucket
 ```
 
 Aspects:
 - **Memory**: `summary`, `hot_topics`, `connections`, `dormant`, `duplicates`, `relations`.
 - **Phase D — tasks**: `tasks_todo`, `tasks_doing`, `tasks_completed`, `tasks_abandoned`, `commitments`.
 - **Phase D — persona**: `values`, `intentions`, `relationships`, `persona` (composite; same as `inherit_persona`).
+
+`bucket` (connections only): `"persona"`, `"agent_user"`, or `"ingest"`. Filters edges to a single display bucket *before* weight-sorted top-N — use `"persona"` when you want declared value↔intention relationships that high-weight ingest edges would otherwise crowd out. Ignored for other aspects.
 
 ### auto_remember
 

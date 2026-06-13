@@ -699,7 +699,13 @@ def format_reflect_connections(r: ReflectConnectionsResponse) -> str:
     follow the same (descending-weight) order the flat layout uses, so
     co-occurrence counts are unchanged.
     """
-    header = f"Strongest connections ({len(r.items)} shown):"
+    header = f"Strongest connections ({len(r.items)} shown)"
+    if r.filter_bucket is not None:
+        header += f" [filtered: {r.filter_bucket} bucket"
+        if r.filtered_total is not None:
+            header += f", {r.filtered_total} total"
+        header += "]"
+    header += ":"
     if not r.items or not any(e.bucket for e in r.items):
         # Legacy flat layout (no bucket data — older callers or grouping off).
         lines = [header]

@@ -7,7 +7,7 @@ REST server exposes each aspect as its own endpoint.
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -129,6 +129,12 @@ _INGEST_SOURCES = frozenset({
 })
 _PERSONA_SOURCES = frozenset({"value", "intention", "commitment"})
 
+# Bucket filter parameter — the three display buckets a caller may restrict
+# ``reflect(aspect="connections")`` to. ``None`` means no filter (legacy).
+# Keep in sync with the REST ``Literal`` query param in ``server/app.py``.
+_ConnectionBucket = Literal["persona", "agent_user", "ingest"]
+_VALID_BUCKETS = frozenset({"persona", "agent_user", "ingest"})
+
 
 def _connection_bucket(src_source: str | None, dst_source: str | None) -> str:
     """Classify an edge by the source-pair into one of three display buckets.
@@ -147,16 +153,45 @@ def _connection_bucket(src_source: str | None, dst_source: str | None) -> str:
     return "agent_user"
 
 
-async def connections(engine: GaOTTTEngine, limit: int = 10) -> ReflectConnectionsResponse:
+async def connections(
+    engine: GaOTTTEngine,
+    limit: int = 10,
+    bucket: _ConnectionBucket | None = None,
+) -> ReflectConnectionsResponse:
     all_edges = engine.cache.get_all_edges()
-    edges = sorted(all_edges, key=lambda e: e.weight, reverse=True)[:limit]
-    items = []
     src_by_id = engine.cache.source_by_id
     # Observation Apparatus Refinement Stage 4 — bucket population is gated
     # by the config flag so operators can roll back to the legacy flat layout
     # without code changes (format_reflect_connections falls through to flat
     # when every item has bucket=None).
     grouping_on = getattr(engine.config, "connections_grouped_by_source", True)
+
+    # Runtime validation — MCP callers bypass static types, so double-guard.
+    if bucket is not None and bucket not in _VALID_BUCKETS:
+        raise ValueError(
+            f"Invalid bucket {bucket!r}. "
+            f"Must be one of {sorted(_VALID_BUCKETS)} or None."
+        )
+
+    # Bucket filter BEFORE weight-sorted top-N selection so a high-weight
+    # ingest cluster cannot crowd out low-weight persona / agent_user
+    # pairs. Only active when grouping is on — classifying without the
+    # bucket label is structurally meaningless and we must NOT claim
+    # filter_bucket in the response.
+    filter_applied = False
+    if bucket is not None and grouping_on:
+        edges_pool = [
+            e for e in all_edges
+            if _connection_bucket(
+                src_by_id.get(e.src), src_by_id.get(e.dst),
+            ) == bucket
+        ]
+        filter_applied = True
+    else:
+        edges_pool = all_edges
+
+    edges = sorted(edges_pool, key=lambda e: e.weight, reverse=True)[:limit]
+    items = []
     for e in edges:
         doc_s = await engine.store.get_document(e.src)
         doc_d = await engine.store.get_document(e.dst)
@@ -171,7 +206,12 @@ async def connections(engine: GaOTTTEngine, limit: int = 10) -> ReflectConnectio
             src_source=s_src,
             dst_source=d_src,
         ))
-    return ReflectConnectionsResponse(items=items, total=len(all_edges))
+    return ReflectConnectionsResponse(
+        items=items,
+        total=len(all_edges),
+        filter_bucket=bucket if filter_applied else None,
+        filtered_total=len(edges_pool) if filter_applied else None,
+    )
 
 
 async def dormant(engine: GaOTTTEngine, limit: int = 10) -> ReflectDormantResponse:
@@ -421,6 +461,7 @@ async def dispatch_aspect(
     engine: GaOTTTEngine,
     aspect: str,
     limit: int = 10,
+    bucket: str | None = None,
 ) -> str:
     """Run an aspect by name and return the formatted MCP-style string.
 
@@ -429,6 +470,9 @@ async def dispatch_aspect(
     (Phase O Stage 3). Returns ``"Unknown aspect: ..."`` for unrecognised
     names so callers (including the auto-router) can surface the failure
     without raising.
+
+    ``bucket`` is forwarded only to the connections aspect and ignored for
+    every other aspect — callers may safely pass it unconditionally.
     """
     # Import locally to avoid the formatters module re-importing this one.
     from gaottt.services import formatters
@@ -438,7 +482,9 @@ async def dispatch_aspect(
     if aspect == "hot_topics":
         return formatters.format_reflect_hot_topics(await hot_topics(engine, limit=limit))
     if aspect == "connections":
-        return formatters.format_reflect_connections(await connections(engine, limit=limit))
+        return formatters.format_reflect_connections(
+            await connections(engine, limit=limit, bucket=bucket),
+        )
     if aspect == "dormant":
         return formatters.format_reflect_dormant(await dormant(engine, limit=limit))
     if aspect == "duplicates":

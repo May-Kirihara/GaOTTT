@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 
@@ -486,8 +487,13 @@ async def reflect_hot_topics(limit: int = 10):
 
 
 @app.post("/reflect/connections", response_model=ReflectConnectionsResponse)
-async def reflect_connections(limit: int = 10):
-    return await reflection_service.connections(_get_engine(), limit=limit)
+async def reflect_connections(
+    limit: int = 10,
+    bucket: Literal["persona", "agent_user", "ingest"] | None = None,
+):
+    return await reflection_service.connections(
+        _get_engine(), limit=limit, bucket=bucket,
+    )
 
 
 @app.post("/reflect/dormant", response_model=ReflectDormantResponse)
