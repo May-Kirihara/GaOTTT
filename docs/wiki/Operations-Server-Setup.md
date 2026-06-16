@@ -149,13 +149,14 @@ gaottt http backend  ← 1 process、全 shim で共有
 
 (shim 側には `--idle-timeout 0` は無関係だが、spawn する backend にそのまま forward されるので結果として backend が永久生存になる。)
 
-公開ツール（27 個）:
-- 基本: `remember` / `recall` / `explore` / `reflect` / `ingest`
+公開ツール（28 個）:
+- 基本: `remember` / `recall` / `get_node` / `explore` / `reflect` / `ingest`
 - F1/F4/F5: `auto_remember` / `forget` / `restore`
 - F2.1: `merge` / `compact`
 - F7: `revalidate`
 - F3: `relate` / `unrelate` / `get_relations`
 - F6: `prefetch` / `prefetch_status`
+- Ambient/Save hook: `ambient_recall` / `save_candidates`
 - Phase D: `commit` / `start` / `complete` / `abandon` / `depend` / `declare_value` / `declare_intention` / `declare_commitment` / `inherit_persona`
 
 ## Claude Code への登録
@@ -409,7 +410,70 @@ startup_timeout_sec = 60
 
 Codex CLI も remote HTTP MCP transport をサポートしている（書式は version によって変わるので [openai/codex docs](https://github.com/openai/codex) を確認）。systemd で常駐 backend を管理する場合は、上の Claude Code / OpenCode と同じく `http://127.0.0.1:7878/mcp` を指す。
 
-### SKILL.md の取り扱い
+## OpenWebUI への登録
+
+[OpenWebUI](https://github.com/open-webui/open-webui) は Web UI から MCP server を利用できるクライアント。GaOTTT の streamable-http backend に接続する。
+
+> ⚠️ **version 但し書き**: OpenWebUI の MCP 設定 UI は version により変動する。streamable HTTP MCP transport 経由で GaOTTT への接続を OpenWebUI v0.9.6 で実機検証済み。UI 経路は version により変動するので、以下は streamable-http + `/mcp` endpoint という本質に焦点を当てた手順で、UI 経路は参考例扱い (OpenWebUI 公式 docs と手元の version で照合すること)。
+
+### 前提: streamable-http backend を常駐起動
+
+proxy mode の auto-spawn は想定外の env 継承 (memory `project_proxy_backend_env_not_delivered`) を招くので、OpenWebUI のような外部クライアントからは **明示的 streamable-http backend** を推奨。最も安定なのは [「systemd で backend を明示常駐させたい場合」セクション](#systemd-で-backend-を明示常駐させたい場合) で常駐管理する方法。手元で一時的に立てる場合は:
+
+```bash
+/path/to/GaOTTT/.venv/bin/python -m gaottt.server.mcp_server \
+  --transport streamable-http \
+  --host <bind> --port 7878 \
+  --idle-timeout 0
+```
+
+`--idle-timeout 0` は disable と等価 (`gaottt/server/mcp_server.py:1276` に `if args.idle_timeout > 0: _install_idle_watcher(...)` の guard があり、0 を渡すと watcher が install されず永続化する)。default `300` (5 分) では OpenWebUI の長時間 idle で backend が落ちるので明示的に `0` を渡すか、systemd 常駐を使うこと。
+
+### URL 選択 matrix
+
+OpenWebUI の稼働場所により URL と `--host` が変わる:
+
+| OpenWebUI の位置 | GaOTTT の `--host` | OpenWebUI 側の URL | 備考 |
+|---|---|---|---|
+| GaOTTT と同一 host (process) | `127.0.0.1` (default) | `http://127.0.0.1:7878/mcp` | 最も簡単。認証無しでも localhost 完結なら許容 |
+| Docker Desktop (Mac/Win) 上の container | `0.0.0.0` | `http://host.docker.internal:7878/mcp` | ⚠️ **no-auth + 全 IF bind なので reverse proxy + auth + TLS 必須** |
+| Linux Docker container | `0.0.0.0` 又は `--network=host` | `--network=host` 時は `http://127.0.0.1:7878/mcp`、それ以外は `http://host.docker.internal:7878/mcp` (`--add-host=host.docker.internal:host-gateway` を併用) | ⚠️ **no-auth + 全 IF bind なので reverse proxy + auth + TLS 必須** |
+| 別 host (remote) | VPN / SSH tunnel / reverse proxy の奥 | その endpoint | `--host 0.0.0.0` 単独は **非推奨** |
+
+> ⚠️ **GaOTTT は認証を一切実装していない** (`gaottt/server/mcp_server.py` の `--host` help 参照: "Use 0.0.0.0 only if you've configured your own auth — no auth is built in")。`--host 0.0.0.0` を default にせず、信頼できないネットワーク (LAN / Internet) に直露出しない。Docker / remote 構成では **必ず** reverse proxy (Caddy / nginx / Cloudflare Access 等) + auth + TLS、又は VPN / SSH tunnel を併用すること。上記 matrix で `--host 0.0.0.0` を使う 2 行 (Docker Desktop, Linux Docker) は特に注意。
+
+### OpenWebUI 側での MCP Server 登録
+
+UI 経路は version により変動するが、設定すべき本質要素は共通:
+
+1. **Admin Panel → Settings → External Tools** (最近の version) 又は **Workspace → MCP Servers** から **`+` (Add Connection)** を開く
+2. 以下を設定:
+   - **Type**: `MCP Streamable HTTP`
+   - **URL**: 上記 matrix に従う (例: `http://127.0.0.1:7878/mcp`)
+   - **Auth**: `None` (GaOTTT は認証未実装のため)
+3. 保存 → 必要に応じて workspace / model / user で enable (UI 依存)
+
+### 接続確認
+
+- OpenWebUI 側で GaOTTT の **想定 tool 数** (現在 28、違う場合は [MCP Tool Index](MCP-Reference-Index.md) と server version を照合) が一覧表示されれば成功
+- GaOTTT 側 log に `/mcp` への POST が記録される
+
+### 初回起動時間
+
+初回接続だけ timeout する場合は **RURI モデル (~1.2GB) のロードに ~30s**、**virtual FAISS build に数十秒〜数分** (23k 件規模) が掛かるため。OpenWebUI 側の MCP 初期化 timeout が短すぎる場合は調整、又は事前に backend を立ち上げておく。
+
+### troubleshooting
+
+- **接続できない**:
+  - backend が listening しているか: `lsof -i :7878` (無ければ `ss -ltnp | grep 7878`)
+  - OpenWebUI container の network namespace から到達可能か: OpenWebUI の環境 (container 内 等) で `curl -i http://<url>/mcp` を実行し、HTTP response が返ること (streamable HTTP MCP は通常 POST + SSE 応答なので、単純 GET でも 400/405 等の HTTP レスポンスが返れば到達性は OK、connection refused なら到達不可)
+- **backend が間欠的に死ぬ**:
+  - default `--idle-timeout 300` (5 min) が切れている → `--idle-timeout 0` で無効化するか、systemd 常駐に切り替える
+- **初回接続だけ timeout する**: 上記「初回起動時間」参照
+- **新 commit を deploy しても挙動が変わらない**:
+  - proxy mode の HTTP backend が古いコードのまま動いている。`pkill -f streamable-http` して respawn させる (memory `feedback_backend_kill_on_code_deploy` 参照、[CLAUDE.md backend kill on code deploy](https://github.com/May-Kirihara/GaOTTT/blob/main/CLAUDE.md))
+
+## SKILL.md の取り扱い
 
 `SKILL.md`（ツール呼び出しプロトコルの仕様、英語）は **MCP の `instructions` フィールド経由で接続時に自動配信される**。Claude Code / Claude Desktop / OpenCode / Codex CLI のいずれでも、MCP server 接続が確立した時点でクライアントが instructions を受け取る — **追加配置は基本不要**。
 
