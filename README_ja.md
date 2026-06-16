@@ -87,7 +87,7 @@ claude mcp add gaottt -- "$HOME/GaOTTT/.venv/bin/python" -m gaottt.server.mcp_se
 codex mcp add gaottt -- "$HOME/GaOTTT/.venv/bin/python" -m gaottt.server.mcp_server
 ```
 
-Claude Desktop・OpenCode・OpenClaw、または設定ファイルを手で編集したい場合は [Tutorial 03 — クライアント接続](docs/wiki/Tutorial-03-Connect-Your-Client.md) と [Operations — Server Setup](docs/wiki/Operations-Server-Setup.md) を参照。
+Claude Desktop・OpenCode・OpenClaw、または設定ファイルを手で編集したい場合は [Tutorial 03 — クライアント接続](docs/wiki/Tutorial-03-Connect-Your-Client.md) と [Operations — Server Setup](docs/wiki/Operations-Server-Setup.md) を参照。OpenWebUI (streamable HTTP 経由) は [Operations — Server Setup の OpenWebUI セクション](docs/wiki/Operations-Server-Setup.md#openwebui-への登録) を参照 — same-host / Docker / remote 別の URL 選択と認証未実装の注意点を解説している。
 
 データは OS ごとの固定ディレクトリ（Linux/macOS は `~/.local/share/gaottt/`）に保存され、どこから起動しても同じデータを参照する — `GAOTTT_DATA_DIR` で変更可能。重力物理の breaking change を跨いで既存 install を更新する場合は、先に `scripts/migrate.py` を走らせる。
 
