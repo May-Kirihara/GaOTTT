@@ -414,7 +414,7 @@ Codex CLI も remote HTTP MCP transport をサポートしている（書式は 
 
 [OpenWebUI](https://github.com/open-webui/open-webui) は Web UI から MCP server を利用できるクライアント。GaOTTT の streamable-http backend に接続する。
 
-> ⚠️ **version 但し書き**: OpenWebUI の MCP 設定 UI は version により変動する。streamable HTTP MCP transport 経由で GaOTTT への接続を実機検証済み。UI 経路は version により変動するので、以下は streamable-http + `/mcp` endpoint という本質に焦点を当てた手順で、UI 経路は参考例扱い (OpenWebUI 公式 docs と手元の version で照合すること)。
+> ⚠️ **version 但し書き**: OpenWebUI の MCP 設定 UI は version により変動する。streamable HTTP MCP transport 経由で GaOTTT への接続を OpenWebUI v0.9.6 で実機検証済み。UI 経路は version により変動するので、以下は streamable-http + `/mcp` endpoint という本質に焦点を当てた手順で、UI 経路は参考例扱い (OpenWebUI 公式 docs と手元の version で照合すること)。
 
 ### 前提: streamable-http backend を常駐起動
 
