@@ -63,6 +63,7 @@ REST API は [REST API Reference](REST-API-Reference.md)。
 | 重力・軌道モデル | [Architecture — Gravity Model](Architecture-Gravity-Model.md) |
 | マルチプロセス並走の安全性 | [Architecture — Concurrency](Architecture-Concurrency.md) |
 | ロードマップと未実装機能 | [Plans — Roadmap](Plans-Roadmap.md) |
+| 大規模化・マルチテナント設計 (1人1宇宙) | [Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) |
 
 ### 🔬 GaOTTT の研究的背景に触れたい
 

@@ -79,6 +79,7 @@
 - [Lens Hygiene (ambient block の漏れ防止)](Plans-Lens-Hygiene.md)
 - [Instruction Surface Hygiene (指示表層と hook harness)](Plans-Instruction-Surface-Hygiene.md)
 - [Query as Mass Distribution](Plans-Query-Mass-Distribution.md)
+- [Multiverse Scale-Out (大規模化・1人1宇宙)](Plans-Multiverse-Scale-Out.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
 - [Embedder Comparison (RURI vs RikkaBotan)](Plans-Embedder-Comparison.md)
 
