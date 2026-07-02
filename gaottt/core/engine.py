@@ -40,7 +40,7 @@ from gaottt.core.types import (
     QueryResultItem,
     ScoreBreakdown,
 )
-from gaottt.embedding.ruri import RuriEmbedder
+from gaottt.embedding.base import EmbedderProtocol
 from gaottt.graph.cooccurrence import CooccurrenceGraph
 from gaottt.index.bm25_index import BM25Index
 from gaottt.index.faiss_index import FaissIndex
@@ -75,7 +75,7 @@ class GaOTTTEngine:
     def __init__(
         self,
         config: GaOTTTConfig,
-        embedder: RuriEmbedder,
+        embedder: EmbedderProtocol,
         faiss_index: FaissIndex,
         cache: CacheLayer,
         store: SqliteStore,
@@ -140,6 +140,34 @@ class GaOTTTEngine:
         self._dream_stop: asyncio.Event | None = None
 
     async def startup(self) -> None:
+        # MV0 — universe manifest hard gate. Runs before any store / FAISS
+        # touch: ``ensure_manifest`` auto-generates from config for existing
+        # DBs (backward-compat), then the manifest ``embedding_dim`` is
+        # checked against ``config.embedding_dim``. The diagnostics block
+        # below swallows exceptions, so this gate must sit above it. The
+        # runtime embedder identity (embedder_id / version) is verified in
+        # ``build_engine``; here we only guard the manifest-vs-config dim.
+        from pathlib import Path
+        from gaottt.store.manifest import ensure_manifest
+
+        manifest = ensure_manifest(Path(self.config.data_dir), self.config)
+        if manifest.embedding_dim != self.config.embedding_dim:
+            msg = (
+                f"Manifest embedding_dim mismatch: manifest="
+                f"{manifest.embedding_dim}, config="
+                f"{self.config.embedding_dim}. Switching embedder "
+                f"requires re-embedding via scripts/rebuild_faiss_from_db.py "
+                f"and a manifest update. "
+                f"escape: GAOTTT_MANIFEST_CHECK_ENABLED=false"
+            )
+            if self.config.manifest_check_enabled:
+                raise RuntimeError(msg)
+            logger.warning(
+                "Manifest embedding_dim mismatch (check disabled, "
+                "continuing): manifest=%s, config=%s",
+                manifest.embedding_dim,
+                self.config.embedding_dim,
+            )
         await self.store.initialize()
         expired = await self.store.expire_due_nodes(time.time())
         if expired:

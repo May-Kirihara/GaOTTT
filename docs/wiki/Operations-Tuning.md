@@ -415,6 +415,27 @@ opencode plugin (`scripts/hooks/opencode-save-candidates.ts`) 専用の追加 en
 | embedding_dim | 768 | 次元数（モデル変更時は要連動） |
 | batch_size | 32 | バッチエンコード時 |
 
+## Multiverse manifest (MV0 — 2026-07-02)
+
+宇宙ごとの embedder identity・次元を `<data_dir>/manifest.json` に記録し、起動時に整合を検証する。embedder が変わると全ベクトルが無意味化するため、その事故を構造的に防ぐガード。詳細: [Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 1、[multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV0。
+
+| パラメータ | 既定 | 用途 |
+|---|---|---|
+| manifest_check_enabled | `True` | manifest 起因の整合 check を有効化。**escape hatch** — `=False` で manifest `embedding_dim` と `embedder_id` の不一致を warning 透過（宇宙を救済する最終手段、通常は触らない）。**FAISS 次元保護（`embedder.dimension != config.embedding_dim`）はこの knob に関わらず常に RuntimeError** — FAISS と次元が違うと検索が壊れるため |
+
+> **v1 の既知挙動**: `ensure_manifest` は config のみから生成するため、初回 manifest の `embedder_version` は `"unpinned"`。実 RuriEmbedder の `embedder_version`（HF commit hash）と比較すると、`build_engine` で毎回 version mismatch warning が出る。これは v1 の warn-only 仕様（実装計画 §MV0-2）で、HF revision が動く運用を v1 では止めない。DR 用の model artifact pinning は MV5 で runbook 要件化される。
+
+## Multiverse embedding service (MV1 — 2026-07-02)
+
+embedding model（RURI）のロードを engine プロセスから分離し、ホスト共有サービスとして切り出す。GPU コストをユーザー数ではなくホスト数に比例させる。詳細: [Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 1、[multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV1。
+
+| パラメータ | 既定 | 用途 |
+|---|---|---|
+| embedder_endpoint | `""`（空文字列 = in-process RuriEmbedder） | 設定時（非空）`build_engine` が `RemoteEmbedder` を構築して service に接続。env `GAOTTT_EMBEDDER_ENDPOINT=http://127.0.0.1:7879` で上書き可（sentinel empty-string default なので generic env loop が拾う — `Optional[str] = None` だと拾わない罠を回避）。空文字列は falsy 扱いで従来の in-process `RuriEmbedder` 経路 |
+| embedder_request_timeout_seconds | `30.0` | `RemoteEmbedder` の HTTP timeout（秒）。env `GAOTTT_EMBEDDER_REQUEST_TIMEOUT_SECONDS` |
+
+> **起動方法**: `python -m gaottt.embedding.service --host 127.0.0.1 --port 7879 --model cl-nagoya/ruri-v3-310m`。**非 localhost への bind は拒否**（認証を持たない service なので `/encode` が外部に露出するのを防ぐ）。systemd 雛形: `deploy/gaottt-embedder.service`。詳細は [Operations — Server Setup](Operations-Server-Setup.md)「embedding service を分離する」節
+
 ---
 
 ## チューニングの典型シナリオ

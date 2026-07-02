@@ -116,6 +116,28 @@ class GaOTTTConfig:
     embedding_dim: int = 768
     batch_size: int = 32
 
+    # Multiverse embedding (MV1)
+    # When ``embedder_endpoint`` is set (non-empty), ``build_engine`` wires a
+    # ``RemoteEmbedder`` against it instead of an in-process ``RuriEmbedder``.
+    # Empty string = default (in-process RuriEmbedder). Env:
+    #   GAOTTT_EMBEDDER_ENDPOINT=http://127.0.0.1:7879
+    # We use a sentinel empty-string default (not ``Optional[str] = None``)
+    # so the generic GAOTTT_* env-override loop picks it up — MV3 supervisor
+    # relies on passing the endpoint via env at spawn time.
+    # ``embedder_request_timeout_seconds`` is a float default and is
+    # env-settable via GAOTTT_EMBEDDER_REQUEST_TIMEOUT_SECONDS.
+    embedder_endpoint: str = ""
+    embedder_request_timeout_seconds: float = 30.0
+
+    # Multiverse manifest
+    # MV0 universe manifest gate. When True, a manifest embedding_dim or
+    # embedder_id mismatch against config / runtime embedder is a hard
+    # RuntimeError at startup / build_engine; when False it degrades to a
+    # warning (escape hatch for migrations). The FAISS dimension guard
+    # (embedder.dimension != config.embedding_dim) is manifest-independent
+    # and always raises — it protects index integrity, not identity.
+    manifest_check_enabled: bool = True
+
     # Retrieval
     top_k: int = 5              # Results returned to LLM (presentation layer)
 

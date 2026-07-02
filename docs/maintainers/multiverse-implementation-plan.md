@@ -7,8 +7,8 @@
 > 前例: [rest-mcp-unification-plan.md](rest-mcp-unification-plan.md)（Phase S）と同じ運用 — stage ごとに完了マークを本ファイルに追記する
 
 **完了マーク**:
-- ⬜ MV0: EmbedderProtocol + 宇宙 manifest（土台、挙動変更ゼロ）
-- ⬜ MV1: embedding service + RemoteEmbedder
+- ✅ MV0: EmbedderProtocol + 宇宙 manifest（土台、挙動変更ゼロ）— 2026-07-02 完了
+- ✅ MV1: embedding service + RemoteEmbedder — 2026-07-02 完了（Tier 6 数値等価は次セッションで real RURI 実施）
 - ⬜ MV2: owner lease（1 宇宙 1 書き込みオーナーの機構化）
 - ⬜ MV3: universe supervisor + multiverse layout
 - ⬜ MV4: control plane（Postgres）
