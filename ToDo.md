@@ -320,13 +320,13 @@
   - [ ] `test_tier3_ambient_quality.py` で before/after baseline を取り、Heavy Persona Dominance との相互作用を測る
   - [ ] `scripts/diag_dormant.py` の出力を週次 cron で snapshot 化 (long-term drift)
 
-### 🟡 6-7. Heavy Persona Dominance — env opt-in 中の measurement `[env opt-in 中 / default 未昇格]`
-- 状態: `ambient_persona_mass_weight=1.0` 既定 (Stage 1 完全互換、code default は未昇格)、env で `GAOTTT_AMBIENT_PERSONA_MASS_WEIGHT=0.3` を opt-in 中 (`verification-... §Appendix`)
-- 問題: production で `harakiriworks-art-website` intention `mass=2.82` が query 横断で persona slot 独占
-- 残 (default 昇格判断の前):
-  - [ ] `w=0.5` (sqrt 抑制) / `w=0.3` (強い抑制、現 env 値) / `w=0.0` (cos のみ) を `test_tier3_ambient_quality.py` で before/after baseline 比較
-  - [ ] critical exponent `w* = log(cos_ratio) / log(mass_ratio)` を本番質量分布で計算 (memory `project_ambient_persona_mass_dominance`)
-  - [ ] Lateral Stage 1 (session-aware novelty decay) と直交的に効くか、相互作用するか確認 (memory `project_ambient_persona_mass_dominance` に「2 層で抑える」と既述)
+### 🟢 6-7. Heavy Persona Dominance — default 昇格済み `[default 昇格済み (2026-07-02)]`
+- 状態: **2026-07-02 に code default 昇格** — `ambient_persona_mass_weight: 1.0 → 0.3` + `ambient_persona_min_relevance: 0.5 → 0.65` の両 knob を同時昇格 (env opt-in の w=0.3 単独では dense JA embeddings の cos≈0.52 が旧 0.5 floor を slip して症状継続したため、両 knob の同時 default 化が必要だった)
+- 問題 (解決済): production で `harakiriworks-art-website` intention `mass=2.82` が query 横断で persona slot 独占
+- **measurement-first を skip した開示**: 本番体感 (ユーザー申告) を最優先し、事前 baseline を取らずに昇格。以下は**事後測定**に位置づけ直す:
+  - [ ] (事後) `w=0.3` (現 default) / `w=0.5` / `w=0.0` を `test_tier3_ambient_quality.py` で before/after baseline 比較し、昇格の効果を数値で確認・文書化
+  - [ ] (事後) critical exponent `w* = log(cos_ratio) / log(mass_ratio)` を本番質量分布で計算 (memory `project_ambient_persona_mass_dominance`)、現 default 0.3 が本番の w* を超えているか検証
+  - [ ] (事後) Lateral Stage 1 (session-aware novelty decay) と直交的に効くか、相互作用するか確認 (memory `project_ambient_persona_mass_dominance` に「2 層で抑える」と既述)
 
 ### 🟡 6-8. Phase P — Pressure Terms (Cosmological Λ + Langevin Temperature) `[起草済 / 未着手]`
 - 状態: `Plans-Phase-P-Pressure-Terms.md` 起草 (2026-05-26)、両機構 default OFF 設計
@@ -376,30 +376,31 @@
 - [ ] 保留の根拠を `Research-Index.md` に明示 (現状は Plans-Roadmap.md 内のみ)
 
 ### 🟡 6-11. Config default ↔ production env 同期レビュー `[起草 2026-05-27、未着手]`
-- 状態: production env (`~/.claude.json` / `~/.config/opencode/opencode.json`) で 3 flag が `gaottt/config.py` の default と乖離。observation が安定している項目は **default 昇格で env override を整理** できる
+- 状態: production env (`~/.claude.json` / `~/.config/opencode/opencode.json`) で 2 flag (残り) が `gaottt/config.py` の default と乖離。observation が安定している項目は **default 昇格で env override を整理** できる
 - 動機:
   - 新規 user / 新規 setup で本番相当の挙動を得るのに 5 env 設定が必要 (現状)
   - default に昇格すれば env は 1-2 個まで削減可、setup 摩擦が減る
   - production で 1 ヶ月+ 実証済の値を default 化 = 安全な「現状追認」
   - §10 rollout discipline の段階 3 (default 昇格 or env-opt-in のまま維持) の判断を、各 Stage 別ではなく一括レビューで実施
-- 対象 3 flag (production env で override 中、default と乖離):
+- 対象 2 flag (残り、production env で override 中・default と乖離):
 
 | flag | 現 default | production env | 提案 | 前提となる measurement |
 |---|---|---|---|---|
-| `ambient_persona_mass_weight` | `1.0` (Stage 1 完全互換) | `0.3` | `0.3` に昇格 | §6-7 measurement (acceptance pass, mass×cos の知覚改善) |
 | `dormant_age_threshold_seconds` | `2592000` (30d) | `604800` (7d) | `7 * 86400` (7d) に昇格 | Phase N β + Stage 7.2 で dormant 母集団復元確認済 (Stage 7.1/7.2 acceptance) |
 | `mass_evaporation_enabled` | `False` | `True` | `True` に昇格 | §6-4 Phase N β Stage 2 (1-2 週観測 + 99.9% 一致確認、`project_phase_n_stage_1_5_enabled`) |
+
+- ※ 表外参考: `ambient_persona_mass_weight` (1.0→0.3) + `ambient_persona_min_relevance` (0.5→0.65) は **2026-07-02 に §6-7 で単独昇格済み** (本一括レビューを待たず)。env `GAOTTT_AMBIENT_PERSONA_MASS_WEIGHT=0.3` は code default と同値のため **no-op overlap として残存** (後述の env 削除候補には含む — code default と同値なので削除可)。
 
 - 触らない (今回 scope 外):
   - `direct_hit_anti_hub_lambda=0.4` / `dormant_mass_percentile=10.0` — **既に code default 昇格済**、env は冗長な重複指定 (削除しても挙動同じ)。本タスクで env からも削除予定
   - `cosmological_lambda_enabled` / `langevin_temperature_enabled` — Phase P Stage 1/2 merge 後、§6-8 で Stage 1.5/2.5 env opt-in → Stage 3 で default 昇格判断
   - `mass_anchor_extra_strength=0.0` — Phase I Stage 4 予防的 OFF、観察 pathology が出るまで
 - 作業:
-  - [ ] **前提待ち**: §6-4 Stage 2 (Phase N β 1-2 週観測完了) と §6-7 (Heavy Persona measurement 結果) を待つ
-  - [ ] `gaottt/config.py` で 3 flag の default 値を変更する小 PR (`config-default-sync` 等のブランチ名)
-  - [ ] `~/.claude.json` / `~/.config/opencode/opencode.json` から該当 env を削除 — env override が default と同値になるので冗長 (`MASS_EVAPORATION_ENABLED` / `DORMANT_AGE_THRESHOLD_SECONDS` / `AMBIENT_PERSONA_MASS_WEIGHT` の 3 件 + 既に冗長な `DIRECT_HIT_ANTI_HUB_LAMBDA` / `DORMANT_MASS_PERCENTILE` の 2 件)
+  - [ ] **前提待ち**: §6-4 Stage 2 (Phase N β 1-2 週観測完了) を待つ (§6-7 は 2026-07-02 に default 昇格済み・前提解消)
+  - [ ] `gaottt/config.py` で残り 2 flag の default 値を変更する小 PR (`config-default-sync` 等のブランチ名)
+  - [ ] `~/.claude.json` / `~/.config/opencode/opencode.json` から該当 env を削除 — env override が default と同値になるので冗長。削除対象 5 件: `MASS_EVAPORATION_ENABLED` / `DORMANT_AGE_THRESHOLD_SECONDS` の 2 件 (default 昇格で同値化) + `AMBIENT_PERSONA_MASS_WEIGHT` 1 件 (§6-7 で既に code default と同値、no-op overlap なので削除可) + 既に冗長な `DIRECT_HIT_ANTI_HUB_LAMBDA` / `DORMANT_MASS_PERCENTILE` の 2 件
   - [ ] `docs/wiki/Operations-Tuning.md` で「production-default」を明記、CLAUDE.md の関連箇所も更新
-  - [ ] §10 rollout discipline の段階 3 判断を記録 — 3 flag それぞれについて「default 昇格 ✅」or「env-opt-in 維持」を明示
+  - [ ] §10 rollout discipline の段階 3 判断を記録 — 残り 2 flag それぞれについて「default 昇格 ✅」or「env-opt-in 維持」を明示
 - **検証方法**: 「現状追認」型なので 3-observer pattern を踏襲した literal 一致確認:
   - Observer A: 変更前の env-on 状態で `scripts/diag_recall.py` snapshot
   - Observer B: 変更後の env-削除済 + 新 default 状態で同 snapshot
@@ -412,7 +413,7 @@
 - 関連:
   - §6-4 Phase N β Mass Evaporation (default 昇格候補の代表ケース、Stage 2 完了が前提)
   - §6-6 Lateral Stage 7 (既に default 昇格済の前例、本タスクで env 重複削除のみ)
-  - §6-7 Heavy Persona Dominance (measurement 中、結果次第で対象に含む / 除外)
+  - §6-7 Heavy Persona Dominance (**2026-07-02 default 昇格済み**、`ambient_persona_mass_weight` + `ambient_persona_min_relevance` は本一括レビューの対象外)
   - §10 rollout discipline 3 段階
   - memory `project_phase_n_stage_1_5_enabled` / `project_ambient_persona_mass_dominance`
 
@@ -576,6 +577,44 @@ Stage 7.1 default promote 時に **段階 3 で初めて表面化** した archi
 ### 🟢 11-2. 本 ToDo の wiki sync 検討 `[未着手]`
 - プロジェクト直下 `/ToDo.md` は GitHub トップで見える反面、wiki と二重管理になる
 - [ ] 完了 Stage を消し込むタイミングで `Plans-Roadmap.md` 側の状態と整合性を確認するワークフロー (例: 月 1 で `_Sidebar.md` 更新と合わせて見直す) を確立
+
+---
+
+## 12. Dogfooding 発見 (随時追記)
+
+> 実運用 (自由探検 / 日常セッション) で踏んだバグ・気になり事の集積所。検証済みの再現手順と memory id を必ず添える。修正 PR 化するときは §6-9 Hardening の粒度 (teeth-having 回帰テスト付き) に合わせる。
+
+### 🟡 12-1. `relate`/`unrelate` の node 存在検証欠如 `[未着手 / 2026-07-02 発見]`
+- 症状: `relate(src=実在ID, dst=存在しないUUID)` が **"Related ... (weight=1.00)" の成功応答** を返し、dangling edge が黙って作られる (`get_node(同UUID)` は "Node not found.")。本番 DB で実踏 (memory id=`c2d3d884`)
+- 影響: `compact` の orphan-edge cleanup で後掃除されるとしても、成功応答は caller (特に LLM) に「edge が張れた」と誤認させる。get_relations にも dangling のまま表示される
+- 作業:
+  - [ ] `gaottt/services/relations.py::relate/unrelate` で src/dst の存在チェック → 不在なら明示エラー (MCP は human-readable メッセージ、REST は 404/422)。parity 鉄則に従い両トランスポート同時
+  - [ ] teeth-having 回帰テスト (存在しない dst で relate → エラー、既存 edge は無傷)
+  - [ ] §6-9 Stage 4 LOW の「MCP relate ValueError 内部リーク」(例外リーク側) と同じ PR で対処すると relate 系エラーパスが一度に閉じる
+- 関連: memory `c2d3d884-8aa5-44a1-a30f-a1ea243534f8` (再現手順 literal)
+
+### 🟢 12-2. `inherit_persona` / persona 系 reflect の truncated id 表示は LLM caller の UUID 捏造を誘発 `[未着手 / 2026-07-02 発見]`
+- 症状: persona 出力の `_(id=9a954c62..)_` 形式から、LLM caller がフル UUID の続きを捏造補完して `relate` に渡す事故が実際に発生 (12-1 と複合し dangling edge に)。`reflect(aspect="values")` はフル UUID を出すので表示規約が非対称
+- 観測層のみの変更 (physics 不変):
+  - [ ] persona / inherit_persona 出力もフル `id=<uuid>` に統一する (SKILL.md の「Result rows include the full id — pass directly」保証を persona 系にも拡張)、または
+  - [ ] SKILL.md / formatter 側に「省略 id は reflect/recall のフル id 表示で解決してから relate 等に渡す」注意書きを追加 (12-1 の検証が入れば捏造 id は弾かれるので、そちらが本命)
+- 関連: 12-1 (検証欠如との複合で顕在化)、memory `c2d3d884`
+
+### 🟡 12-3. `explore(diversity)` の temperature noise は当該呼び出しに効かない遅効機構 — compare_retrieval の explore 列が構造的に recall 列と同一 `[未着手 / 2026-07-02 発見]`
+- 症状: `scripts/compare_retrieval.py` で recall ∩ explore(diversity=0.9) の **overlap 100%** が 2/2 クエリで再現 (script 自身の dominance warning が発火)。explore 列が比較レンズとして機能していない
+- 根因 (コード追跡済):
+  - scorer の `compute_temp_noise(temperature)` は **保存済み** `state.temperature` を読むだけ
+  - explore の gamma 増幅 (`gamma × (1 + diversity×20)`, `services/memory.py:1295`) は `engine._update_simulation` 内の temperature 更新にしか消費されない = **効果は次回以降のクエリに現れる** (常に一手遅れ)
+  - `passive=True` (compare script の explore 呼び出し) では `_update_simulation` ごとスキップ → `gamma_override` 完全無効
+  - 当該呼び出し内の widening は `explore_depth` (+2) / `explore_k` (+4) のみで、40k corpus の top-5 を動かせない
+- 解釈が2通りあり、どちらかを明示する必要がある:
+  - (a) 温度の蓄積は意図的設計 (探検を重ねると場が温まる、active 経路では実際に働く) → compare script の explore 列に「passive では diversity ≈ depth/k 拡張のみ」の注記を出し、warning 文言を修正 (観測装置側の期待を実装に合わせる)
+  - (b) explore は当該呼び出しでも widening すべき → ranking layer に per-call transient noise (source-blind、`compute_temp_noise` に gamma スケールの一時温度を合成) を追加。physics (mass/displacement 更新) には触れないので Phase M 単一規則と直交
+- 作業:
+  - [ ] design 判断: (a) か (b) か — 「serendipity は場の履歴から生まれるべき (蓄積温度)」vs「その場の乱流も欲しい (per-call noise)」
+  - [ ] (a) なら `compare_retrieval.py` の warning 文言 + `SKILL.md` explore 節に遅効性を明記
+  - [ ] (b) なら `tests/perf/test_tier4_*` で overlap < 100% を before/after 検証
+- 関連: memory `c8dec2ae-8e67-4c03-a696-dac724886ca1` (根因追跡 literal)、P0-Stage3 (compare_retrieval 自体は完成品、これはその レンズの死角)
 
 ---
 

@@ -870,10 +870,9 @@ async def _pick_persona(
     ``(mass ** w) × cosine(query, node)`` — Phase J's persona-anchored
     geometry applied to slot selection — so the surfaced line is relevant
     to the current turn instead of an arbitrary mass/recency winner. The
-    exponent ``w = config.ambient_persona_mass_weight`` (default ``1.0``,
-    reproducing Stage 1 exactly) lets ops dampen mass dominance when a
-    single heavy persona would otherwise capture the slot for every query
-    (Refinement follow-up (b), Heavy Persona Dominance). Returns ``None``
+    exponent ``w = config.ambient_persona_mass_weight`` (default ``0.3``,
+    promoted 2026-07-02 to dampen Heavy Persona Dominance) lets ops swing
+    between mass-dominated ranking and pure-cosine ranking. Returns ``None``
     when the best relevance is below
     ``config.ambient_persona_min_relevance`` (irrelevant persona is a worse
     context than no persona — literal failure observed during Phase A
@@ -910,10 +909,11 @@ async def _pick_persona(
     query_vec = engine.embedder.encode_query(query).reshape(-1)
     vecs = engine.faiss_index.get_vectors(pool_ids)
 
-    # Refinement follow-up (b) — mass weight knob. ``weight=1.0`` (default)
-    # reproduces the Stage-1 ``mass × cos`` formula exactly; ``weight=0.0``
-    # ranks purely by cosine (mass ignored, the "relevance_dominant" mode);
-    # intermediate values dampen mass dominance. See
+    # Refinement follow-up (b) — mass weight knob. ``weight=0.3`` (default,
+    # promoted 2026-07-02) dampens a runaway-mass persona so cosine can still
+    # decide; ``weight=1.0`` reproduces the Stage-1 ``mass × cos`` formula
+    # exactly (rollback path); ``weight=0.0`` ranks purely by cosine (mass
+    # ignored, the "relevance_dominant" mode). See
     # ``ambient_persona_mass_weight`` in config.py for context.
     # Lateral Association Stage 1 — additional ``× novelty`` factor so a
     # persona repeated across recent turns rotates out of slot.

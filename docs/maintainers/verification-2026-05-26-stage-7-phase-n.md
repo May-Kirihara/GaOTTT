@@ -271,4 +271,4 @@ config default に上がったもの (PR `80214b0`):
 env でしか有効化されていないもの (default は保守的):
 - `mass_evaporation_enabled: False` のまま (irreversible 操作なので default OFF を維持)
 - `dormant_age_threshold_seconds: 30 days` のまま (新規 deployment への影響を考慮)
-- `ambient_persona_mass_weight: 1.0` のまま (Refinement follow-up は別途観察)
+- `ambient_persona_mass_weight: 1.0` のまま (Refinement follow-up は別途観察) — ※追記 (2026-07-02): 当時は 1.0 のままだったが、後に 0.3 へ default 昇格、`ambient_persona_min_relevance` も 0.5→0.65 へ昇格 (harakiriworks dominance 対策、Plans-Ambient-Recall-Refinement.md 「Follow-up (b) follow-through」節・ToDo 6-7 参照)

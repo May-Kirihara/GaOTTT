@@ -175,7 +175,7 @@ sleep 3 && ps -ef | grep "gaottt.server.mcp_server.*streamable-http" | grep -v g
 
 **症状**: `<gaottt-ambient-recall>` ブロックの「いま誰として」slot が、別の話題で連続して質問しても **毎回同じ persona** (value/intention) を表示する。例えば「embedder の話」「BM25 gate の話」「全く違うプロジェクトの話」のどれを聞いても `intention: harakiriworks-art-website ...` が出続ける。前後 query で文脈が変わったのに人格行だけ動かない。
 
-**原因 (Heavy Persona Dominance、Plans-Ambient-Recall-Refinement.md follow-up (b))**: ranking 式は `score = (mass ** w) × cos(query, persona_vec)`、既定 `ambient_persona_mass_weight = 1.0`。production で **1 つだけ mass が突出した persona** (例: `mass=2.82` vs 他 `mass=1.0` 付近) があると、mass 項が dominant になって cos 軸の差では決着しない (mass 比 10× × cos 比 1.5× → 常に heavy 側が勝つ)。`ambient_persona_min_relevance` を上げても heavy persona は通る (cos 値自体が低くないので)。Refinement Stage 1 の `mass × cos` re-rank ロジックは「正しく」動いており、production の質量分布が想定外に偏っているだけ。
+**原因 (Heavy Persona Dominance、Plans-Ambient-Recall-Refinement.md follow-up (b))**: ranking 式は `score = (mass ** w) × cos(query, persona_vec)`。旧既定 `ambient_persona_mass_weight = 1.0` では、production で **1 つだけ mass が突出した persona** (例: `mass=2.82` vs 他 `mass=1.0` 付近) があると、mass 項が dominant になって cos 軸の差では決着しない (mass 比 10× × cos 比 1.5× → 常に heavy 側が勝つ)。**2026-07-02 に default を `w=0.3` + `min_relevance=0.65` へ同時昇格**し標準対策済み (env opt-in の w=0.3 単独では dense 日本語 embeddings の cos ≈ 0.52 が旧 0.5 floor を slip して症状が継続したため、両 knob の同時 default 化が必要だった)。本節は **default 適用後も残る residual case / さらなる tuning** 向け。Refinement Stage 1 の `mass × cos` re-rank ロジックは「正しく」動いており、production の質量分布が想定外に偏っているだけ。
 
 **確認** (`expose_breakdown=true` で診断):
 ```python
@@ -183,13 +183,12 @@ mcp__gaottt__ambient_recall(query="...", direct_k=2, expose_breakdown=true)
 ```
 複数の異なる query に対して persona slot の breakdown を見る。`mass=2.5` 以上の同じ persona が毎回 picked されているなら Heavy Persona Dominance 確定。
 
-**対処** (順に試す、`config.py` の値変更 → backend 再起動が必要):
-1. **measurement first** — `tests/perf/test_tier3_ambient_quality.py` で **before baseline** を取る (現状の persona pick 分布を記録)
-2. `ambient_persona_mass_weight=0.5` に下げて `sqrt(mass) × cos` (穏やかな抑制) → 再起動 → 同じ test で after baseline 比較。critical exponent の予測式: `w* = log(cos_ratio) / log(mass_ratio)` (例: mass_ratio=2.82, 目当ての cos_ratio=1.3 → `w* ≈ 0.25`)
-3. 効果不足なら `0.3` (log-scale 近似) → `0.0` (cos のみ、`relevance_dominant` 相当) と段階的に下げる
-4. 過剰に下がって cos noise で別の不適切 persona が surface するなら `ambient_persona_min_relevance` を上げてガード
+**対処** (default `w=0.3` / `min_relevance=0.65` 適用後も residual な場合、`config.py` の値変更 → backend 再起動が必要):
+1. **measurement first** — `tests/perf/test_tier3_ambient_quality.py` で **before baseline** を取る (現状の persona pick 分布を記録)。事後 baseline の形でも、default 昇格の効果を数値で分離するのに使う
+2. 現 default `w=0.3` からさらに `ambient_persona_mass_weight=0.5` に *上げて* `sqrt(mass) × cos` (穏やかすぎる場合は戻す方向) 、または `0.0` (cos のみ) に *下げて* 強抑制 → 再起動 → 同じ test で after baseline 比較。critical exponent の予測式: `w* = log(cos_ratio) / log(mass_ratio)` (例: mass_ratio=2.82, 目当ての cos_ratio=1.3 → `w* ≈ 0.25`)
+3. 過剰に下がって cos noise で別の不適切 persona が surface するなら `ambient_persona_min_relevance` を現 default `0.65` からさらに上げてガード (逆に on-topic persona まで落ちは上げすぎの兆候)
 
-**rollback**: `ambient_persona_mass_weight=1.0` (既定) で Stage 1 と bit-identical (累乗を skip する分岐があり数値も完全一致)。backend 再起動が必要 ([feedback: backend kill on code deploy](#)、`ps -ef | grep streamable-http` で起動時刻 → `kill <pid>` → 次の MCP 接続で auto-respawn)。
+**rollback**: `ambient_persona_mass_weight=1.0` (旧既定値、`w=1.0` で Stage 1 bit-identical — 累乗を skip する分岐があり数値も完全一致)。backend 再起動が必要 ([feedback: backend kill on code deploy](#)、`ps -ef | grep streamable-http` で起動時刻 → `kill <pid>` → 次の MCP 接続で auto-respawn)。
 
 **関連**:
 - 詳細設計: [Plans — Ambient Recall Refinement](Plans-Ambient-Recall-Refinement.md) 「follow-up (b)」節

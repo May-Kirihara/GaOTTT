@@ -632,25 +632,34 @@ class GaOTTTConfig:
     ambient_persona_enabled: bool = True     # ⑥ active declared value/intention line
     # Refinement Stage 1 (Plans-Ambient-Recall-Refinement.md): query-conditioned
     # persona pick. The top-N candidates (by mass) are re-ranked by
-    # ``mass × cosine(query, persona_vec)``; the best is surfaced only when its
-    # cosine clears ``ambient_persona_min_relevance``. Below the threshold the
-    # slot is silently omitted — irrelevant persona is worse context than no
+    # ``(mass ** w) × cosine(query, persona_vec)`` (default ``w = 0.3``,
+    # see follow-up (b) below); the best is surfaced only when its cosine
+    # clears ``ambient_persona_min_relevance``. Below the threshold the slot
+    # is silently omitted — irrelevant persona is worse context than no
     # persona (Phase A literal failure: MCP-smoke intention in embedder turn).
     ambient_persona_pool_size: int = 10      # mass-top-N pool size for cosine re-rank
-    ambient_persona_min_relevance: float = 0.5  # cosine floor for surfacing the slot
+    ambient_persona_min_relevance: float = 0.65  # cosine floor for surfacing the slot
     # Refinement follow-up (b) — Heavy Persona Dominance knob. Production
     # observation 2026-05-25: when one persona has runaway mass (e.g.
     # ``harakiriworks intention mass=2.82`` vs others at ~1.0), the
     # ``mass × cos`` formula's mass term dominates and the persona slot
     # surfaces the same node for every query. Knob to dampen mass:
     # ``score = (mass ** ambient_persona_mass_weight) × cos``.
-    #   weight = 1.0 (default) — current behavior, full mass attribution
-    #   weight = 0.5            — sqrt(mass) × cos, log-scale-ish dampening
-    #   weight = 0.0            — pure cos ranking (mass ignored), the
-    #                              ``relevance_dominant`` mode as a degenerate case
-    # Tune with ``test_tier3_ambient_quality.py`` before/after baseline to
-    # separate "performance improvement" from "feature preference".
-    ambient_persona_mass_weight: float = 1.0
+    #   weight = 0.0 — pure cos ranking (mass ignored), the
+    #                 ``relevance_dominant`` mode as a degenerate case
+    #   weight = 0.3 (default, promoted 2026-07-02) — mass^0.3 × cos, dampens
+    #                 a runaway-mass persona so cosine can still decide
+    #   weight = 0.5 — sqrt(mass) × cos, log-scale-ish dampening
+    #   weight = 1.0 — Stage 1 bit-identical, full mass attribution (rollback path;
+    #                 the original default before the production promotion)
+    # The 2026-07-02 promotion moved both ``min_relevance`` (0.5 → 0.65) and
+    # this knob (1.0 → 0.3) to code defaults at once: env-set w=0.3 alone
+    # still let a mass-inflated cohort through because dense Japanese
+    # embeddings give cos ≈ 0.52 to a query that merely shares the keyword,
+    # clearing the old 0.5 floor. The two knobs are complementary, not
+    # redundant. Tune with ``test_tier3_ambient_quality.py`` before/after
+    # baseline to separate "performance improvement" from "feature preference".
+    ambient_persona_mass_weight: float = 0.3
 
     # Lateral Association Stage 1 sub-step 1 (2026-05-25,
     # Plans-Ambient-Recall-Lateral-Association.md) — session-aware novelty

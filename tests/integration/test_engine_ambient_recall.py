@@ -545,24 +545,28 @@ async def test_ambient_persona_pool_size_caps_candidates(tmp_path):
 # config.ambient_persona_mass_weight. Production observation 2026-05-25 saw a
 # single intention with mass=2.82 capturing the persona slot across every
 # query because Stage 1's bare ``mass × cos`` let the mass term dominate.
-# These three tests pin down each knob regime on a calibrated fixture:
-#   - heavy "embedder" alone: cos ≈ 1/sqrt(3) ≈ 0.577, mass bumped to 10.0
+# These three tests pin down each knob regime on a calibrated fixture
+# (TokenEmbedder, deterministic token-bag cosine):
+#   - heavy "embedder" alone: cos ≈ 0.523, mass bumped to 10.0
 #   - light "embedder comparison methodology" (= query exactly): cos = 1.0
-#   Critical exponent w* = log(1.0/0.577)/log(10) ≈ 0.239 — below which the
+#   Critical exponent w* = log(1.0/0.523)/log(10) ≈ 0.281 — below which the
 #   cosine gap flips the winner.
 
 @pytest.mark.asyncio
 async def test_ambient_persona_mass_weight_default_preserves_heavy_winner(tmp_path):
-    """Refinement follow-up (b) — default ``ambient_persona_mass_weight=1.0``
-    reproduces Stage 1's ``mass × cos`` exactly. A heavy off-topic persona
-    still wins the slot over a lighter on-topic persona. Regression guard
-    for the knob default."""
+    """Refinement follow-up (b) — with the production-promoted default
+    ``ambient_persona_mass_weight=0.3`` a heavy off-topic persona still wins
+    the slot over a lighter on-topic one: heavy_score = 10^0.3 × 0.523 ≈
+    1.044 > light_score = 1^0.3 × 1.0 = 1.0 (a thin ~4.4% margin, but mass
+    still overcomes the cosine gap at the default). Regression guard for the
+    knob default — flipping it to a relevance-dominant value would change the
+    winner, and that flip is covered by the w=0.0 / w=0.2 tests below."""
     engine = _make_engine(
         tmp_path,
         embedder=TokenEmbedder(dim=64),
         ambient_min_score=0.0,
         ambient_persona_min_relevance=0.3,   # both candidates must clear
-        # ambient_persona_mass_weight defaults to 1.0
+        # ambient_persona_mass_weight defaults to 0.3
     )
     await engine.startup()
     try:
@@ -583,8 +587,9 @@ async def test_ambient_persona_mass_weight_default_preserves_heavy_winner(tmp_pa
         )
         assert resp.persona is not None
         assert resp.persona.id == r_heavy.id, (
-            "weight=1.0 must reproduce Stage 1: heavy mass (10x) dominates "
-            "the cosine gap (1.73x) — heavy persona wins"
+            "default weight=0.3 must still let heavy mass (10x) overcome the "
+            "cosine gap — heavy_score=10^0.3×0.523≈1.044 > light_score=1.0 "
+            "(~4.4% margin)"
         )
         assert resp.persona.id != r_light.id
     finally:
@@ -664,8 +669,70 @@ async def test_ambient_persona_mass_weight_intermediate_dampens_heavy(tmp_path):
         assert resp.persona is not None
         assert resp.persona.id == r_light.id, (
             "weight=0.2 must dampen the 10x mass enough that cos (1.0 vs "
-            "~0.577) flips the winner — heavy_score=1.585*0.577≈0.914 < "
+            "~0.523) flips the winner — heavy_score=1.585*0.523≈0.830 < "
             "light_score=1.0*1.0=1.0"
+        )
+    finally:
+        await engine.shutdown()
+
+
+# --- Default promotion (2026-07-02, Heavy Persona Dominance mitigation) -------
+# Production observation: even with env-set mass_weight=0.3, a single
+# mass-inflated supernova cohort (harakiriworks intention) kept capturing the
+# persona slot across every query because min_relevance=0.5 let the cos-baseline
+# of dense Japanese embeddings (cos ≈ 0.52) through. The env value alone was
+# insufficient; both knobs had to move to code defaults. See
+# docs/wiki/Operations-Troubleshooting.md (Heavy Persona Dominance).
+
+@pytest.mark.asyncio
+async def test_ambient_persona_default_mass_weight_is_03(tmp_path):
+    """Default ``ambient_persona_mass_weight`` is 0.3 (Heavy Persona Dominance
+    mitigation, promoted from env opt-in to code default 2026-07-02 after
+    production observation: harakiriworks-art-website intention with
+    mass-inflated supernova cohort captured the persona slot across every
+    query even with env-set w=0.3, because min_relevance=0.5 was too low
+    to suppress the cos-baseline of dense Japanese embeddings).
+
+    Pinning test: a freshly constructed engine without overrides should
+    have ambient_persona_mass_weight == 0.3.
+    """
+    engine = _make_engine(tmp_path)
+    try:
+        assert engine.config.ambient_persona_mass_weight == 0.3
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ambient_persona_default_min_relevance_065_omits_offtopic(tmp_path):
+    """Default ``ambient_persona_min_relevance=0.65`` suppresses off-topic
+    persona surfacing. With a persona whose cosine to the query is below
+    0.65 (TokenEmbedder produces cos ≈ 0.523 for "embedder" vs
+    "embedder comparison methodology"), the slot is silently omitted.
+
+    This test is RED before the default change (0.5 lets cos=0.523 through)
+    and GREEN after (0.65 drops it)."""
+    engine = _make_engine(
+        tmp_path,
+        embedder=TokenEmbedder(dim=64),
+        ambient_min_score=0.0,
+        # ambient_persona_min_relevance defaults to 0.65 (post-change)
+        # ambient_persona_mass_weight defaults to 0.3 (post-change)
+    )
+    await engine.startup()
+    try:
+        await memory_service.remember(
+            engine, content="embedder", source="intention",
+        )
+        # No on-topic persona — "embedder comparison methodology" has no
+        # matching value/intention. The only candidate is "embedder" intention
+        # with cos ≈ 0.523 < 0.65 → must be omitted.
+        resp = await memory_service.ambient_recall(
+            engine, "embedder comparison methodology", direct_k=2,
+        )
+        assert resp.persona is None, (
+            "default min_relevance=0.65 must drop off-topic persona with "
+            "cos ≈ 0.523 (TokenEmbedder 'embedder' vs 'embedder comparison methodology')"
         )
     finally:
         await engine.shutdown()

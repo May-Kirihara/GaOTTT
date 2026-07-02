@@ -377,7 +377,7 @@ Heavy persona dominance への対処案 (どれも別 stage / 別 plan として
 
 ### Follow-up (b) — Heavy Persona Dominance knob (2026-05-25 同日実装)
 
-上記 3 案のうち **(1) `ambient_persona_mass_weight`** を採用。(2) と (3) を **subsumes** する: `weight=0.0` で (2) の `relevance_dominant` mode に degenerate (mass^0=1 → cos のみ ranking)、`weight≈0.3` で (3) の log-scale dampening を近似 (Phase H Stage 1 `wave_seed_mass_alpha` と同形の power-law 抑制)。単一 knob で全 spectrum をカバー、`weight=1.0` 既定で完全後方互換。
+上記 3 案のうち **(1) `ambient_persona_mass_weight`** を採用。(2) と (3) を **subsumes** する: `weight=0.0` で (2) の `relevance_dominant` mode に degenerate (mass^0=1 → cos のみ ranking)、`weight≈0.3` で (3) の log-scale dampening を近似 (Phase H Stage 1 `wave_seed_mass_alpha` と同形の power-law 抑制)。単一 knob で全 spectrum をカバー、`weight=1.0` で完全後方互換 (rollback path)。**2026-07-02 に default を `0.3` へ昇格** — 当初は `1.0` 既定で measurement-first とする計画だったが、env opt-in の w=0.3 単独では dense 日本語 embeddings の cos≈0.52 が `min_relevance=0.5` floor を slip して harakiriworks dominance が継続したため、`min_relevance` の 0.5→0.65 昇格と同時に code default 化 (下記「2026-07-02 default 昇格」参照)。
 
 - **変更**:
   - `gaottt/config.py` — `ambient_persona_mass_weight: float = 1.0` を `ambient_persona_min_relevance` の直下に追加、docstring で「mass^0=relevance_dominant degenerate / mass^0.5=sqrt 抑制 / mass^1.0=Stage 1 互換」を明示
@@ -388,10 +388,25 @@ Heavy persona dominance への対処案 (どれも別 stage / 別 plan として
   - `test_ambient_persona_mass_weight_zero_yields_pure_cos_ranking` — `weight=0.0` で `mass^0=1` 一定、cos=1.0 (light) が cos=0.577 (heavy) を破る → degenerate `relevance_dominant` mode 確認
   - `test_ambient_persona_mass_weight_intermediate_dampens_heavy` — `weight=0.2` で `10^0.2≈1.585`、heavy_score `1.585*0.577≈0.914 < 1.0=light_score` で flip → 本番 tuning の sweet-spot 帯を pinning
   - calibrated fixture: heavy `content="embedder"` cos `1/√3≈0.577`、light `content="embedder comparison methodology"` (query と完全一致) cos `1.0`。critical exponent `w* = log(1.0/0.577)/log(10) ≈ 0.239` — 数式と現物 fixture の予測一致を docstring で明示
+
+> ※上記は 2026-05-25 実装時の test fixture 記述（default `weight=1.0` 時点）。2026-07-02 の default `0.3` 昇格に伴い、`test_ambient_persona_mass_weight_default_preserves_heavy_winner` の docstring / assertion message / 周辺 comment は **実際の TokenEmbedder cos 値 0.523**（理論値 1/√3≈0.577 は SHA256-seeded per-token vector の非直交性で下振れ）と **default 0.3 での heavy_score=10^0.3×0.523≈1.044 > light=1.0 (4.4% margin)** に更新済み。critical exponent も `w* = log(1/0.523)/log(10) ≈ 0.281` に修正。現 test 本体の正確な数値は `tests/integration/test_engine_ambient_recall.py:543-592` と下記「Follow-up (b) follow-through — 2026-07-02 default 昇格」節を参照。
+
 - **テスト結果**: `tests/integration/test_engine_ambient_recall.py` 17 passed (+3)、`tests/ --ignore=tests/perf` 519 passed / 1 skipped (regression 0、516→519)、`tests/perf/test_tier3_ambient_quality.py` 2/2 passed (Stage 5 baseline 維持)
 - **lint**: `ruff check` clean (`r_on` F841 は既存 Stage 1 pool_size test に未使用変数として残っていた pre-existing debt を `_r_on` リネーム + 意図コメントで併せて解消)
 - **MCP/REST parity**: **対象外** — config-level knob (環境/デプロイ単位の tuning 設定) で per-call parameter ではない。MCP tool / REST endpoint のシグネチャ変更なし、`AmbientRecallRequest` への field 追加もなし。env override が必要なら `GaOTTTConfig` の通常パターン経由で十分
-- **後方互換**: `weight=1.0` 既定で Stage 1 完全互換 (累乗 skip により bit-identical)。本番 rollout は `Operations-Tuning.md` 注記通り「`test_tier3_ambient_quality.py` baseline → 値変更 → 再 baseline → diff 観察」の measurement-first 手順を踏む。本番 production tuning は別ターンに残す (今ターンは knob の追加と test での挙動 pin まで)
+- **後方互換**: `weight=1.0` で Stage 1 完全互換 (累乗 skip により bit-identical、rollback path)。当初は `1.0` 既定で measurement-first とする計画だったが、**2026-07-02 に `0.3` へ default 昇格** (下記節参照)。
+
+### Follow-up (b) follow-through — 2026-07-02 default 昇格 (Heavy Persona Dominance 再発)
+
+env opt-in で `GAOTTT_AMBIENT_PERSONA_MASS_WEIGHT=0.3` を運用していた本番構成で、**症状 (harakiriworks intention が query 横断で persona slot 独占) が継続**。原因は「w=0.3 単独では不十分」ではなく、dense 日本語 embeddings が query と persona でキーワードを共有するだけで cos ≈ 0.52 を与え、旧 `ambient_persona_min_relevance=0.5` floor を slip していたこと。A (mass_weight) + B (min_relevance) の **両 knob の同時 default 化** が必要と判明:
+
+- **変更**: `gaottt/config.py` — `ambient_persona_mass_weight: 1.0 → 0.3`、`ambient_persona_min_relevance: 0.5 → 0.65`。周辺 comment / `_pick_persona` docstring / 各 wiki の default 値記述を整合。
+- **テスト** (`tests/integration/test_engine_ambient_recall.py`):
+  - `test_ambient_persona_default_mass_weight_is_03` — pinning test (default 0.3)
+  - `test_ambient_persona_default_min_relevance_065_omits_offtopic` — cos≈0.523 の off-topic persona が default 0.65 で slot omit される (RED before change / GREEN after)
+  - 既存 `test_ambient_persona_mass_weight_default_preserves_heavy_winner` は default 0.3 でも heavy が勝つ (heavy_score=10^0.3×0.523≈1.044 > light=1.0、4.4% margin) ことを docstring/assertion message を更新して維持。アサーション本体は不変。
+- **measurement-first を skip した開示**: 本番体感 (ユーザーが「毎回 harakiriworks に関連付けられる」と申告) を最優先し、`test_tier3_ambient_quality.py` の事前 baseline を取らずに昇格した。事後 baseline 測定を推奨 (ToDo 6-7 に明記)。
+- **env layer**: 既存の `GAOTTT_AMBIENT_PERSONA_MASS_WEIGHT=0.3` (env) は code default と同値なのでそのまま残す (no-op overlap)。`min_relevance` の env は足さない (code default 0.65 で運用)。
 
 ### スコープ外で気付いたフォローアップ (follow-up (b) では実装しない)
 

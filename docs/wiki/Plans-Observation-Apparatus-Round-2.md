@@ -26,7 +26,7 @@
 S/N の実測内訳 (3 注入分):
 
 1. **direct hits 6 件中 5 件が chat-history (openai / claude-web) の raw chunk** — state-dict キーのダンプ、無関係なテストコード断片、依頼定型句(「ありがとう！まとめてもらえると嬉しいです」)の lexical 一致。有用だったのは 1 件 (過去の Plans レビュー依頼チャット) のみ。ingest された会話コーパス 14.6k docs が日本語会話文の lexical 空間を支配している構造
-2. **persona slot 3 回中 2 回が文脈無関係** (harakiriworks / LMS の高 mass intention) — 既知の [Ambient Persona Mass Dominance](Plans-Ambient-Recall-Refinement.md) 問題、`ambient_persona_mass_weight` knob は導入済み・本番 tuning 未実施
+2. **persona slot 3 回中 2 回が文脈無関係** (harakiriworks / LMS の高 mass intention) — 既知の [Ambient Persona Mass Dominance](Plans-Ambient-Recall-Refinement.md) 問題、`ambient_persona_mass_weight` knob は導入済み・本番 tuning 未実施 (**2026-07-02 default 昇格で解決済、E3 節参照**)
 3. **lensing は 3 slot 中もっとも有用** (exploration report ラウンド 8 を文脈通りに引いた) — ただし resonance は全件 0.00 (claude-code purge 後の共起再蓄積が薄い、観測継続)
 
 結論: **器 (分量・位置・文言) は完成しており、注ぐ中身の選別だけが課題**。これが Stage E。
@@ -157,9 +157,11 @@ ambient_recall の slot 選択は `exclude_tags` / novelty decay / `ambient_pers
 - ambient slot 候補の content 先頭 N 文字の記号・識別子比率 (非和文・非英単語文字の割合) が閾値超なら slot から skip (state-dict キー羅列、生コード断片を注入しない)。実装は軽量 heuristic で良い (正規表現 1 本 + 比率計算)。落とした候補は次点繰り上げ
 - 推奨初期値 0.45 (実装時に手元の dump 実例 — apitest / residual_layer chunk — で較正)
 
-### E3 — persona slot tuning (コード変更なし)
+### E3 — persona slot tuning (2026-07-02 default 昇格で解決)
 
-`ambient_persona_mass_weight`(導入済み knob) の本番 tuning を measurement-first で実施: `scripts/compare_retrieval.py` で代表 query 10 本の persona slot を weight 0.0 / 0.5 / 1.0 で比較 → 1 週間観測 → 値確定。本 plan では**手順の予約のみ**(実施は別ターン、[Ambient Persona Mass Dominance](Plans-Ambient-Recall-Refinement.md) の follow-up と合流)。
+当初の計画: `ambient_persona_mass_weight`(導入済み knob) の本番 tuning を measurement-first で実施 — `scripts/compare_retrieval.py` で代表 query 10 本の persona slot を weight 0.0 / 0.5 / 1.0 で比較 → 1 週間観測 → 値確定。
+
+**実績 (2026-07-02)**: measurement-first の形式は踏まず、env opt-in で w=0.3 を運用した**本番体感** (ユーザーが「毎回 harakiriworks に関連付けられる」と申告、症状継続) を最優先して default 昇格を決定。env 単独の w=0.3 では dense 日本語 embeddings の cos≈0.52 が旧 `min_relevance=0.5` floor を slip して症状が継続したため、`ambient_persona_mass_weight: 1.0→0.3` と `ambient_persona_min_relevance: 0.5→0.65` の **両 knob を同時に code default 化**。詳細・テスト・measurement-first skip の開示は [Plans — Ambient Recall Refinement](Plans-Ambient-Recall-Refinement.md) 「Follow-up (b) follow-through — 2026-07-02 default 昇格」節。事後 baseline 測定を推奨 (ToDo 6-7)。
 
 ### テスト
 
