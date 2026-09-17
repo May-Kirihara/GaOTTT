@@ -1600,10 +1600,29 @@ class GaOTTTConfig:
         overrides = {k: v for k, v in file_conf.items() if k in field_objs}
         sources = {k: "file" for k in overrides}
 
+        # data_dir は field(default_factory=...) のため下の汎用 env ループの
+        # 対象外。ここで file 値を pop しないと constructor 引数が
+        # default_factory（env 第一優先の dedicated resolver）に勝ち、H5 の
+        # 優先順位 "env > file > default" が data_dir に限り "file > env" に
+        # 逆転する。実被害 (2026-09-17): multiverse supervisor が正しい
+        # GAOTTT_DATA_DIR を spawn に渡しても ~/.config/gaottt/config.json の
+        # data_dir が backend を main 宇宙へ釣り戻し、稼働中 main backend の
+        # owner.lock 取得 → readiness FAILED → /route 503。env があるときは
+        # dedicated resolver (_default_data_dir: env 第一優先・mkdir・legacy
+        # 警告) に委任する。
+        env_data_dir = (
+            os.environ.get("GAOTTT_DATA_DIR")
+            or os.environ.get("GER_RAG_DATA_DIR")
+        )
+        if env_data_dir:
+            overrides.pop("data_dir", None)
+            sources["data_dir"] = "env"
+
         for name, f in field_objs.items():
             # Only plain scalar fields with a concrete default are
-            # env-settable; field(default_factory=...) (data_dir, lists)
-            # is JSON / dedicated-resolver only.
+            # env-settable; field(default_factory=...) (lists) is JSON-only.
+            # data_dir is also default_factory but resolves env-first via
+            # its dedicated resolver — see the data_dir block above.
             if f.default is MISSING:
                 continue
             target = type(f.default)
@@ -1641,8 +1660,9 @@ class GaOTTTConfig:
         flip a single knob (e.g. the Phase M Stage 2 θ tuning,
         ``GAOTTT_MASS_BH_THETA=6.0``) without editing the JSON file. Only
         scalar fields (bool / int / float / str) are env-settable;
-        collection / factory fields (e.g. ``data_dir``, which has its own
-        ``GAOTTT_DATA_DIR`` resolution) are JSON-only. An unparseable
+        collection / factory fields are set via the config file only —
+        except ``data_dir``, whose dedicated ``GAOTTT_DATA_DIR``
+        resolution takes precedence over the file value. An unparseable
         override is logged and ignored rather than crashing startup.
         """
         overrides, _sources = cls._resolve_overrides()

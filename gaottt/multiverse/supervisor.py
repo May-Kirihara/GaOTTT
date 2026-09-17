@@ -664,6 +664,96 @@ class _Supervisor:
         await self._run_backup_hook()
         return url, fresh
 
+    # -- recycle (route path: sticky-FAILED recovery, WP-2) ---------------
+
+    async def recycle_failed_backend(self, universe: dict) -> tuple[str, str] | None:
+        """One-shot stop + respawn of a sticky-FAILED backend (route path).
+
+        A backend whose engine startup is FAILED is a zombie: the uvicorn
+        transport still answers the initialize probe (so ``ensure_backend``
+        returns immediately and never respawns), but the engine will never
+        recover. Until the idle timeout (300s) the zombie keeps holding the
+        port and every retry 503s (observed 2026-09-17, hanaso incident —
+        e.g. a data_dir pinned to another universe's owner.lock). This
+        method is the /route-path recovery: take the same two-layer lock as
+        :meth:`ensure_backend`, re-check readiness inside it, and recycle
+        exactly once (no retry loop — the caller re-observes readiness).
+
+        Inside the lock:
+
+        * readiness is ``READINESS_LEGACY`` → ``None`` — old backend without
+          the readiness endpoint; recycle does not apply.
+        * the recheck fetch itself fails unexpectedly → ``None`` — we do not
+          stop a backend on the strength of a possibly-stale FAILED
+          observation alone (fail-closed; the route answers 503 with the
+          original error).
+        * readiness is anything other than a FAILED dict (healthy recovery,
+          STARTING, or a transient fetch error reported as ``None``) →
+          ``(url, token)`` with the current token — a concurrent route may
+          have already recycled it, so no stop is attempted.
+        * still FAILED → :meth:`_stop_backend`, then :meth:`_ensure_locked`
+          respawns with a fresh token. ``_BackendAliveConflict`` from the
+          stop (backend alive but PID unknown — killing it is unsafe)
+          abandons the recycle with ``None``; we never blind-kill what we
+          cannot track.
+
+        Raises the same exceptions as ``ensure_backend``'s respawn path
+        (:class:`_UniverseInactive` / :class:`TuningEnvValidationError` /
+        ``RuntimeError`` on spawn-readiness timeout).
+        """
+        uid = universe["universe_id"]
+        port = universe["port"]
+        url = f"http://{HOST}:{port}/mcp"
+        universe_dir = self._universe_dir(uid)
+        universe_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = universe_dir / ".spawn.lock"
+
+        async with self._spawn_lock(uid):
+            # flock is a blocking syscall — run it in a thread so the event
+            # loop is not stalled (same structure as ensure_backend).
+            lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                await asyncio.to_thread(fcntl.flock, lock_fd, fcntl.LOCK_EX)
+                try:
+                    token_now = self._load_token(uid) or ""
+                    try:
+                        payload = await _fetch_backend_readiness(
+                            HOST, port, token_now,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — best-effort recheck
+                        # 再確認 fetch 自体が想定外の失敗をしたら、route が観測
+                        # した (直前だが既に stale 得る) FAILED だけを根拠に
+                        # 稼働 backend を stop しない — fail-closed に断念し、
+                        # route には元の FAILED 観測で 503 を返させる。
+                        logger.warning(
+                            "recycle for universe %s abandoned: readiness "
+                            "recheck failed (%s)", uid, exc,
+                        )
+                        return None
+                    if payload is READINESS_LEGACY:
+                        return None
+                    if not (
+                        isinstance(payload, dict)
+                        and payload.get("state") == "FAILED"
+                    ):
+                        # Healthy / recovered concurrently / transient — not a
+                        # recycle target; hand back the current token as-is.
+                        return (url, token_now)
+                    try:
+                        await self._stop_backend(universe)
+                    except _BackendAliveConflict as exc:
+                        # PID 不明で生存 — kill は安全側に倒して断念する。
+                        logger.warning(
+                            "recycle for universe %s abandoned: cannot safely "
+                            "stop the FAILED backend (%s)", uid, exc,
+                        )
+                        return None
+                    return await self._ensure_locked(uid, port, url, universe)
+                finally:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
+
     # -- stop (delete path) ------------------------------------------------
 
     async def _stop_backend(self, universe: dict) -> None:
@@ -1718,6 +1808,38 @@ def create_supervisor_app(
             HOST, universe["port"], token,
             config.route_readiness_timeout_seconds,
         )
+        # WP-2 (2026-09-17 hanaso 事例): engine startup が sticky FAILED の
+        # backend は zombie — transport は probe に応答し続ける (なので
+        # ensure_backend は respawn しない) が engine は二度回復しない。
+        # idle timeout (300s) まで port を占有して retry を全部 503 にする
+        # ので、1 route call につき高々 1 回だけ stop+respawn (recycle) を
+        # 試みる (loop 禁止)。PID 不明で生存の backend は kill しない
+        # (安全側 — recycle 内で断念して元の FAILED 観測で 503)。
+        if (
+            readiness is not READINESS_LEGACY
+            and readiness.get("state") == "FAILED"
+        ):
+            try:
+                recycled = await sup.recycle_failed_backend(universe)
+            except _UniverseInactive:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="universe not available",
+                )
+            except TuningEnvValidationError as exc:
+                # ensure_backend と同じ例外マッピング (respawn を伴うため)。
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Invalid runtime tuning env: {exc}",
+                )
+            if recycled is not None:
+                url, token = recycled
+                # 再取得後も FAILED なら、下の 503 は再取得後の最新 error
+                # 文面で応答する (既存コードがそのままそうなる)。
+                readiness = await _await_backend_readiness(
+                    HOST, universe["port"], token,
+                    config.route_readiness_timeout_seconds,
+                )
         if readiness is READINESS_LEGACY:
             pass  # 旧 backend — 従来どおり即応答
         elif readiness.get("state") == "FAILED":

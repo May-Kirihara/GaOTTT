@@ -1223,3 +1223,240 @@ async def test_kill_tracked_backend_sigkill_permission_denied_raises_conflict(ap
     sent = [c.args[1] for c in kill_mock.call_args_list]
     assert signal.SIGTERM in sent
     assert signal.SIGKILL in sent
+
+
+# ===========================================================================
+# 24. WP-2 (2026-09-17) — /route readiness FAILED -> one bounded recycle
+# ===========================================================================
+#
+# A sticky-FAILED engine leaves a zombie backend: the uvicorn transport is
+# alive (initialize probe OK, so ensure_backend returns immediately) but the
+# engine will never recover. Until the idle timeout (300s) the zombie keeps
+# the port and every retry 503s. /route now performs ONE stop + respawn
+# (recycle) per call when readiness reports FAILED. A backend that is alive
+# with an unknown PID is never killed (safety side — recycle abandoned).
+#
+# The readiness seam is patched directly (module-level
+# _await_backend_readiness for the route handler, _fetch_backend_readiness
+# for the inside-lock recheck) so no real port is polled — deterministic and
+# fast, unlike the real-port poll the unpatched path would run.
+
+async def test_route_failed_readiness_recycles_and_returns_200(app, client):
+    """FAILED zombie -> recycle (stop + respawn with a fresh token) ->
+    healthy readiness on the re-fetch -> 200 carrying the fresh token."""
+    from gaottt.multiverse.supervisor import PROBE_DOWN, PROBE_OK
+
+    body = await _make_universe(client)
+    uid = body["universe_id"]
+    sup = app.state.supervisor
+    # tracked zombie (PID known — the safe-stop path is available)
+    sup._backend_pids[uid] = 999906
+
+    failed = {"state": "FAILED", "error": "LeaseHeldError: owner.lock boom"}
+    healthy = {"state": "SEMANTIC_READY", "elapsed_seconds": 7.0}
+    await_readiness = AsyncMock(side_effect=[failed, healthy])
+    fetch = AsyncMock(return_value=failed)  # inside-lock recheck: still FAILED
+    probe = AsyncMock(side_effect=[
+        PROBE_OK,    # ensure_backend: zombie transport answers
+        PROBE_DOWN,  # recycle's _ensure_locked: backend stopped
+        PROBE_OK,    # respawn readiness poll
+    ])
+    stop = AsyncMock()
+    spawn = MagicMock(return_value=999907)
+
+    with patch(
+        "gaottt.multiverse.supervisor._await_backend_readiness", await_readiness,
+    ), patch(
+        "gaottt.multiverse.supervisor._fetch_backend_readiness", fetch,
+    ), patch(
+        "gaottt.multiverse.supervisor._probe_backend_with_token", probe,
+    ), patch.object(sup, "_stop_backend", stop), \
+         patch.object(sup, "_spawn", spawn):
+        r = await client.post("/route", json={"api_key": body["api_key"]})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["url"] == f"http://127.0.0.1:{body['port']}/mcp"
+    assert "readiness" not in r.json()  # healthy -> legacy response shape
+    stop.assert_awaited_once()
+    spawn.assert_called_once()
+    # the respawn rotated the token: response token != the zombie's token
+    zombie_token = probe.call_args_list[0].args[2]
+    assert zombie_token
+    assert r.json()["token"] != zombie_token
+    # readiness was awaited exactly twice (FAILED, then healthy re-fetch)
+    assert await_readiness.await_count == 2
+
+
+async def test_route_failed_recycle_skipped_when_backend_recovered(app, client):
+    """FAILED at the route-level await, but healthy by the time recycle takes
+    the lock (e.g. a concurrent route already recycled it): no stop, no
+    respawn, 200 with the CURRENT token."""
+    from gaottt.multiverse.supervisor import PROBE_OK
+
+    body = await _make_universe(client)
+    sup = app.state.supervisor
+
+    failed = {"state": "FAILED", "error": "boom"}
+    healthy = {"state": "SEMANTIC_READY", "elapsed_seconds": 6.0}
+    await_readiness = AsyncMock(side_effect=[failed, healthy])
+    fetch = AsyncMock(return_value=healthy)  # inside-lock recheck: recovered
+    probe = AsyncMock(return_value=PROBE_OK)
+    stop = AsyncMock()
+    spawn = MagicMock()
+
+    with patch(
+        "gaottt.multiverse.supervisor._await_backend_readiness", await_readiness,
+    ), patch(
+        "gaottt.multiverse.supervisor._fetch_backend_readiness", fetch,
+    ), patch(
+        "gaottt.multiverse.supervisor._probe_backend_with_token", probe,
+    ), patch.object(sup, "_stop_backend", stop), \
+         patch.object(sup, "_spawn", spawn):
+        r = await client.post("/route", json={"api_key": body["api_key"]})
+
+    assert r.status_code == 200, r.text
+    stop.assert_not_awaited()
+    spawn.assert_not_called()
+    current_token = probe.call_args_list[0].args[2]
+    assert r.json()["token"] == current_token
+
+
+async def test_route_failed_stop_conflict_abandons_recycle_503(app, client):
+    """FAILED + _stop_backend refuses (backend alive, PID unknown) ->
+    recycle abandoned -> 503 with the ORIGINAL error (no second readiness
+    await, no respawn)."""
+    from gaottt.multiverse.supervisor import PROBE_OK, _BackendAliveConflict
+
+    body = await _make_universe(client)
+    sup = app.state.supervisor
+
+    original_error = "LeaseHeldError: owner.lock at main-universe"
+    failed = {"state": "FAILED", "error": original_error}
+    await_readiness = AsyncMock(return_value=failed)
+    fetch = AsyncMock(return_value=failed)
+    probe = AsyncMock(return_value=PROBE_OK)
+    stop = AsyncMock(side_effect=_BackendAliveConflict(
+        "backend alive on port but PID unknown"
+    ))
+    spawn = MagicMock()
+
+    with patch(
+        "gaottt.multiverse.supervisor._await_backend_readiness", await_readiness,
+    ), patch(
+        "gaottt.multiverse.supervisor._fetch_backend_readiness", fetch,
+    ), patch(
+        "gaottt.multiverse.supervisor._probe_backend_with_token", probe,
+    ), patch.object(sup, "_stop_backend", stop), \
+         patch.object(sup, "_spawn", spawn):
+        r = await client.post("/route", json={"api_key": body["api_key"]})
+
+    assert r.status_code == 503
+    assert original_error in r.json()["detail"]
+    stop.assert_awaited_once()
+    spawn.assert_not_called()
+    # no second readiness await — the original FAILED observation stands
+    assert await_readiness.await_count == 1
+
+
+async def test_route_failed_recycle_still_failed_503_new_error(app, client):
+    """Recycle respawns but the fresh backend fails again -> 503 carrying
+    the NEW error text (the re-fetched readiness is authoritative), and the
+    response reflects the recycled (fresh) token side via stop+spawn having
+    run exactly once."""
+    from gaottt.multiverse.supervisor import PROBE_DOWN, PROBE_OK
+
+    body = await _make_universe(client)
+    uid = body["universe_id"]
+    sup = app.state.supervisor
+    sup._backend_pids[uid] = 999908
+
+    failed_first = {"state": "FAILED", "error": "first failure"}
+    failed_second = {"state": "FAILED", "error": "second failure after respawn"}
+    await_readiness = AsyncMock(side_effect=[failed_first, failed_second])
+    fetch = AsyncMock(return_value=failed_first)
+    probe = AsyncMock(side_effect=[
+        PROBE_OK,    # ensure_backend: zombie transport answers
+        PROBE_DOWN,  # recycle's _ensure_locked: stopped
+        PROBE_OK,    # respawn readiness poll
+    ])
+    stop = AsyncMock()
+    spawn = MagicMock(return_value=999909)
+
+    with patch(
+        "gaottt.multiverse.supervisor._await_backend_readiness", await_readiness,
+    ), patch(
+        "gaottt.multiverse.supervisor._fetch_backend_readiness", fetch,
+    ), patch(
+        "gaottt.multiverse.supervisor._probe_backend_with_token", probe,
+    ), patch.object(sup, "_stop_backend", stop), \
+         patch.object(sup, "_spawn", spawn):
+        r = await client.post("/route", json={"api_key": body["api_key"]})
+
+    assert r.status_code == 503
+    detail = r.json()["detail"]
+    assert "second failure after respawn" in detail
+    assert "first failure" not in detail
+    stop.assert_awaited_once()
+    spawn.assert_called_once()
+
+
+# Codex review follow-up (2026-09-17): recycle triggers on FAILED only.
+# STARTING (engine still booting) and READINESS_LEGACY (old backend, no
+# /admin/readiness endpoint) are pass-through states — never recycled.
+
+async def test_route_starting_readiness_never_recycles(app, client):
+    """STARTING is an observable state, not a failure: no recycle, 200
+    carrying readiness:"starting" and the CURRENT (unrotated) token."""
+    from gaottt.multiverse.supervisor import PROBE_OK
+
+    body = await _make_universe(client)
+    sup = app.state.supervisor
+
+    await_readiness = AsyncMock(return_value={"state": "STARTING"})
+    fetch = AsyncMock()  # unreachable: the await-level seam short-circuits
+    probe = AsyncMock(return_value=PROBE_OK)  # ensure_backend: up, no spawn
+    recycle = AsyncMock()
+
+    with patch(
+        "gaottt.multiverse.supervisor._await_backend_readiness", await_readiness,
+    ), patch(
+        "gaottt.multiverse.supervisor._fetch_backend_readiness", fetch,
+    ), patch(
+        "gaottt.multiverse.supervisor._probe_backend_with_token", probe,
+    ), patch.object(sup, "recycle_failed_backend", recycle):
+        r = await client.post("/route", json={"api_key": body["api_key"]})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["readiness"] == "starting"
+    recycle.assert_not_awaited()
+    assert await_readiness.await_count == 1  # no post-recycle re-await
+    current_token = probe.call_args_list[0].args[2]
+    assert r.json()["token"] == current_token
+
+
+async def test_route_legacy_readiness_never_recycles(app, client):
+    """Old backend without /admin/readiness (404 -> READINESS_LEGACY) ->
+    legacy response shape: 200, no readiness key, no recycle."""
+    from gaottt.multiverse.supervisor import PROBE_OK, READINESS_LEGACY
+
+    body = await _make_universe(client)
+    sup = app.state.supervisor
+
+    await_readiness = AsyncMock(return_value=READINESS_LEGACY)
+    fetch = AsyncMock()  # unreachable: the await-level seam short-circuits
+    probe = AsyncMock(return_value=PROBE_OK)  # ensure_backend: up, no spawn
+    recycle = AsyncMock()
+
+    with patch(
+        "gaottt.multiverse.supervisor._await_backend_readiness", await_readiness,
+    ), patch(
+        "gaottt.multiverse.supervisor._fetch_backend_readiness", fetch,
+    ), patch(
+        "gaottt.multiverse.supervisor._probe_backend_with_token", probe,
+    ), patch.object(sup, "recycle_failed_backend", recycle):
+        r = await client.post("/route", json={"api_key": body["api_key"]})
+
+    assert r.status_code == 200, r.text
+    assert "readiness" not in r.json()
+    recycle.assert_not_awaited()
+    assert await_readiness.await_count == 1
